@@ -4,6 +4,21 @@ Newest first. One entry per feature commit — added when the feature actually l
 
 ## Done
 
+- **Heuristic field-mapping agent** — `core/src/agent/field_mapper.py` replaces the stub in
+  `ApplicationService`. Matches a scanned field's label/name/id/placeholder against known
+  categories (email, first/last/full name, phone, resume upload) using the CV's extracted
+  profile, passed via a new `cv_id` on the scan request. `Application` now has a nullable `cv`
+  FK recording which CV a scan used. Hard rules, not confidence thresholds: EEO/demographic
+  fields (gender, ethnicity, veteran, disability) are always skipped regardless of profile data;
+  unrecognized fields (job-specific questions, custom comboboxes we can't structurally detect
+  yet) are skipped, never guessed. The extension's popup now lists/uploads CVs, sends the
+  selected `cv_id` on scan, and — for `action: "upload"` — fetches the CV's file bytes from
+  `GET /api/v1/cvs/{id}/file/` and attaches it to the file input via `DataTransfer` in the page.
+  `web-ext lint` still clean. End-to-end verified: uploaded the real test CV, scanned the real
+  Greenhouse fixture with that `cv_id`, and got back exactly the expected plan — correct
+  name/email/phone, resume flagged for upload, and every EEO field plus every job-specific
+  question (GitLab username, interview name preference, LinkedIn profile, location) correctly
+  skipped rather than guessed.
 - **CVs: upload + extraction** — `POST /api/v1/cvs/` (multipart `file`), `GET /api/v1/cvs/`,
   `GET /api/v1/cvs/{id}/file/`. Extracts raw text (`pypdf` for PDF, `python-docx` for `.docx`)
   and a profile (`core/src/agent/profile.py`: regex email/phone, name from the first non-empty

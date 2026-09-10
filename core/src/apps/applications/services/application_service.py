@@ -1,43 +1,37 @@
 from urllib.parse import urlparse
 
+from agent.field_mapper import build_fill_plan
+from agent.profile import Profile
 from apps.applications.dto import ScanRequestDTO, ScanResultDTO
 from apps.applications.repositories.interfaces import IApplicationRepository
-
-# Fields typed straight through; anything else is skipped. Replaced by
-# apps/agent/field_mapper.py in a later commit — this only proves the
-# scan -> fill-plan -> DOM wiring works end to end.
-_TYPEABLE = {"text", "email", "tel"}
+from apps.cvs.repositories.interfaces import ICvRepository
 
 
 class ApplicationService:
-    def __init__(self, application_repo: IApplicationRepository) -> None:
+    def __init__(
+        self,
+        application_repo: IApplicationRepository,
+        cv_repo: ICvRepository,
+    ) -> None:
         self._repo = application_repo
+        self._cv_repo = cv_repo
 
     def scan(self, payload: ScanRequestDTO) -> ScanResultDTO:
-        field_mapping = self._stub_fill_plan(payload.form_snapshot)
+        profile, resolved_cv_id = self._resolve_profile(payload.cv_id)
+        field_mapping = build_fill_plan(payload.form_snapshot, profile, resolved_cv_id)
         site = urlparse(payload.url).netloc
         return self._repo.create(
             url=payload.url,
             site=site,
             form_snapshot=payload.form_snapshot,
             field_mapping=field_mapping,
+            cv_id=resolved_cv_id,
         )
 
-    @staticmethod
-    def _stub_fill_plan(form_snapshot: list[dict]) -> list[dict]:
-        plan = []
-        for field in form_snapshot:
-            if field.get("type") in _TYPEABLE:
-                plan.append(
-                    {
-                        "ref": field["ref"],
-                        "value": f"placeholder-{field['ref']}",
-                        "action": "type",
-                        "confidence": 0.0,
-                    }
-                )
-            else:
-                plan.append(
-                    {"ref": field["ref"], "value": "", "action": "skip", "confidence": 0.0}
-                )
-        return plan
+    def _resolve_profile(self, cv_id: int | None) -> tuple[Profile | None, int | None]:
+        if cv_id is None:
+            return None, None
+        cv = self._cv_repo.get(cv_id)
+        if cv is None:
+            return None, None
+        return Profile(full_name=cv.full_name, email=cv.email, phone=cv.phone), cv.id

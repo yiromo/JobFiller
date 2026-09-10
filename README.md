@@ -26,7 +26,7 @@ Extension (Firefox / Zen), with `core` running on `localhost:8000`:
 1. Go to `about:debugging#/runtime/this-firefox`.
 2. "Load Temporary Add-on…" → select `extension/manifest.json`.
 3. Open a job posting (e.g. a `job-boards.greenhouse.io` listing), click the extension icon,
-   click "Scan this page", then "Fill application".
+   upload a CV, click "Scan this page", then "Fill application".
 4. Check the popup's log for skipped fields, and check the form itself before submitting
    anything — nothing here submits a form for you.
 
@@ -36,8 +36,10 @@ report what breaks.
 
 ## Status
 
-`core`'s field-mapping is currently a dumb stub (types a placeholder into text/email/tel fields,
-skips everything else) — it exists to prove the scan → fill wiring works before the real mapper
-lands. See `tasks/PROGRESS.md` for what's actually built and `tasks/BACKLOG.md` for what's next
-(heuristic mapper, CV upload, MiMo integration). No proactive/background app yet (out of scope
-for now).
+`core`'s field-mapping is a heuristic (keyword/regex) matcher, not an LLM yet — it fills
+contact fields (name/email/phone) and the resume upload from your CV, and skips anything it
+can't answer confidently: job-specific questions, custom dropdown pickers, and — always,
+regardless of confidence — EEO/demographic questions (gender, ethnicity, veteran, disability
+status). See `tasks/PROGRESS.md` for what's actually built and `tasks/BACKLOG.md` for what's
+next (MiMo integration for the fields the heuristic can't handle, CV structuring, fit rate,
+multi-CV matching). No proactive/background app yet (out of scope for now).

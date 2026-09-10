@@ -16,6 +16,7 @@ class ApplicationScanView(APIView):
         payload = ScanRequestDTO(
             url=serializer.validated_data["url"],
             form_snapshot=[dict(f) for f in serializer.validated_data["form_snapshot"]],
+            cv_id=serializer.validated_data["cv_id"],
         )
         service = ApplicationsContainer.application_service()
         result = service.scan(payload)

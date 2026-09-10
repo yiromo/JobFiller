@@ -4,6 +4,7 @@ from django.db import models
 class Application(models.Model):
     url = models.URLField(max_length=2048)
     site = models.CharField(max_length=255, blank=True, default="")
+    cv = models.ForeignKey("cvs.Cv", null=True, blank=True, on_delete=models.SET_NULL)
     form_snapshot = models.JSONField()
     field_mapping = models.JSONField()
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)

@@ -15,10 +15,16 @@ h1 {
   color: #444;
 }
 
+.cv-row,
 .actions {
   display: flex;
   gap: 8px;
   margin-bottom: 8px;
+}
+
+.cv-row select {
+  flex: 1;
+  min-width: 0;
 }
 
 button {

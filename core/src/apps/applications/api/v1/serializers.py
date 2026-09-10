@@ -16,6 +16,7 @@ class FormFieldSerializer(serializers.Serializer):
 class ScanRequestSerializer(serializers.Serializer):
     url = serializers.URLField(max_length=2048)
     form_snapshot = FormFieldSerializer(many=True)
+    cv_id = serializers.IntegerField(required=False, allow_null=True, default=None)
 
 
 class FieldActionSerializer(serializers.Serializer):

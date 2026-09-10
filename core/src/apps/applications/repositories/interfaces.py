@@ -11,4 +11,5 @@ class IApplicationRepository(ABC):
         site: str,
         form_snapshot: list[dict],
         field_mapping: list[dict],
+        cv_id: int | None,
     ) -> ScanResultDTO: ...

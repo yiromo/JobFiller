@@ -11,10 +11,12 @@ class ApplicationRepository(IApplicationRepository):
         site: str,
         form_snapshot: list[dict],
         field_mapping: list[dict],
+        cv_id: int | None,
     ) -> ScanResultDTO:
         obj = Application.objects.create(
             url=url,
             site=site,
+            cv_id=cv_id,
             form_snapshot=form_snapshot,
             field_mapping=field_mapping,
         )

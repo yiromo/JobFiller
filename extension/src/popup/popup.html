@@ -8,6 +8,15 @@
   <body>
     <h1>Job Filler</h1>
     <p id="status">Ready.</p>
+
+    <div class="cv-row">
+      <select id="cv-select">
+        <option value="">No CV selected</option>
+      </select>
+      <input id="cv-file-input" type="file" accept=".pdf,.docx" hidden />
+      <button id="cv-upload-btn" type="button">Upload CV</button>
+    </div>
+
     <div class="actions">
       <button id="scan-btn" type="button">Scan this page</button>
       <button id="fill-btn" type="button" disabled>Fill application</button>

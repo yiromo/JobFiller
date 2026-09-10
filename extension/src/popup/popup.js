@@ -4,8 +4,12 @@ const statusEl = document.getElementById("status");
 const logEl = document.getElementById("log");
 const scanBtn = document.getElementById("scan-btn");
 const fillBtn = document.getElementById("fill-btn");
+const cvSelect = document.getElementById("cv-select");
+const cvFileInput = document.getElementById("cv-file-input");
+const cvUploadBtn = document.getElementById("cv-upload-btn");
 
 let lastFieldMapping = null;
+let cvsCache = [];
 
 function log(message) {
   logEl.textContent += `${message}\n`;
@@ -76,8 +80,11 @@ function scanPage() {
   return { url: window.location.href, form_snapshot: fields };
 }
 
-// Runs inside the page. `plan` is the field_mapping array core returned.
-function applyFillPlan(plan) {
+// Runs inside the page. `plan` is the field_mapping array core returned;
+// `fileByRef` maps a ref to { bytes: ArrayBuffer, filename, mimeType } for
+// any "upload" actions — fetched by popup.js beforehand, since content
+// scripts can't reliably reach the core API without extra host permissions.
+function applyFillPlan(plan, fileByRef) {
   const nativeInputSetter = Object.getOwnPropertyDescriptor(
     window.HTMLInputElement.prototype,
     "value",
@@ -118,6 +125,16 @@ function applyFillPlan(plan) {
           el.checked = Boolean(item.value);
           el.dispatchEvent(new Event("change", { bubbles: true }));
           return { ref: item.ref, ok: true };
+        case "upload": {
+          const fileInfo = fileByRef[item.ref];
+          if (!fileInfo) return { ref: item.ref, ok: false, reason: "no-file-data" };
+          const file = new File([fileInfo.bytes], fileInfo.filename, { type: fileInfo.mimeType });
+          const transfer = new DataTransfer();
+          transfer.items.add(file);
+          el.files = transfer.files;
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+          return { ref: item.ref, ok: true };
+        }
         case "skip":
           return { ref: item.ref, ok: true, reason: "skipped" };
         default:
@@ -134,6 +151,70 @@ async function getActiveTab() {
   return tab;
 }
 
+function guessMimeType(filename) {
+  if (filename.endsWith(".pdf")) return "application/pdf";
+  if (filename.endsWith(".docx")) {
+    return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  }
+  return "application/octet-stream";
+}
+
+async function loadCvs(selectId) {
+  const response = await fetch(`${CORE_URL}/api/v1/cvs/`);
+  if (!response.ok) throw new Error(`core returned ${response.status}`);
+  cvsCache = await response.json();
+
+  cvSelect.innerHTML = '<option value="">No CV selected</option>';
+  for (const cv of cvsCache) {
+    const option = document.createElement("option");
+    option.value = String(cv.id);
+    option.textContent = `${cv.full_name || cv.original_filename} — ${cv.original_filename}`;
+    cvSelect.appendChild(option);
+  }
+  if (selectId) cvSelect.value = String(selectId);
+}
+
+// Fetches the file bytes for every "upload" action in the plan, keyed by ref,
+// so applyFillPlan (running in the page) can attach them via DataTransfer.
+async function buildFileMap(plan) {
+  const fileByRef = {};
+  for (const item of plan) {
+    if (item.action !== "upload") continue;
+    const cv = cvsCache.find((c) => String(c.id) === item.value);
+    if (!cv) continue;
+    const response = await fetch(`${CORE_URL}/api/v1/cvs/${cv.id}/file/`);
+    if (!response.ok) continue;
+    fileByRef[item.ref] = {
+      bytes: await response.arrayBuffer(),
+      filename: cv.original_filename,
+      mimeType: guessMimeType(cv.original_filename),
+    };
+  }
+  return fileByRef;
+}
+
+cvUploadBtn.addEventListener("click", () => cvFileInput.click());
+
+cvFileInput.addEventListener("change", async () => {
+  const file = cvFileInput.files[0];
+  if (!file) return;
+  setStatus("Uploading CV...");
+  try {
+    const formData = new FormData();
+    formData.append("file", file);
+    const response = await fetch(`${CORE_URL}/api/v1/cvs/`, { method: "POST", body: formData });
+    if (!response.ok) throw new Error(`core returned ${response.status}`);
+    const cv = await response.json();
+    await loadCvs(cv.id);
+    setStatus(`Uploaded ${cv.original_filename}.`);
+  } catch (err) {
+    setStatus("CV upload failed.");
+    log(String(err));
+  } finally {
+    cvFileInput.value = "";
+  }
+});
+
 scanBtn.addEventListener("click", async () => {
   setStatus("Scanning...");
   fillBtn.disabled = true;
@@ -147,10 +228,11 @@ scanBtn.addEventListener("click", async () => {
     });
     log(`Found ${result.form_snapshot.length} fields.`);
 
+    const cvId = cvSelect.value ? Number(cvSelect.value) : null;
     const response = await fetch(`${CORE_URL}/api/v1/applications/scan/`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(result),
+      body: JSON.stringify({ ...result, cv_id: cvId }),
     });
     if (!response.ok) throw new Error(`core returned ${response.status}`);
 
@@ -171,11 +253,12 @@ fillBtn.addEventListener("click", async () => {
   setStatus("Filling...");
 
   try {
+    const fileByRef = await buildFileMap(lastFieldMapping);
     const tab = await getActiveTab();
     const [{ result }] = await browser.scripting.executeScript({
       target: { tabId: tab.id },
       func: applyFillPlan,
-      args: [lastFieldMapping],
+      args: [lastFieldMapping, fileByRef],
     });
     const failed = result.filter((r) => !r.ok);
     log(`Filled ${result.length - failed.length}/${result.length}.`);
@@ -185,4 +268,9 @@ fillBtn.addEventListener("click", async () => {
     setStatus("Fill failed.");
     log(String(err));
   }
+});
+
+loadCvs().catch((err) => {
+  setStatus("Could not reach core API.");
+  log(String(err));
 });
