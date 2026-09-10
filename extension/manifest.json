@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Job Filler",
+  "version": "0.1.0",
+  "description": "Scans a job application form and fills it from your CV via the local job-filler core API.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "job-filler@yiromo.dev",
+      "strict_min_version": "115.0",
+      "data_collection_permissions": {
+        "required": ["personallyIdentifyingInfo", "websiteContent"]
+      }
+    }
+  },
+  "permissions": ["activeTab", "scripting"],
+  "host_permissions": ["http://localhost:8000/*", "http://127.0.0.1:8000/*"],
+  "action": {
+    "default_popup": "src/popup/popup.html",
+    "default_title": "Job Filler"
+  }
+}

@@ -4,6 +4,20 @@ Newest first. One entry per feature commit — added when the feature actually l
 
 ## Done
 
+- **Browser extension skeleton** — Manifest V3 for Firefox (`extension/manifest.json`), popup UI
+  (`extension/src/popup/`). "Scan this page" injects a field-scanner into the active tab via
+  `scripting.executeScript` (no persistent content script — only runs on a user click), which
+  stamps every candidate input/select/textarea with `data-jf-ref`, resolves its label
+  (`label[for]`, closest `<label>`, `aria-label`/`aria-labelledby`), and skips honeypot
+  (`aria-hidden`/`tabindex="-1"`) and hidden fields. Posts the result to
+  `/api/v1/applications/scan/`. "Fill application" injects a fill executor that sets values via
+  the native property setter + dispatches `input`/`change` (required for React-controlled
+  inputs) and reports per-field success/failure back to the popup log.
+  `npx web-ext lint --source-dir extension` passes clean (0 errors/warnings/notices) — this
+  included adding `data_collection_permissions` to the manifest, declared honestly
+  (`personallyIdentifyingInfo`, `websiteContent` — sent only to the local `core` API, never to a
+  third party). **Not driven in an actual browser** — no browser automation tool was available
+  in this session; see the root README for manual test steps.
 - **Applications: scan endpoint (stub fill plan)** — `POST /api/v1/applications/scan/` takes a
   `form_snapshot` and returns a fill plan; text/email/tel fields get a placeholder value,
   everything else is skipped. This is intentionally dumb — it exists to prove the scan → DOM-fill

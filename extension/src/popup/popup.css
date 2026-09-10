@@ -1,0 +1,42 @@
+body {
+  width: 320px;
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+  padding: 12px;
+}
+
+h1 {
+  font-size: 15px;
+  margin: 0 0 8px;
+}
+
+#status {
+  margin: 0 0 8px;
+  color: #444;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+button {
+  flex: 1;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+#log {
+  max-height: 220px;
+  overflow-y: auto;
+  background: #f5f5f5;
+  padding: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
