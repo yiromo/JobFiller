@@ -53,3 +53,14 @@ Newest first. One entry per feature commit — added when the feature actually l
   `ruff check`, `manage.py check`, `manage.py migrate`, curl'd `/health/` via `runserver` and
   again via a built Docker image (`docker build` + `docker run` + curl against the container).
 - **Repo scaffold** — monorepo layout, root README, CLAUDE.md, tasks/.
+
+## Fixes
+
+- **`core/.dockerignore` wasn't excluding `src/data/`** — its bare patterns (`db.sqlite3`,
+  `media`) didn't match that nested path, so a locally-migrated dev database got baked into the
+  Docker image, making a brand-new named volume look already-migrated ("No migrations to apply"
+  on a supposedly clean container — Docker seeds a new empty volume from the image's existing
+  directory content). Found by inspecting the built image's filesystem directly, not by trusting
+  a 200 from `/health/`. Fixed with an explicit `src/data` entry and re-verified against a
+  genuinely fresh volume (`docker volume rm` + `docker compose up`) — migrations applied this
+  time.

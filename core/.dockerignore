@@ -1,8 +1,7 @@
 .venv
-__pycache__
-*.pyc
+**/__pycache__
+**/*.pyc
 .env
-db.sqlite3
-media
-staticfiles
-.ruff_cache
+src/data
+**/staticfiles
+**/.ruff_cache
