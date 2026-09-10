@@ -56,12 +56,17 @@ Newest first. One entry per feature commit — added when the feature actually l
 
 ## Fixes
 
-- **Popup appeared blank in the browser** — `popup.css` never set an explicit `background`/
-  `color` on `body` (or on `select`/`button`), so on a dark browser theme the popup could
-  inherit a dark background with the browser's default black text on top — everything present,
-  nothing visible. Fixed by making colors explicit rather than inherited. Reported by the user
-  testing in Zen; not something `web-ext lint` or a curl test could catch — worth remembering
-  for any future extension UI work in this repo.
+- **Popup appeared blank in the browser** — root cause was a Flatpak sandbox, not CSS. Zen on
+  Linux is commonly installed via Flatpak, which only grants filesystem access to whatever the
+  file-picker portal was pointed at. "Load Temporary Add-on…" reads `manifest.json` through that
+  portal, so the extension shows as loaded with no error, but every sibling file (`popup.html`,
+  `popup.js`, `popup.css`) is outside the sandbox and resolves to an empty document — confirmed
+  via the Inspector showing a bodyless `<html><head></head><body></body></html>` for
+  `popup.html` loaded directly as a tab. Fixed by granting the project directory:
+  `flatpak override --user --filesystem=/path/to/job-filler app.zen_browser.zen`, then fully
+  quitting Zen and re-loading the extension (a plain Reload doesn't re-apply the new grant). An
+  earlier attempt made `popup.css` colors explicit instead of inherited — harmless, kept, but it
+  was not the actual fix; noted here so the wrong diagnosis isn't repeated.
 - **Fresh-clone quick start was broken** — `SECRET_KEY` has no default (`manage.py migrate`
   crashes with no `.env`), and `DATA_DIR` (holding `db.sqlite3`) was never created — SQLite
   doesn't create parent directories. README now says to `cp .env.example .env`; settings.py

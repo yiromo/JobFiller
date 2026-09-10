@@ -35,6 +35,16 @@ This has been lint-checked (`web-ext lint`) and its DOM-fill logic reviewed, but
 in a real browser session by whoever built it — try it on the sites in `tasks/PROGRESS.md` and
 report what breaks.
 
+**Zen/Firefox installed via Flatpak (common on Linux):** the extension will appear to load with
+no errors but its popup will be completely blank. The Flatpak sandbox only grants filesystem
+access to the one file the "Load Temporary Add-on…" picker points at (`manifest.json`) — every
+sibling file (`popup.html`/`.js`/`.css`) is unreadable and resolves empty. Fix:
+```bash
+flatpak override --user --filesystem=/absolute/path/to/job-filler app.zen_browser.zen
+```
+then fully quit and relaunch Zen, and re-load the extension (Reload alone won't pick up the new
+grant — remove it and "Load Temporary Add-on…" again).
+
 ## Status
 
 `core`'s field-mapping is a heuristic (keyword/regex) matcher, not an LLM yet — it fills
