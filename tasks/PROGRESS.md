@@ -4,6 +4,15 @@ Newest first. One entry per feature commit — added when the feature actually l
 
 ## Done
 
+- **CVs: upload + extraction** — `POST /api/v1/cvs/` (multipart `file`), `GET /api/v1/cvs/`,
+  `GET /api/v1/cvs/{id}/file/`. Extracts raw text (`pypdf` for PDF, `python-docx` for `.docx`)
+  and a profile (`core/src/agent/profile.py`: regex email/phone, name from the first non-empty
+  line with a filename fallback). Verified against the real test CV
+  (`CV_Sanzhar_Amanzholov.pdf`) — checked the actual extracted text *before* writing the name
+  heuristic (first line is `"Sanzhar Amanzholov"`, so no filename fallback needed here), and
+  confirmed by curl: uploaded it, got back the correct name/email/phone, then downloaded the
+  stored file via `/file/` and diffed it byte-for-byte against the source PDF (identical — the
+  text-extraction stream doesn't corrupt what gets saved).
 - **Browser extension skeleton** — Manifest V3 for Firefox (`extension/manifest.json`), popup UI
   (`extension/src/popup/`). "Scan this page" injects a field-scanner into the active tab via
   `scripting.executeScript` (no persistent content script — only runs on a user click), which

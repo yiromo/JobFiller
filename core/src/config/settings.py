@@ -27,6 +27,7 @@ INSTALLED_APPS = [
     "corsheaders",
     # local
     "apps.core",
+    "apps.cvs",
     "apps.applications",
 ]
 
