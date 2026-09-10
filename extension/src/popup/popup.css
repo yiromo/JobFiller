@@ -3,11 +3,17 @@ body {
   font-family: system-ui, sans-serif;
   font-size: 13px;
   padding: 12px;
+  /* Explicit, not inherited — an extension popup can otherwise pick up a
+     dark browser theme's background with default-black text on top,
+     rendering as a blank box. */
+  background: #ffffff;
+  color: #1a1a1a;
 }
 
 h1 {
   font-size: 15px;
   margin: 0 0 8px;
+  color: #1a1a1a;
 }
 
 #status {
@@ -27,10 +33,14 @@ h1 {
   min-width: 0;
 }
 
+select,
 button {
   flex: 1;
   padding: 6px 8px;
   cursor: pointer;
+  background: #ffffff;
+  color: #1a1a1a;
+  border: 1px solid #ccc;
 }
 
 button:disabled {

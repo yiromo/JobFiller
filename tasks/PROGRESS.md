@@ -56,6 +56,12 @@ Newest first. One entry per feature commit — added when the feature actually l
 
 ## Fixes
 
+- **Popup appeared blank in the browser** — `popup.css` never set an explicit `background`/
+  `color` on `body` (or on `select`/`button`), so on a dark browser theme the popup could
+  inherit a dark background with the browser's default black text on top — everything present,
+  nothing visible. Fixed by making colors explicit rather than inherited. Reported by the user
+  testing in Zen; not something `web-ext lint` or a curl test could catch — worth remembering
+  for any future extension UI work in this repo.
 - **Fresh-clone quick start was broken** — `SECRET_KEY` has no default (`manage.py migrate`
   crashes with no `.env`), and `DATA_DIR` (holding `db.sqlite3`) was never created — SQLite
   doesn't create parent directories. README now says to `cp .env.example .env`; settings.py
