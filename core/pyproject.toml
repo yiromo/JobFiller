@@ -1,0 +1,24 @@
+[project]
+name = "job-filler-core"
+version = "0.1.0"
+description = "Core API for job-filler: CV storage, job-posting scan, and field-mapping."
+requires-python = ">=3.12"
+dependencies = [
+    "python-decouple",
+    "django>=5.1,<5.3",
+    "djangorestframework",
+    "django-cors-headers",
+    "dependency-injector",
+    "pypdf",
+    "python-docx",
+    "gunicorn",
+]
+
+[dependency-groups]
+dev = [
+    "ruff",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

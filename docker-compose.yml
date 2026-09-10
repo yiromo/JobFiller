@@ -1,0 +1,12 @@
+services:
+  core:
+    build: ./core
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./core/.env
+    volumes:
+      - core_data:/app/data
+
+volumes:
+  core_data:

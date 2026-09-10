@@ -4,8 +4,7 @@ __pycache__/
 .venv/
 *.egg-info/
 core/src/staticfiles/
-core/src/media/
-core/db.sqlite3
+core/src/data/
 .ruff_cache/
 
 ## Env
