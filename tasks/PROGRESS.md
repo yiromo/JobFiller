@@ -56,6 +56,16 @@ Newest first. One entry per feature commit — added when the feature actually l
 
 ## Fixes
 
+- **Fresh-clone quick start was broken** — `SECRET_KEY` has no default (`manage.py migrate`
+  crashes with no `.env`), and `DATA_DIR` (holding `db.sqlite3`) was never created — SQLite
+  doesn't create parent directories. README now says to `cp .env.example .env`; settings.py
+  creates `DATA_DIR` on startup. Verified by actually cloning the repo into a scratch directory
+  and following the README's backend steps verbatim (not just re-running in the already-set-up
+  working tree).
+- **Extension resume upload would have attached garbage** — `scripting.executeScript` args must
+  be JSON-serializable; the raw `ArrayBuffer` fetched for the CV file wouldn't have survived
+  that trip intact. Now base64-encoded in the popup, decoded back to bytes in the injected fill
+  function before building the `File`.
 - **`core/.dockerignore` wasn't excluding `src/data/`** — its bare patterns (`db.sqlite3`,
   `media`) didn't match that nested path, so a locally-migrated dev database got baked into the
   Docker image, making a brand-new named volume look already-migrated ("No migrations to apply"

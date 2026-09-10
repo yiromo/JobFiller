@@ -65,6 +65,7 @@ TEMPLATES = [
 # DATA_DIR is one mount point so Docker only needs a single named volume.
 # ---------------------------------------------------------------------------
 DATA_DIR = BASE_DIR / "data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)  # neither SQLite nor Django creates it
 
 DATABASES = {
     "default": {

@@ -12,12 +12,13 @@ See `CLAUDE.md` for architecture conventions and `tasks/` for what's built and w
 Backend:
 ```bash
 cd core
+cp .env.example .env   # generates nothing by itself — edit SECRET_KEY before real use
 uv sync
 cd src && uv run python manage.py migrate
 uv run python manage.py runserver 0.0.0.0:8000
 ```
 
-Or via Docker:
+Or via Docker (also needs `core/.env` — same `cp` step, from `core/`):
 ```bash
 docker compose up --build
 ```

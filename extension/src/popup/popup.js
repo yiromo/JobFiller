@@ -81,7 +81,7 @@ function scanPage() {
 }
 
 // Runs inside the page. `plan` is the field_mapping array core returned;
-// `fileByRef` maps a ref to { bytes: ArrayBuffer, filename, mimeType } for
+// `fileByRef` maps a ref to { base64, filename, mimeType } for
 // any "upload" actions — fetched by popup.js beforehand, since content
 // scripts can't reliably reach the core API without extra host permissions.
 function applyFillPlan(plan, fileByRef) {
@@ -128,7 +128,13 @@ function applyFillPlan(plan, fileByRef) {
         case "upload": {
           const fileInfo = fileByRef[item.ref];
           if (!fileInfo) return { ref: item.ref, ok: false, reason: "no-file-data" };
-          const file = new File([fileInfo.bytes], fileInfo.filename, { type: fileInfo.mimeType });
+          // scripting.executeScript args must be JSON-serializable — an
+          // ArrayBuffer wouldn't survive the trip, so the bytes travel as
+          // base64 and get decoded back here.
+          const binary = atob(fileInfo.base64);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+          const file = new File([bytes], fileInfo.filename, { type: fileInfo.mimeType });
           const transfer = new DataTransfer();
           transfer.items.add(file);
           el.files = transfer.files;
@@ -149,6 +155,13 @@ function applyFillPlan(plan, fileByRef) {
 async function getActiveTab() {
   const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
   return tab;
+}
+
+function arrayBufferToBase64(buffer) {
+  let binary = "";
+  const bytes = new Uint8Array(buffer);
+  for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
 }
 
 function guessMimeType(filename) {
@@ -185,7 +198,7 @@ async function buildFileMap(plan) {
     const response = await fetch(`${CORE_URL}/api/v1/cvs/${cv.id}/file/`);
     if (!response.ok) continue;
     fileByRef[item.ref] = {
-      bytes: await response.arrayBuffer(),
+      base64: arrayBufferToBase64(await response.arrayBuffer()),
       filename: cv.original_filename,
       mimeType: guessMimeType(cv.original_filename),
     };
