@@ -1,0 +1,23 @@
+## Python / Django
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+core/src/staticfiles/
+core/src/media/
+core/db.sqlite3
+.ruff_cache/
+
+## Env
+.env
+*.env.local
+
+## Node (extension tooling, e.g. web-ext)
+node_modules/
+web-ext-artifacts/
+
+## Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
