@@ -2,6 +2,28 @@
 
 Newest first. One entry per feature commit — added when the feature actually lands, not before.
 
+## Fixes
+
+- **Cover-letter fields skipped when unlabeled, silently — root cause of "cover letter never
+  attaches, résumé does"** — `_COVER_LETTER_KEYWORDS` only matched the literal phrase "cover
+  letter" (a space required), while `_RESUME_KEYWORDS` matches single words with no such
+  requirement — that asymmetry is exactly why résumé always worked and cover letter didn't. Real
+  ATS file inputs routinely have no `<label for>`/`aria-label` (the visible "Cover Letter" text
+  sits in an unassociated heading), so `field_haystack` falls back to `name`/`id`, which use
+  `cover_letter`/`coverLetter`/`cover-letter` — none contain a literal space. Confirmed against
+  real persisted data, not just synthesized: `Application` #27 (Databricks/Greenhouse,
+  `gh_jid`-style embed) had `id: "cover_letter"`, `label: "Attach"` (a shared generic label) and
+  a persisted `action: "skip"`; #32 (a separate Greenhouse posting) showed the same
+  `0:cover_letter` ref skipped by both the heuristic and the LLM pass. Fixed by widening
+  `_COVER_LETTER_KEYWORDS` to `("cover letter", "cover_letter", "cover-letter", "coverletter")`
+  — deliberately *not* a general separator-normalizing rewrite of `field_haystack` (tried first,
+  reverted: replacing `_`/`-` with spaces broke `_EMAIL_KEYWORDS`'s `"email"` against `"e-mail"`
+  and would have broken `_LINKEDIN_KEYWORDS` against a hypothetical `"linked-in"` id — this fix
+  is scoped to the one keyword list that needed it). Verified by patching the fix into the running
+  `job-filler-core-1` container and replaying the exact #32 field through `build_fill_plan`: now
+  resolves to `cover_letter_upload`. This also fully verifies "Scan hidden file inputs" below —
+  the previously-unverified Greenhouse case was this bug, not (only) a visibility gap.
+
 ## Done
 
 - **EEO Settings answers routed through a dedicated AI pass instead of verbatim client-side
@@ -98,7 +120,9 @@ Newest first. One entry per feature commit — added when the feature actually l
   skipped it via the same `isVisible` check used for every field — file inputs are routinely
   styled `display:none` behind a custom button, which doesn't stop `el.files = ...` + a `change`
   event from working. `type === "file"` now bypasses the visibility check (honeypot/disabled
-  checks still apply). Not yet re-verified against the real Greenhouse page.
+  checks still apply). Confirmed via real persisted data (`Application` #27/#32, see the
+  cover-letter keyword fix above): the hidden file input was scanned and reached core fine — the
+  remaining miss on that page was the keyword-matching bug, not this visibility gap.
 
 ## Done
 

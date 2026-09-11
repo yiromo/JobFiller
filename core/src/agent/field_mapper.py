@@ -5,7 +5,7 @@ from agent.profile import Profile
 # Public — shared with llm_mapper.py so both stay in sync on what's never auto-answered.
 EEO_KEYWORDS = ("gender", "ethnicity", "hispanic", "latino", "veteran", "disability", "race")
 _RESUME_KEYWORDS = ("resume", "cv")
-_COVER_LETTER_KEYWORDS = ("cover letter",)
+_COVER_LETTER_KEYWORDS = ("cover letter", "cover_letter", "cover-letter", "coverletter")
 _EMAIL_KEYWORDS = ("email", "e-mail")
 _PHONE_KEYWORDS = ("phone", "mobile", "telephone")
 _PREFERRED_NAME_KEYWORDS = ("prefer",)
