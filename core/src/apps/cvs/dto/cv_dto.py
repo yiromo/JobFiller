@@ -9,5 +9,7 @@ class CvDTO:
     full_name: str
     email: str
     phone: str
+    linkedin_url: str
+    git_url: str
     uploaded_at: datetime
     file_path: str

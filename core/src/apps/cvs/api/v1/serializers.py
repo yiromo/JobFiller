@@ -11,4 +11,6 @@ class CvSerializer(serializers.Serializer):
     full_name = serializers.CharField()
     email = serializers.CharField()
     phone = serializers.CharField()
+    linkedin_url = serializers.CharField()
+    git_url = serializers.CharField()
     uploaded_at = serializers.DateTimeField()

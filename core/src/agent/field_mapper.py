@@ -10,6 +10,8 @@ _PREFERRED_NAME_KEYWORDS = ("prefer",)
 _FIRST_NAME_KEYWORDS = ("first name", "given name")
 _LAST_NAME_KEYWORDS = ("last name", "surname", "family name")
 _FULL_NAME_KEYWORDS = ("full name", "your name")
+_LINKEDIN_KEYWORDS = ("linkedin",)
+_GIT_KEYWORDS = ("github", "gitlab")
 
 
 def build_fill_plan(
@@ -64,6 +66,12 @@ def _map_field(field: dict, profile: Profile | None, cv_id: int | None) -> dict:
 
     if any(keyword in haystack for keyword in _FULL_NAME_KEYWORDS):
         return type_value(profile.full_name, 0.85) if profile.full_name else skip()
+
+    if any(keyword in haystack for keyword in _LINKEDIN_KEYWORDS):
+        return type_value(profile.linkedin_url, 0.8) if profile.linkedin_url else skip()
+
+    if any(keyword in haystack for keyword in _GIT_KEYWORDS):
+        return type_value(profile.git_url, 0.8) if profile.git_url else skip()
 
     # Custom comboboxes (location/country pickers, etc.) aren't distinguishable
     # from plain text inputs in the current form_snapshot schema, and anything

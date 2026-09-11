@@ -8,6 +8,8 @@ class Cv(models.Model):
     full_name = models.CharField(max_length=255, blank=True, default="")
     email = models.EmailField(blank=True, default="")
     phone = models.CharField(max_length=32, blank=True, default="")
+    linkedin_url = models.URLField(blank=True, default="")
+    git_url = models.URLField(blank=True, default="")
     uploaded_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:

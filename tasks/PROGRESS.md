@@ -56,6 +56,17 @@ Newest first. One entry per feature commit — added when the feature actually l
 
 ## Fixes
 
+- **LinkedIn/GitHub/GitLab fields were always skipped even when answerable** — `profile.py`
+  never extracted those URLs from CV text, so `field_mapper.py` had no data to offer even for
+  a plain text field it could otherwise fill. Added regex extraction (`linkedin_url`, `git_url`)
+  alongside the existing email/phone/name extraction, threaded through the `Cv` model → DTO →
+  repository → service → serializer the same way those fields are. Verified against the real
+  test CV: uploaded it, confirmed the API response includes both URLs, then scanned a synthetic
+  form with "LinkedIn Profile"/"Github/Gitlab Account"/"Website" fields — the first two filled
+  correctly, "Website" and a gender select still correctly skipped (no CV-derivable answer /
+  EEO rule). Most other unfilled fields reported by the user (custom Greenhouse comboboxes,
+  free-text essay questions) are the known gaps in `tasks/BACKLOG.md` items 1 and 7, not bugs.
+
 - **Upload CV closed the popup, and a scan was lost on every popup close** — two separate
   bugs, same root cause of "the popup is a fragile, disposable document." (1) Clicking a hidden
   file input's `.click()` from inside a panel popup opens a native file picker, which steals

@@ -13,6 +13,8 @@ class CvRepository(ICvRepository):
         full_name: str,
         email: str,
         phone: str,
+        linkedin_url: str,
+        git_url: str,
     ) -> CvDTO:
         obj = Cv.objects.create(
             file=file,
@@ -21,6 +23,8 @@ class CvRepository(ICvRepository):
             full_name=full_name,
             email=email,
             phone=phone,
+            linkedin_url=linkedin_url,
+            git_url=git_url,
         )
         return self._to_dto(obj)
 
@@ -39,6 +43,8 @@ class CvRepository(ICvRepository):
             full_name=obj.full_name,
             email=obj.email,
             phone=obj.phone,
+            linkedin_url=obj.linkedin_url,
+            git_url=obj.git_url,
             uploaded_at=obj.uploaded_at,
             file_path=obj.file.path,
         )

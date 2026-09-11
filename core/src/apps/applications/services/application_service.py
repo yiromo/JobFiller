@@ -34,4 +34,11 @@ class ApplicationService:
         cv = self._cv_repo.get(cv_id)
         if cv is None:
             return None, None
-        return Profile(full_name=cv.full_name, email=cv.email, phone=cv.phone), cv.id
+        profile = Profile(
+            full_name=cv.full_name,
+            email=cv.email,
+            phone=cv.phone,
+            linkedin_url=cv.linkedin_url,
+            git_url=cv.git_url,
+        )
+        return profile, cv.id

@@ -13,6 +13,8 @@ class ICvRepository(ABC):
         full_name: str,
         email: str,
         phone: str,
+        linkedin_url: str,
+        git_url: str,
     ) -> CvDTO: ...
 
     @abstractmethod

@@ -19,6 +19,8 @@ class CvService:
             full_name=profile.full_name,
             email=profile.email,
             phone=profile.phone,
+            linkedin_url=profile.linkedin_url,
+            git_url=profile.git_url,
         )
 
     def list_cvs(self) -> list[CvDTO]:
