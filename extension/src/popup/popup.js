@@ -58,7 +58,11 @@ function scanPage() {
 
   const fields = [];
   document.querySelectorAll("input, select, textarea").forEach((el) => {
-    if (isHoneypot(el) || !isVisible(el) || el.disabled) return;
+    // File inputs are routinely styled hidden behind a custom "Attach"/"Choose
+    // a File" button — the input itself still works via el.files + a change
+    // event regardless of CSS visibility, so don't skip it for that reason.
+    if (isHoneypot(el) || el.disabled) return;
+    if (el.type !== "file" && !isVisible(el)) return;
     if (["hidden", "submit", "button", "image"].includes(el.type)) return;
 
     const ref = el.id || `jf-${refCounter++}`;

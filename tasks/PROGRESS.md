@@ -2,6 +2,15 @@
 
 Newest first. One entry per feature commit — added when the feature actually lands, not before.
 
+## Fixes
+
+- **Scan hidden file inputs** — a real Greenhouse "Cover Letter" upload widget ("Attach /
+  Dropbox / Google Drive / Enter manually") never got the generated `.docx` because `scanPage`
+  skipped it via the same `isVisible` check used for every field — file inputs are routinely
+  styled `display:none` behind a custom button, which doesn't stop `el.files = ...` + a `change`
+  event from working. `type === "file"` now bypasses the visibility check (honeypot/disabled
+  checks still apply). Not yet re-verified against the real Greenhouse page.
+
 ## Done
 
 - **Cover letter generator (.docx)** — any field matching "cover letter" (haystack: label/name/
