@@ -33,6 +33,15 @@ h1 {
   min-width: 0;
 }
 
+.icon-btn {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  padding: 0;
+}
+
 select,
 button {
   flex: 1;
