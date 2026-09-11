@@ -4,6 +4,15 @@ Newest first. One entry per feature commit — added when the feature actually l
 
 ## Done
 
+- **Fix bare "type"/"select" value slipping past the echo-strip guard** — the earlier
+  action-keyword-echo fix (`_ACTION_ECHO_RE`) only stripped a leading `"type "`/`"select "` when
+  followed by real content; a value that was the bare word `"type"` with nothing after it (no
+  `\s+` for the regex to match) passed through unchanged and got typed verbatim into several
+  free-text fields on a real form ("How did you hear about this opportunity?", "please give
+  date(s) and position(s)"). Fixed in `_validate_override`: after the regex strip, also skip if
+  the remaining value is empty or exactly `"type"`/`"select"` case-insensitively. Verified via
+  `_validate_override` directly: bare `"type"`/`"Type"`/`"select"` now skip, `"type Backend
+  Developer"` still correctly reduces to `"Backend Developer"`, and real answers are untouched.
 - **Scan/fill forms embedded in a cross-origin iframe** — a real Newton/gnewton career page
   ("View our Job Openings!") returned "Found 0 fields" because its actual form lives inside
   `<iframe id="gnewtonIframe">` on a different domain than the careers page, and `scanPage` only

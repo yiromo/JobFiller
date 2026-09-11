@@ -154,7 +154,7 @@ def _validate_override(override: dict, field: dict) -> dict:
         return {"ref": ref, "value": "", "action": "skip", "confidence": 0.0}
 
     value = _ACTION_ECHO_RE.sub("", value).strip()
-    if not value:
+    if not value or value.lower() in ("type", "select"):
         return {"ref": ref, "value": "", "action": "skip", "confidence": 0.0}
 
     # A native <select>'s options are a closed set — an invented option would
