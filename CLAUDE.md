@@ -166,7 +166,7 @@ user's own `eeo_answers` rows — see the "EEO/demographic" bullets below.
 
 ## Conventions
 
-- Comments: only where intent is genuinely non-obvious (see list above). No restating what the
-  code does.
+- Comments: do not write comments in code. Do not add them for new/edited code, and do not
+  restate what the code does.
 - Commit messages: single line, `<prefix>: <description>` (`feat:`, `fix:`, `chore:`), no body,
   no attribution trailers.
