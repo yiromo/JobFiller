@@ -105,10 +105,24 @@ terms consent) are never sent for auto-fill guessing, by either mapper.
   (`Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set`) then
   dispatch `input`/`change` events. See `extension/src/content.js`.
 - **Custom comboboxes** (Greenhouse/Ashby's country/gender/location pickers) are not native
-  `<select>` — a text input plus a JS-rendered listbox. `applyFillPlan` in `popup.js` handles
-  this by typing the value, polling for `[role="option"]` elements (inside `aria-controls` if
-  given, else the whole document), and clicking the best case-insensitive match — this is why
-  it's `async` and fills sequentially, not in parallel (opening one combobox can close another).
+  `<select>` — a text input plus a JS-rendered listbox. `applyFillPlan` in `popup.js` decides
+  this from the live element at fill time (`isDropdownLike` — role, `aria-haspopup`,
+  `aria-autocomplete`, or `aria-controls`/`aria-owns`), not from the action core/Settings
+  assigned, since different ATSs mark up dropdowns differently and an upstream guess can be
+  wrong. `selectValue` types the value, polls for `[role="option"]` elements (inside
+  `aria-controls`/`aria-owns` if given, else the whole document), and if none appear, clears the
+  input and opens the widget by focus+click instead before matching against the unfiltered list
+  — falling back to leaving the typed text in place only if no option list ever appears. Fills
+  are sequential (`async`, not parallel) because opening one combobox can close another.
+- **ATS forms embedded in a cross-origin iframe** (Newton/gnewton career pages are the known
+  case) are invisible to a same-frame-only scan — `scanBtn` injects `scanPage` with
+  `target: { tabId, allFrames: true }` and merges every frame's fields, prefixing each `ref`
+  with its `frameId` (`refFrameMap` in `popup.js` maps the prefixed ref back to `{frameId,
+  localRef}` for Fill, since a ref only resolves inside the frame it was scanned from). Firefox
+  returns partial results for frames the extension lacks permission for instead of failing the
+  whole call, but a cross-origin frame still needs the `<all_urls>` optional permission granted
+  via Manage CVs > Page access to be scanned at all — `activeTab` alone only covers the top
+  frame and same-origin frames.
 - **EEO/demographic fields and legal attestations are never auto-filled by core**, even if a
   mapper could guess an answer — EEO because it's a legally-sensitive voluntary disclosure,
   attestations ("I agree...", AI-use/privacy/terms consent) because that's the applicant's own

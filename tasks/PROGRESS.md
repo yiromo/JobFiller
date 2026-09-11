@@ -4,6 +4,31 @@ Newest first. One entry per feature commit — added when the feature actually l
 
 ## Done
 
+- **Scan/fill forms embedded in a cross-origin iframe** — a real Newton/gnewton career page
+  ("View our Job Openings!") returned "Found 0 fields" because its actual form lives inside
+  `<iframe id="gnewtonIframe">` on a different domain than the careers page, and `scanPage` only
+  ever queried the top-level document. Confirmed via MDN before building (not guessed): Firefox's
+  `activeTab` covers the top frame and same-origin frames only — a cross-origin iframe needs an
+  explicit host permission — and `scripting.executeScript` with `allFrames: true` returns partial
+  results for inaccessible frames in Firefox rather than rejecting the whole call (Chrome does
+  reject; irrelevant here, this is Firefox-only). Added `optional_permissions: ["<all_urls>"]` to
+  the manifest and a "Grant page access" button in Manage CVs (`browser.permissions.request`) —
+  requested from the persistent tab, not the popup, since a native permission prompt steals focus
+  and would close the panel popup the same way the file picker used to. `scanBtn` now injects with
+  `allFrames: true`, merges every frame's `form_snapshot`, and prefixes each `ref` with its
+  `frameId` (`popup.js`'s `refFrameMap`, persisted in `storage.session` alongside the scan) since a
+  `data-jf-ref` value only resolves inside the frame it was stamped in; `fillBtn` groups the plan
+  back by frame and runs `applyFillPlan` once per `frameIds: [n]` with the un-prefixed ref. The
+  page-posting text sent to core now comes from whichever frame contributed the most fields, not
+  always frame 0 — for an iframe-embedded ATS the posting text lives in that iframe too, not the
+  wrapping page. `web-ext lint`: 0 errors (3 warnings — the 2 pre-existing plus a new
+  Android-incompatibility notice for `permissions.request`, irrelevant to this desktop-only
+  extension). Not yet re-verified against the real gnewton page (no live browser here) — still
+  needs the user to grant access and re-scan. Known-not-fixed on that same page, seen in the
+  screenshot but out of scope for this pass: its resume upload is a "Choose a File / Google
+  Drive / Dropbox" widget, and the actual `<input type=file>` behind it is almost certainly
+  `display:none` — `scanPage`'s `isVisible` check would skip it, so resume upload likely still
+  won't work there without seeing that input's real markup.
 - **Strip MiMo action-keyword echo from typed values** — a real fill showed a job-title field
   filled with the literal text "type Backend Developer" instead of "Backend Developer". Couldn't
   reproduce with isolated `_call_llm` test calls, consistent with a stochastic prompt-echo (the

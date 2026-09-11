@@ -27,8 +27,11 @@ Extension (Firefox / Zen), with `core` running on `localhost:8000`:
 1. Go to `about:debugging#/runtime/this-firefox`.
 2. "Load Temporary Add-on…" → select `extension/manifest.json`.
 3. Click the extension icon → "Manage CVs" to upload one or more CVs (each stays listed for
-   reuse). Then open a job posting (e.g. a `job-boards.greenhouse.io` listing), click the
-   extension icon, pick a CV from the dropdown, click "Scan this page", then "Fill application".
+   reuse). If the form you're applying on loads inside an embedded iframe from another domain
+   (Newton/gnewton career pages are the known case), click "Grant page access" there too — a
+   plain scan can't see into a cross-origin iframe otherwise. Then open a job posting (e.g. a
+   `job-boards.greenhouse.io` listing), click the extension icon, pick a CV from the dropdown,
+   click "Scan this page", then "Fill application".
 4. Check the popup's log for skipped fields, and check the form itself before submitting
    anything — nothing here submits a form for you.
 

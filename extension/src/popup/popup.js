@@ -8,6 +8,7 @@ const cvSelect = document.getElementById("cv-select");
 const manageCvsBtn = document.getElementById("manage-cvs-btn");
 
 let lastFieldMapping = null;
+let refFrameMap = {};
 let cvsCache = [];
 
 function log(message) {
@@ -377,7 +378,12 @@ function scanStorageKey(tabId) {
 
 async function saveScanState(tabId, url) {
   await browser.storage.session.set({
-    [scanStorageKey(tabId)]: { url, fieldMapping: lastFieldMapping, logText: logEl.textContent },
+    [scanStorageKey(tabId)]: {
+      url,
+      fieldMapping: lastFieldMapping,
+      refFrameMap,
+      logText: logEl.textContent,
+    },
   });
 }
 
@@ -390,6 +396,7 @@ async function restoreScanState() {
   if (!entry || entry.url !== tab.url) return;
 
   lastFieldMapping = entry.fieldMapping;
+  refFrameMap = entry.refFrameMap || {};
   logEl.textContent = entry.logText || "";
   fillBtn.disabled = false;
   setStatus("Restored previous scan — review, then Fill.");
@@ -456,31 +463,67 @@ scanBtn.addEventListener("click", async () => {
   setStatus("Scanning...");
   fillBtn.disabled = true;
   lastFieldMapping = null;
+  refFrameMap = {};
 
   try {
     const tab = await getActiveTab();
-    const [{ result }] = await browser.scripting.executeScript({
-      target: { tabId: tab.id },
+    // allFrames catches ATS forms embedded in a cross-origin iframe (e.g.
+    // Newton/gnewton career pages) — Firefox returns partial results for
+    // frames we lack permission for instead of rejecting the whole call, so
+    // this is safe even before the user grants <all_urls> in Manage CVs.
+    const injectionResults = await browser.scripting.executeScript({
+      target: { tabId: tab.id, allFrames: true },
       func: scanPage,
     });
-    log(`Found ${result.form_snapshot.length} fields.`);
+
+    const framesWithFields = injectionResults.filter(
+      (r) => r.result && r.result.form_snapshot.length > 0,
+    );
+    const bestFrame = framesWithFields.reduce(
+      (best, r) =>
+        !best || r.result.form_snapshot.length > best.result.form_snapshot.length ? r : best,
+      null,
+    );
+
+    const formSnapshot = [];
+    for (const { frameId, result } of framesWithFields) {
+      for (const field of result.form_snapshot) {
+        const ref = `${frameId}:${field.ref}`;
+        refFrameMap[ref] = { frameId, localRef: field.ref };
+        formSnapshot.push({ ...field, ref });
+      }
+    }
+    log(`Found ${formSnapshot.length} fields across ${framesWithFields.length} frame(s).`);
+
+    if (formSnapshot.length === 0 && injectionResults.length <= 1) {
+      const hasAllUrls = await browser.permissions.contains({ origins: ["<all_urls>"] });
+      if (!hasAllUrls) {
+        log("No embedded-frame access yet — if this form loads inside an iframe, grant");
+        log("  access in Manage CVs > Page access, then scan again.");
+      }
+    }
 
     const cvId = cvSelect.value ? Number(cvSelect.value) : null;
     const response = await fetch(`${CORE_URL}/api/v1/applications/scan/`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...result, cv_id: cvId }),
+      body: JSON.stringify({
+        url: tab.url,
+        page_text: bestFrame ? bestFrame.result.page_text : "",
+        form_snapshot: formSnapshot,
+        cv_id: cvId,
+      }),
     });
     if (!response.ok) throw new Error(`core returned ${response.status}`);
 
     const data = await response.json();
     const eeoSettings = await loadEeoSettings();
-    lastFieldMapping = applyEeoSettings(result.form_snapshot, data.field_mapping, eeoSettings);
+    lastFieldMapping = applyEeoSettings(formSnapshot, data.field_mapping, eeoSettings);
     const skipped = lastFieldMapping.filter((f) => f.action === "skip").length;
     log(`Fill plan ready: ${lastFieldMapping.length - skipped} to fill, ${skipped} skipped.`);
     setStatus("Scanned — review, then Fill.");
     fillBtn.disabled = false;
-    await saveScanState(tab.id, result.url);
+    await saveScanState(tab.id, tab.url);
   } catch (err) {
     setStatus("Scan failed.");
     log(String(err));
@@ -494,14 +537,40 @@ fillBtn.addEventListener("click", async () => {
   try {
     const fileByRef = await buildFileMap(lastFieldMapping);
     const tab = await getActiveTab();
-    const [{ result }] = await browser.scripting.executeScript({
-      target: { tabId: tab.id },
-      func: applyFillPlan,
-      args: [lastFieldMapping, fileByRef],
-    });
-    const failed = result.filter((r) => !r.ok);
-    log(`Filled ${result.length - failed.length}/${result.length}.`);
-    failed.forEach((r) => log(`  ${r.ref}: ${r.reason}`));
+
+    // Each field's ref only resolves inside the frame it was scanned from —
+    // group by frame and translate back to the un-prefixed ref that's
+    // actually stamped on the element there.
+    const itemsByFrame = new Map();
+    for (const item of lastFieldMapping) {
+      const info = refFrameMap[item.ref] || { frameId: 0, localRef: item.ref };
+      if (!itemsByFrame.has(info.frameId)) itemsByFrame.set(info.frameId, []);
+      itemsByFrame.get(info.frameId).push({ ...item, ref: info.localRef, globalRef: item.ref });
+    }
+
+    const allResults = [];
+    for (const [frameId, items] of itemsByFrame) {
+      const localFileByRef = {};
+      for (const item of items) {
+        if (fileByRef[item.globalRef]) localFileByRef[item.ref] = fileByRef[item.globalRef];
+      }
+      const plan = items.map(({ ref, value, action, confidence }) => ({
+        ref,
+        value,
+        action,
+        confidence,
+      }));
+      const [{ result }] = await browser.scripting.executeScript({
+        target: { tabId: tab.id, frameIds: [frameId] },
+        func: applyFillPlan,
+        args: [plan, localFileByRef],
+      });
+      allResults.push(...result.map((r) => ({ ...r, frameId })));
+    }
+
+    const failed = allResults.filter((r) => !r.ok);
+    log(`Filled ${allResults.length - failed.length}/${allResults.length}.`);
+    failed.forEach((r) => log(`  frame ${r.frameId} / ${r.ref}: ${r.reason}`));
     setStatus("Done — review before submitting.");
   } catch (err) {
     setStatus("Fill failed.");

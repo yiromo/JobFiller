@@ -116,5 +116,19 @@ eeoSaveBtn.addEventListener("click", async () => {
   eeoStatusEl.textContent = "Saved.";
 });
 
+const grantAccessBtn = document.getElementById("grant-access-btn");
+const accessStatusEl = document.getElementById("access-status");
+
+async function refreshAccessStatus() {
+  const granted = await browser.permissions.contains({ origins: ["<all_urls>"] });
+  accessStatusEl.textContent = granted ? "Granted." : "Not granted yet.";
+}
+
+grantAccessBtn.addEventListener("click", async () => {
+  const granted = await browser.permissions.request({ origins: ["<all_urls>"] });
+  accessStatusEl.textContent = granted ? "Granted." : "Permission was not granted.";
+});
+
 loadCvs().catch((err) => setStatus(`Could not reach core API: ${err}`));
 loadEeoRows();
+refreshAccessStatus();

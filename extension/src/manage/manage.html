@@ -19,6 +19,17 @@
 
     <hr />
 
+    <h1>Page access</h1>
+    <p class="hint">
+      Some application forms (Newton/gnewton and similar ATS pages) load the actual form inside
+      an embedded iframe from a different domain than the page you're on. Scanning those needs
+      permission to read that domain too — grant it once here rather than per-site.
+    </p>
+    <button id="grant-access-btn" type="button">Grant page access</button>
+    <p id="access-status"></p>
+
+    <hr />
+
     <h1>Settings</h1>
     <p class="hint">
       EEO/demographic questions (gender, race, veteran, disability status, etc.) are never
