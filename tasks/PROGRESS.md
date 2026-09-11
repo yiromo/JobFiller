@@ -4,6 +4,24 @@ Newest first. One entry per feature commit — added when the feature actually l
 
 ## Done
 
+- **Fill dropdowns by structure, not by upstream classification** — live testing on a real
+  Greenhouse form showed EEO Settings answers landing as typed text inside a dropdown instead of
+  a selected option, tripping the site's "please choose an option" JS validation. Root cause:
+  `applyEeoSettings` decided `type` vs `select` from the scan snapshot's `role` attribute, which
+  is `"combobox"` on some ATS widgets but not others (Workday-style ones use `aria-haspopup`,
+  `aria-autocomplete="list"`, or bare `aria-controls` instead). Fixed in `popup.js`'s
+  `applyFillPlan`: any `"type"` target is now checked against the live DOM
+  (`isDropdownLike` — native `<select>`, `role="combobox"/"listbox"`, `aria-haspopup`,
+  `aria-autocomplete="list"`, or `aria-controls`/`aria-owns`) and, if dropdown-like, routed
+  through the same type-then-click-option path as `"select"`. `selectValue` also gained a
+  fallback: if typing the value filters a react-select-style list down to zero options (or never
+  opens one), it clears the input and opens the widget by focus + click instead, then matches
+  against the unfiltered list — falling back to the typed text only if no option list appears at
+  all either way. Not yet re-verified against the real form (no markup was available this pass,
+  only the reported symptom) — still needs a live retest. Known-uncovered pattern, documented
+  rather than guessed at: a dropdown built from a `<div>`/`<button>` trigger with no
+  `input`/`select`/`textarea` in it at all (Ashby/Workday sometimes do this) is invisible to
+  `scanPage`'s querySelector and has no fill path yet.
 - **Heuristic field-mapping agent** — `core/src/agent/field_mapper.py` replaces the stub in
   `ApplicationService`. Matches a scanned field's label/name/id/placeholder against known
   categories (email, first/last/full name, phone, resume upload) using the CV's extracted

@@ -153,10 +153,31 @@ async function applyFillPlan(plan, fileByRef) {
     return null;
   }
 
+  // Different ATSs mark up dropdowns differently (role="combobox", just
+  // aria-haspopup, aria-autocomplete="list", or only aria-controls pointing
+  // at a listbox) — checking the live element at fill time catches patterns
+  // the scan-time classifier (core, EEO settings) may have guessed wrong on.
+  function isDropdownLike(el) {
+    if (el.tagName === "SELECT") return true;
+    const role = (el.getAttribute("role") || "").toLowerCase();
+    if (role === "combobox" || role === "listbox") return true;
+    const haspopup = (el.getAttribute("aria-haspopup") || "").toLowerCase();
+    if (haspopup === "listbox" || haspopup === "true") return true;
+    if (el.getAttribute("aria-autocomplete") === "list") return true;
+    if (el.getAttribute("aria-controls") || el.getAttribute("aria-owns")) return true;
+    return false;
+  }
+
   // A native <select>'s options are real DOM nodes with fixed values — no
   // typing or waiting needed. A custom combobox (role="combobox", not a real
   // <select>) has to be driven like a user would: type into it, wait for its
   // async-rendered option list, then click the matching option.
+  //
+  // Returns "selected" (an option was clicked), "no-match" (an option list
+  // appeared but nothing matched the value), or "no-options" (no widget ever
+  // opened — either isDropdownLike false-positived on a plain input, or the
+  // widget needs a different trigger than typing/click; the typed value is
+  // left in place either way, same as a plain "type" would have done).
   async function selectValue(el, value) {
     if (el.tagName === "SELECT") {
       // `value` is the option's visible text (what core/settings matched
@@ -165,23 +186,49 @@ async function applyFillPlan(plan, fileByRef) {
       // silently no-ops whenever those differ. Match by text, set by the
       // real option's `.value`.
       const match = bestMatch(Array.from(el.options), value);
-      if (!match) return false;
+      if (!match) return "no-match";
       el.value = match.value;
       el.dispatchEvent(new Event("change", { bubbles: true }));
-      return true;
+      return "selected";
     }
 
     setValue(el, value);
-    const options = await waitFor(() => {
+    let options = await waitFor(() => {
       const found = findOptions(el);
       return found.length > 0 ? found : null;
     });
-    if (!options) return false;
+
+    if (!options) {
+      // Typing may have filtered the list down to zero matches (or never
+      // opened it at all) — clear it and open the widget the way a user
+      // would (focus + click), then match against the unfiltered list.
+      setValue(el, "");
+      el.focus();
+      for (const target of [el, el.parentElement]) {
+        if (!target) continue;
+        target.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+        target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      }
+      el.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }),
+      );
+      options = await waitFor(() => {
+        const found = findOptions(el);
+        return found.length > 0 ? found : null;
+      });
+      if (!options) {
+        setValue(el, value);
+        return "no-options";
+      }
+    }
 
     const match = bestMatch(options, value);
-    if (!match) return false;
+    if (!match) {
+      setValue(el, value);
+      return "no-match";
+    }
     clickOption(match);
-    return true;
+    return "selected";
   }
 
   const results = [];
@@ -197,15 +244,24 @@ async function applyFillPlan(plan, fileByRef) {
     try {
       switch (item.action) {
         case "type":
-          setValue(el, item.value);
-          results.push({ ref: item.ref, ok: true });
+          if (isDropdownLike(el)) {
+            const outcome = await selectValue(el, item.value);
+            results.push(
+              outcome === "no-match"
+                ? { ref: item.ref, ok: false, reason: "no-matching-option" }
+                : { ref: item.ref, ok: true },
+            );
+          } else {
+            setValue(el, item.value);
+            results.push({ ref: item.ref, ok: true });
+          }
           break;
         case "select": {
-          const applied = await selectValue(el, item.value);
+          const outcome = await selectValue(el, item.value);
           results.push(
-            applied
-              ? { ref: item.ref, ok: true }
-              : { ref: item.ref, ok: false, reason: "no-matching-option" },
+            outcome === "no-match"
+              ? { ref: item.ref, ok: false, reason: "no-matching-option" }
+              : { ref: item.ref, ok: true },
           );
           break;
         }
