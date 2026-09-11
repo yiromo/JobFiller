@@ -4,6 +4,22 @@ Newest first. One entry per feature commit — added when the feature actually l
 
 ## Done
 
+- **Strip MiMo action-keyword echo from typed values** — a real fill showed a job-title field
+  filled with the literal text "type Backend Developer" instead of "Backend Developer". Couldn't
+  reproduce with isolated `_call_llm` test calls, consistent with a stochastic prompt-echo (the
+  system prompt's "respond with "type" and a free-text answer" wording invites the model to
+  occasionally fold the action word into the value string). Fixed defensively in
+  `llm_mapper._validate_override`: strips a leading `type`/`select` echo from the value via regex
+  before use, same "validate the model's output, don't trust prompt compliance" pattern as the
+  existing select-option and travel-guess guards. Also added `logger.warning` of the raw MiMo
+  response in `_call_llm` (WARNING, not INFO — this project has no custom `LOGGING` config, so
+  only WARNING+ reaches `docker logs`) to make the next "field came out wrong" report diagnosable
+  without guessing blind again. Same pass: `_LOGISTICS_KEYWORDS` gained "authorized/authorised to
+  work", "work authorization/authorisation", "eligible to work" — a batch test surfaced the LLM
+  confidently answering "Are you legally authorized to work in the US?" with "No" at confidence
+  1.0 with zero CV basis, the same travel-guess failure mode on a field that's also a legal
+  attestation. Verified: re-ran `_validate_override` with a synthetic echoed value (strips
+  correctly) and confirmed `work_auth`-style fields are now excluded from the LLM call entirely.
 - **Fill dropdowns by structure, not by upstream classification** — live testing on a real
   Greenhouse form showed EEO Settings answers landing as typed text inside a dropdown instead of
   a selected option, tripping the site's "please choose an option" JS validation. Root cause:

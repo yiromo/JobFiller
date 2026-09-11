@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 
 from django.conf import settings
 from openai import OpenAI
@@ -40,7 +41,14 @@ _LOGISTICS_KEYWORDS = (
     "require sponsorship",
     "available to start",
     "start date",
+    "authorized to work",
+    "authorised to work",
+    "work authorization",
+    "work authorisation",
+    "eligible to work",
 )
+
+_ACTION_ECHO_RE = re.compile(r"^(type|select)\s*:?\s+", re.IGNORECASE)
 
 _SYSTEM_PROMPT = """You fill in job application form fields using ONLY facts grounded in the \
 candidate's CV (and, for context, the job posting text). Rules:
@@ -131,16 +139,22 @@ def _call_llm(candidates: list[dict], cv_raw_text: str, page_text: str) -> list[
         timeout=45,
     )
     parsed = json.loads(response.choices[0].message.content)
-    return parsed.get("fields", [])
+    fields = parsed.get("fields", [])
+    logger.warning("MiMo raw field mapping: %s", fields)
+    return fields
 
 
 def _validate_override(override: dict, field: dict) -> dict:
     ref = field["ref"]
     action = override.get("action")
-    value = str(override.get("value") or "")
+    value = str(override.get("value") or "").strip()
     confidence = override.get("confidence", 0.5)
 
     if action not in ("type", "select") or not value:
+        return {"ref": ref, "value": "", "action": "skip", "confidence": 0.0}
+
+    value = _ACTION_ECHO_RE.sub("", value).strip()
+    if not value:
         return {"ref": ref, "value": "", "action": "skip", "confidence": 0.0}
 
     # A native <select>'s options are a closed set — an invented option would
