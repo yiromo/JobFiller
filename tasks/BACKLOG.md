@@ -21,7 +21,12 @@ Roughly in order. Not started unless noted in `PROGRESS.md`.
    branch + retry); everything before it is a plain pipeline.
 7. ~~**Custom combobox filling**~~ — done, see `tasks/PROGRESS.md` (type + poll for
    `[role="option"]` + click best match, in `popup.js`'s `applyFillPlan`).
-8. **Application submit tracking** — record scan → fill → submitted status once there's a
+8. **EEO settings: radio-group support** — `applyEeoSettings` (`popup.js`) only handles native
+   `<select>`, plain text inputs, and combobox-role widgets. Some ATSs render EEO questions as
+   `<input type="radio">` groups instead. Not built — none of the 5 test sites have shown this
+   pattern yet, and it needs real markup to design against (grouping by `name`, matching the
+   user's answer against each radio's own label, not the group's).
+9. **Application submit tracking** — record scan → fill → submitted status once there's a
    reason to (nothing writes a status today, so no `status` field exists yet either).
-9. **Proactive/workflow app** — explicitly out of scope until the extension is proven on all 5
+10. **Proactive/workflow app** — explicitly out of scope until the extension is proven on all 5
    test sites. Background crawling/auto-scroll/multi-site queueing lives here, not before.

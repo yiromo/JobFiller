@@ -52,9 +52,12 @@ grant — remove it and "Load Temporary Add-on…" again).
 fields (name/email/phone/LinkedIn/GitHub) and the resume upload for free; whatever it skips is
 then sent to MiMo (`mimo-v2.5`, only if `MIMO_API_KEY` is set in `core/.env`) grounded in the
 CV text and the scanned page, including custom JS comboboxes (Greenhouse/Ashby-style — the
-extension types + picks from the rendered option list). Never auto-answered, by either pass,
-regardless of confidence: EEO/demographic questions, legal attestations ("I agree..."), and
-logistics questions a CV can't answer (travel, relocation, salary, visa, start date). See
+extension types + picks from the rendered option list). Never auto-answered by core, regardless of
+confidence: EEO/demographic questions, legal attestations ("I agree..."), and logistics
+questions a CV can't answer (travel, relocation, salary, visa, start date). The one exception:
+Manage CVs > Settings lets you type your own EEO answers once, filled exactly as typed by the
+extension itself (never by core, never inferred) — leave a row blank to keep that question
+skipped. See
 `tasks/PROGRESS.md` for what's actually built and `tasks/BACKLOG.md` for what's next (CV
 structuring, fit rate, multi-CV best-fit matching). No proactive/background app yet (out of
 scope for now).

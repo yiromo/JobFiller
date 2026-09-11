@@ -24,3 +24,33 @@ body {
 .cv-filename {
   color: #666;
 }
+
+.hint {
+  color: #444;
+  font-size: 12px;
+  margin: 4px 0 12px;
+}
+
+.eeo-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.eeo-row input {
+  padding: 6px 8px;
+  border: 1px solid #ccc;
+}
+
+.eeo-row .eeo-match {
+  flex: 1;
+}
+
+.eeo-row .eeo-answer {
+  flex: 2;
+}
+
+.eeo-row button {
+  flex: none;
+  padding: 6px 8px;
+}

@@ -48,4 +48,73 @@ cvFileInput.addEventListener("change", async () => {
   }
 });
 
+// EEO/demographic settings — these are the ONLY source that ever fills an
+// EEO field. Core's field mapper and the MiMo pass hard-skip these
+// regardless of confidence; the user's own typed answer here is the one
+// exception, applied client-side in popup.js. No default rows ship with an
+// answer — only what the user explicitly types gets filled.
+const EEO_STORAGE_KEY = "eeoAnswers";
+const DEFAULT_EEO_ROWS = [
+  { match: "gender", answer: "" },
+  { match: "hispanic", answer: "" },
+  { match: "race", answer: "" },
+  { match: "veteran", answer: "" },
+  { match: "disability", answer: "" },
+];
+
+const eeoRowsEl = document.getElementById("eeo-rows");
+const eeoAddRowBtn = document.getElementById("eeo-add-row-btn");
+const eeoSaveBtn = document.getElementById("eeo-save-btn");
+const eeoStatusEl = document.getElementById("eeo-status");
+
+function renderEeoRows(rows) {
+  eeoRowsEl.innerHTML = "";
+  for (const row of rows) {
+    const rowEl = document.createElement("div");
+    rowEl.className = "eeo-row";
+
+    const matchInput = document.createElement("input");
+    matchInput.className = "eeo-match";
+    matchInput.placeholder = "matches label text, e.g. gender";
+    matchInput.value = row.match;
+
+    const answerInput = document.createElement("input");
+    answerInput.className = "eeo-answer";
+    answerInput.placeholder = "your answer, filled exactly as typed";
+    answerInput.value = row.answer;
+
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.textContent = "Remove";
+    removeBtn.addEventListener("click", () => rowEl.remove());
+
+    rowEl.append(matchInput, answerInput, removeBtn);
+    eeoRowsEl.appendChild(rowEl);
+  }
+}
+
+function readEeoRows() {
+  return Array.from(eeoRowsEl.querySelectorAll(".eeo-row"))
+    .map((rowEl) => ({
+      match: rowEl.querySelector(".eeo-match").value.trim(),
+      answer: rowEl.querySelector(".eeo-answer").value.trim(),
+    }))
+    .filter((row) => row.match);
+}
+
+async function loadEeoRows() {
+  const stored = await browser.storage.local.get(EEO_STORAGE_KEY);
+  renderEeoRows(stored[EEO_STORAGE_KEY] || DEFAULT_EEO_ROWS);
+}
+
+eeoAddRowBtn.addEventListener("click", () => {
+  renderEeoRows([...readEeoRows(), { match: "", answer: "" }]);
+});
+
+eeoSaveBtn.addEventListener("click", async () => {
+  await browser.storage.local.set({ [EEO_STORAGE_KEY]: readEeoRows() });
+  eeoStatusEl.textContent = "Saved.";
+});
+
 loadCvs().catch((err) => setStatus(`Could not reach core API: ${err}`));
+loadEeoRows();

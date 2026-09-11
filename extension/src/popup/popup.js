@@ -159,7 +159,14 @@ async function applyFillPlan(plan, fileByRef) {
   // async-rendered option list, then click the matching option.
   async function selectValue(el, value) {
     if (el.tagName === "SELECT") {
-      el.value = value;
+      // `value` is the option's visible text (what core/settings matched
+      // against) — not necessarily its `value` attribute (e.g.
+      // <option value="US">United States</option>), so `el.value = value`
+      // silently no-ops whenever those differ. Match by text, set by the
+      // real option's `.value`.
+      const match = bestMatch(Array.from(el.options), value);
+      if (!match) return false;
+      el.value = match.value;
       el.dispatchEvent(new Event("change", { bubbles: true }));
       return true;
     }
@@ -238,6 +245,65 @@ async function applyFillPlan(plan, fileByRef) {
     }
   }
   return results;
+}
+
+// EEO/demographic fields are a hard skip in core, by design — no AI or
+// heuristic ever answers them. This is the one, explicit exception: values
+// the user typed into Manage CVs > Settings, applied here client-side, never
+// sent to or decided by core. An empty/unmatched setting leaves the field
+// skipped; nothing is ever inferred or defaulted.
+async function loadEeoSettings() {
+  const stored = await browser.storage.local.get("eeoAnswers");
+  return (stored.eeoAnswers || []).filter((row) => row.match && row.answer);
+}
+
+function bestOptionMatch(options, value) {
+  const target = value.trim().toLowerCase();
+  return (
+    options.find((o) => o.trim().toLowerCase() === target) ||
+    options.find((o) => o.trim().toLowerCase().includes(target)) ||
+    null
+  );
+}
+
+function applyEeoSettings(formSnapshot, fieldMapping, eeoSettings) {
+  if (!eeoSettings.length) return fieldMapping;
+  const fieldsByRef = Object.fromEntries(formSnapshot.map((f) => [f.ref, f]));
+  let filled = 0;
+  let unmatched = 0;
+
+  const result = fieldMapping.map((mapping) => {
+    if (mapping.action !== "skip") return mapping;
+    const field = fieldsByRef[mapping.ref];
+    if (!field) return mapping;
+
+    const haystack = [field.label, field.name, field.id, field.placeholder]
+      .join(" ")
+      .toLowerCase();
+    const setting = eeoSettings.find((row) => haystack.includes(row.match.toLowerCase()));
+    if (!setting) return mapping;
+
+    if (field.tag === "select" && field.options.length) {
+      const match = bestOptionMatch(field.options, setting.answer);
+      if (!match) {
+        unmatched++;
+        return mapping;
+      }
+      filled++;
+      return { ref: mapping.ref, value: match, action: "select", confidence: 1 };
+    }
+
+    filled++;
+    const action = field.role === "combobox" ? "select" : "type";
+    return { ref: mapping.ref, value: setting.answer, action, confidence: 1 };
+  });
+
+  if (filled) log(`Filled ${filled} field(s) from your Settings answers.`);
+  if (unmatched) {
+    log(`${unmatched} Settings answer(s) matched a field but not any of its options — adjust`);
+    log(`  the answer's wording in Manage CVs > Settings to match this site.`);
+  }
+  return result;
 }
 
 async function getActiveTab() {
@@ -352,7 +418,8 @@ scanBtn.addEventListener("click", async () => {
     if (!response.ok) throw new Error(`core returned ${response.status}`);
 
     const data = await response.json();
-    lastFieldMapping = data.field_mapping;
+    const eeoSettings = await loadEeoSettings();
+    lastFieldMapping = applyEeoSettings(result.form_snapshot, data.field_mapping, eeoSettings);
     const skipped = lastFieldMapping.filter((f) => f.action === "skip").length;
     log(`Fill plan ready: ${lastFieldMapping.length - skipped} to fill, ${skipped} skipped.`);
     setStatus("Scanned — review, then Fill.");

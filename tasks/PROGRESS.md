@@ -80,6 +80,23 @@ Newest first. One entry per feature commit — added when the feature actually l
   confidently guessing "Yes". Combobox click-and-poll mechanics can only be confirmed in a real
   browser, not curl — not yet done.
 
+- **EEO/demographic settings (user-declared, client-side only)** — a new Settings section on
+  the Manage CVs page (`extension/src/manage/`) lets the user type their own answers to
+  EEO/demographic questions (gender, race, veteran, disability status, etc.) once, as
+  `{match, answer}` rows stored in `browser.storage.local`. This does **not** relax core's hard
+  EEO skip rule — `field_mapper.py`/`llm_mapper.py` are untouched, core never sees these answers.
+  `popup.js`'s `applyEeoSettings` applies them after core's plan comes back: for a field core
+  left skipped, if the field's label/name/id/placeholder contains a row's `match` text, its
+  `answer` is filled verbatim (matched against the field's real `<select>` options first,
+  falling back to a plain "type" for text inputs and combobox role elements). An empty answer,
+  or no matching row, leaves the field skipped exactly as before — the default is still "don't
+  guess," this only adds a place for the user's own explicit statement. Also fixed a latent bug
+  found while building this: `applyFillPlan`'s native-`<select>` handling did `el.value = value`
+  assuming the mapper's chosen option *text* equals the option's `value` attribute — false
+  whenever they differ (e.g. `<option value="US">United States</option>`), silently no-opping
+  the fill. Now matches by visible text (reusing the same `bestMatch` combobox logic) and sets
+  the real option's `.value`. Not yet driven in a real browser — `web-ext lint` clean.
+
 ## Fixes
 
 - **MiMo confidently guessed "Yes" to an unanswerable question** — live-tested "are you willing

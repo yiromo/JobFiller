@@ -109,11 +109,21 @@ terms consent) are never sent for auto-fill guessing, by either mapper.
   this by typing the value, polling for `[role="option"]` elements (inside `aria-controls` if
   given, else the whole document), and clicking the best case-insensitive match — this is why
   it's `async` and fills sequentially, not in parallel (opening one combobox can close another).
-- **EEO/demographic fields and legal attestations are never auto-filled**, even if a mapper
-  could guess an answer — EEO because it's a legally-sensitive voluntary disclosure, attestations
-  ("I agree...", AI-use/privacy/terms consent) because that's the applicant's own click to make.
-  Hard rules in `agent/field_mapper.py` (`EEO_KEYWORDS`) and `agent/llm_mapper.py`
-  (`_ATTESTATION_KEYWORDS`), not a confidence threshold — never relax these via prompting alone.
+- **EEO/demographic fields and legal attestations are never auto-filled by core**, even if a
+  mapper could guess an answer — EEO because it's a legally-sensitive voluntary disclosure,
+  attestations ("I agree...", AI-use/privacy/terms consent) because that's the applicant's own
+  click to make. Hard rules in `agent/field_mapper.py` (`EEO_KEYWORDS`) and `agent/llm_mapper.py`
+  (`_ATTESTATION_KEYWORDS`), not a confidence threshold — never relax these via prompting alone,
+  and never route EEO answers through core (see next bullet for the one sanctioned exception).
+- **The one exception to "never fill EEO": the user's own typed answers in Manage CVs >
+  Settings** (`extension/src/manage/`), applied entirely client-side in `popup.js`
+  (`applyEeoSettings`) after core's plan comes back — core never sees these, no LLM is involved,
+  nothing is inferred. Rows are `{match, answer}`; `match` is matched as a substring against a
+  skipped field's label/name/id/placeholder, and `answer` is filled verbatim (matched against a
+  native `<select>`'s options first, left skipped if no option matches). An empty `answer` keeps
+  a field skipped — the default stays "don't guess" for anything the user hasn't explicitly
+  declared. Radio-button-rendered EEO questions aren't handled yet (not seen on any test site so
+  far); don't build that blind — confirm the actual markup on a real ATS first.
 - **Refs don't survive a full re-render.** If the SPA re-renders the form between Scan and
   Fill, the stamped `data-jf-ref` attributes are gone — the fix is re-scanning, not retrying.
 - Only `core/.env` (git-ignored) holds secrets — `MIMO_API_KEY` included. Never put a key in a
