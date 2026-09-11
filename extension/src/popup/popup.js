@@ -132,11 +132,31 @@ async function applyFillPlan(plan, fileByRef) {
     }
   }
 
+  // Without aria-controls/aria-owns (react-select-style widgets often set
+  // neither), scope to the menu that's actually a sibling of this field's
+  // control wrapper — searching the whole document risks matching stale
+  // `[role="option"]` elements left open from a previous field.
   function findOptions(el) {
     const controlsId = el.getAttribute("aria-controls") || el.getAttribute("aria-owns");
-    const container = controlsId ? document.getElementById(controlsId) : document;
-    if (!container) return [];
-    return Array.from(container.querySelectorAll('[role="option"]'));
+    if (controlsId) {
+      const container = document.getElementById(controlsId);
+      if (container) return Array.from(container.querySelectorAll('[role="option"]'));
+    }
+    const control = el.closest('[class*="control" i]');
+    if (control?.parentElement) {
+      const found = Array.from(control.parentElement.querySelectorAll('[role="option"]'));
+      if (found.length) return found;
+    }
+    return Array.from(document.querySelectorAll('[role="option"]'));
+  }
+
+  // react-select-style widgets render a dedicated toggle (an icon/button
+  // sibling of the text input, inside the same control wrapper) that opens
+  // the menu independent of focus — clicking the input itself doesn't
+  // always do it.
+  function findToggleControl(el) {
+    const control = el.closest('[class*="control" i]');
+    return control ? control.querySelector('button, [role="button"], svg') : null;
   }
 
   function bestMatch(options, value) {
@@ -197,26 +217,21 @@ async function applyFillPlan(plan, fileByRef) {
       return "selected";
     }
 
-    setValue(el, value);
+    // Open first, before typing anything: a dedicated toggle (if one exists)
+    // reveals the real unfiltered option list, which is both a more reliable
+    // trigger than typing and avoids filtering a search-as-you-type list down
+    // to zero matches on a short/loosely-worded value.
+    el.focus();
+    const toggle = findToggleControl(el);
+    if (toggle) clickOption(toggle);
+
     let options = await waitFor(() => {
       const found = findOptions(el);
       return found.length > 0 ? found : null;
     });
 
     if (!options) {
-      // Typing may have filtered the list down to zero matches (or never
-      // opened it at all) — clear it and open the widget the way a user
-      // would (focus + click), then match against the unfiltered list.
-      setValue(el, "");
-      el.focus();
-      for (const target of [el, el.parentElement]) {
-        if (!target) continue;
-        target.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
-        target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-      }
-      el.dispatchEvent(
-        new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }),
-      );
+      setValue(el, value);
       options = await waitFor(() => {
         const found = findOptions(el);
         return found.length > 0 ? found : null;
@@ -236,6 +251,12 @@ async function applyFillPlan(plan, fileByRef) {
     return "selected";
   }
 
+  function outcomeResult(ref, outcome) {
+    if (outcome === "selected") return { ref, ok: true };
+    if (outcome === "no-match") return { ref, ok: false, reason: "no-matching-option" };
+    return { ref, ok: false, reason: "dropdown-never-opened" };
+  }
+
   const results = [];
   // Sequential, not parallel: opening one combobox's option list can close
   // another's, so fills must happen one at a time.
@@ -250,26 +271,15 @@ async function applyFillPlan(plan, fileByRef) {
       switch (item.action) {
         case "type":
           if (isDropdownLike(el)) {
-            const outcome = await selectValue(el, item.value);
-            results.push(
-              outcome === "no-match"
-                ? { ref: item.ref, ok: false, reason: "no-matching-option" }
-                : { ref: item.ref, ok: true },
-            );
+            results.push(outcomeResult(item.ref, await selectValue(el, item.value)));
           } else {
             setValue(el, item.value);
             results.push({ ref: item.ref, ok: true });
           }
           break;
-        case "select": {
-          const outcome = await selectValue(el, item.value);
-          results.push(
-            outcome === "no-match"
-              ? { ref: item.ref, ok: false, reason: "no-matching-option" }
-              : { ref: item.ref, ok: true },
-          );
+        case "select":
+          results.push(outcomeResult(item.ref, await selectValue(el, item.value)));
           break;
-        }
         case "check":
           el.checked = Boolean(item.value);
           el.dispatchEvent(new Event("change", { bubbles: true }));

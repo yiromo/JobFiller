@@ -4,6 +4,32 @@ Newest first. One entry per feature commit — added when the feature actually l
 
 ## Fixes
 
+- **Click the dropdown's real toggle instead of guessing at click targets** — a real fill log
+  showed every custom-combobox field on a react-select-based ATS (KoBold's Greenhouse-alternative
+  form) failing with `no-matching-option`, while native `<select>` fields on the same page worked
+  fine — not an EEO-specific bug, a mechanism bug affecting every non-native dropdown. Got the
+  real markup this time (outerHTML of an open Gender field) instead of guessing a third
+  heuristic: this widget has a dedicated toggle button (`aria-label="Toggle flyout"`, sibling of
+  the input inside the `.select__control` wrapper) that opens the menu independent of focus, and
+  no `aria-controls`/`aria-owns` on the input at all — meaning the old fallback's "click el/
+  el.parentElement" never opened anything, and `findOptions`' document-wide fallback search could
+  match stale `[role="option"]` elements left over from a previous field's widget, producing a
+  false "options found" that then failed to match (`no-match`, not `no-options` — which is why
+  the earlier single-screenshot diagnosis of "menu never opens" was wrong; the real problem was
+  matching against the wrong menu). Fixed in `popup.js`: `findToggleControl` finds a button/
+  `[role="button"]`/svg inside the nearest `[class*="control" i]` ancestor and `selectValue`
+  clicks it *before* typing anything (typing-to-filter is now the fallback, not the first move);
+  `findOptions` scopes to the menu sibling of that same control wrapper before ever falling back
+  to a whole-document search. Also surfaced `no-options` (dropdown never opened at all) as a
+  logged failure (`dropdown-never-opened`) instead of silently `ok: true`, so the next log can
+  tell "never opened" apart from "opened, nothing matched" — worth keeping even after this is
+  confirmed working. Not yet re-verified against the real page (inferred from static markup, not
+  a live DOM interaction) — needs the user to re-test and send the log again. Separately: even
+  with the menu correctly found, `bestMatch`'s exact/substring matching won't match a Settings
+  answer like "i do not have any" against real option text like "No, I do not have a disability"
+  — no fuzzy matching added for this (risk of silently picking the wrong option on a legally
+  sensitive field is worse than leaving it skipped); the fix there is wording the Settings answer
+  as a literal substring of the real option (e.g. "No, I do not").
 - **Scan hidden file inputs** — a real Greenhouse "Cover Letter" upload widget ("Attach /
   Dropbox / Google Drive / Enter manually") never got the generated `.docx` because `scanPage`
   skipped it via the same `isVisible` check used for every field — file inputs are routinely
