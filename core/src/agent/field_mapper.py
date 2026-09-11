@@ -17,7 +17,13 @@ _GIT_KEYWORDS = ("github", "gitlab")
 
 
 def field_haystack(field: dict) -> str:
-    return " ".join(str(field.get(key, "")) for key in ("label", "name", "id", "placeholder")).lower()
+    return " ".join(
+        str(field.get(key, "")) for key in ("label", "name", "id", "placeholder")
+    ).lower()
+
+
+def is_cover_letter_field(field: dict) -> bool:
+    return any(keyword in field_haystack(field) for keyword in _COVER_LETTER_KEYWORDS)
 
 
 def build_fill_plan(
@@ -42,13 +48,13 @@ def _map_field(field: dict, profile: Profile | None, cv_id: int | None) -> dict:
         return {"ref": ref, "value": "", "action": "eeo_pending", "confidence": 0.0}
 
     if field.get("type") == "file":
-        if any(keyword in haystack for keyword in _COVER_LETTER_KEYWORDS) and cv_id is not None:
+        if is_cover_letter_field(field) and cv_id is not None:
             return {"ref": ref, "value": "", "action": "cover_letter_upload", "confidence": 0.7}
         if any(keyword in haystack for keyword in _RESUME_KEYWORDS) and cv_id is not None:
             return {"ref": ref, "value": str(cv_id), "action": "upload", "confidence": 0.9}
         return skip()
 
-    if any(keyword in haystack for keyword in _COVER_LETTER_KEYWORDS) and cv_id is not None:
+    if is_cover_letter_field(field) and cv_id is not None:
         return {"ref": ref, "value": "", "action": "cover_letter_type", "confidence": 0.7}
 
     if profile is None:

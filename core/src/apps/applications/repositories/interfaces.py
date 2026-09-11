@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 
-from apps.applications.dto import ScanResultDTO
+from apps.applications.dto import ApplicationDTO, ScanResultDTO
 
 
 class IApplicationRepository(ABC):
@@ -13,3 +13,9 @@ class IApplicationRepository(ABC):
         field_mapping: list[dict],
         cv_id: int | None,
     ) -> ScanResultDTO: ...
+
+    @abstractmethod
+    def get(self, application_id: int) -> ApplicationDTO | None: ...
+
+    @abstractmethod
+    def update_field_mapping(self, application_id: int, field_mapping: list[dict]) -> None: ...

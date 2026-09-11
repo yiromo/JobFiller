@@ -26,6 +26,7 @@ class ScanRequestSerializer(serializers.Serializer):
     form_snapshot = FormFieldSerializer(many=True)
     cv_id = serializers.IntegerField(required=False, allow_null=True, default=None)
     page_text = serializers.CharField(required=False, allow_blank=True, default="")
+    about_text = serializers.CharField(required=False, allow_blank=True, default="")
     eeo_answers = EeoAnswerSerializer(many=True, required=False, default=list)
 
 
@@ -50,3 +51,14 @@ class ScanResultSerializer(serializers.Serializer):
     url = serializers.CharField()
     site = serializers.CharField()
     field_mapping = FieldActionSerializer(many=True)
+
+
+class GenerateCoverLetterRequestSerializer(serializers.Serializer):
+    application_id = serializers.IntegerField()
+    page_text = serializers.CharField(required=False, allow_blank=True, default="")
+    about_text = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class GenerateCoverLetterResponseSerializer(serializers.Serializer):
+    text = serializers.CharField()
+    entries = FieldActionSerializer(many=True)

@@ -4,12 +4,17 @@ const statusEl = document.getElementById("status");
 const logEl = document.getElementById("log");
 const scanBtn = document.getElementById("scan-btn");
 const fillBtn = document.getElementById("fill-btn");
+const generateClBtn = document.getElementById("generate-cl-btn");
+const coverLetterPreview = document.getElementById("cover-letter-preview");
 const cvSelect = document.getElementById("cv-select");
 const manageCvsBtn = document.getElementById("manage-cvs-btn");
 
 let lastFieldMapping = null;
 let refFrameMap = {};
 let cvsCache = [];
+let lastApplicationId = null;
+let lastPageText = "";
+let lastAboutText = "";
 
 function log(message) {
   logEl.textContent += `${message}\n`;
@@ -87,12 +92,43 @@ function scanPage() {
     });
   });
 
+  // Finds the posting's own "About the company/role" blurb, separate from
+  // page_text's blanket truncated dump — this is what actually grounds a
+  // generated cover letter. Runs on the untruncated body text since an About
+  // section can sit well past page_text's 15000-char cutoff. Only takes an
+  // "About" line whose next non-empty line reads like real prose (long
+  // enough), so it skips a bare nav link ("About" in the header) and finds
+  // the real section heading instead.
+  function extractAboutText(fullText) {
+    const lines = fullText.split("\n").map((l) => l.trim());
+    for (let i = 0; i < lines.length; i++) {
+      if (!/^about\b/i.test(lines[i]) || lines[i].length >= 80) continue;
+      let j = i + 1;
+      while (j < lines.length && !lines[j]) j++;
+      if (j >= lines.length || lines[j].length < 60) continue;
+
+      const collected = [lines[i]];
+      let chars = lines[i].length;
+      for (; j < lines.length && chars < 1500; j++) {
+        const line = lines[j];
+        const looksLikeHeading = line.length > 0 && line.length < 60 && !/[.!?]$/.test(line);
+        if (looksLikeHeading && chars > 40) break;
+        collected.push(line);
+        chars += line.length;
+      }
+      return collected.join(" ").replace(/\s+/g, " ").trim();
+    }
+    return "";
+  }
+
+  const fullBodyText = document.body.innerText;
   // Truncated: only meant to give the LLM job-posting context for open-ended
   // questions, not to reproduce the page.
   return {
     url: window.location.href,
     form_snapshot: fields,
-    page_text: document.body.innerText.slice(0, 15000),
+    page_text: fullBodyText.slice(0, 15000),
+    about_text: extractAboutText(fullBodyText),
   };
 }
 
@@ -392,6 +428,10 @@ async function saveScanState(tabId, url) {
       fieldMapping: lastFieldMapping,
       refFrameMap,
       logText: logEl.textContent,
+      applicationId: lastApplicationId,
+      pageText: lastPageText,
+      aboutText: lastAboutText,
+      coverLetterText: coverLetterPreview.hidden ? "" : coverLetterPreview.value,
     },
   });
 }
@@ -407,7 +447,15 @@ async function restoreScanState() {
   lastFieldMapping = entry.fieldMapping;
   refFrameMap = entry.refFrameMap || {};
   logEl.textContent = entry.logText || "";
+  lastApplicationId = entry.applicationId || null;
+  lastPageText = entry.pageText || "";
+  lastAboutText = entry.aboutText || "";
   fillBtn.disabled = false;
+  generateClBtn.disabled = !lastApplicationId;
+  if (entry.coverLetterText) {
+    coverLetterPreview.value = entry.coverLetterText;
+    coverLetterPreview.hidden = false;
+  }
   setStatus("Restored previous scan — review, then Fill.");
 }
 
@@ -479,7 +527,12 @@ manageCvsBtn.addEventListener("click", () => {
 scanBtn.addEventListener("click", async () => {
   setStatus("Scanning...");
   fillBtn.disabled = true;
+  generateClBtn.disabled = true;
+  coverLetterPreview.hidden = true;
   lastFieldMapping = null;
+  lastApplicationId = null;
+  lastPageText = "";
+  lastAboutText = "";
   refFrameMap = {};
 
   try {
@@ -501,6 +554,12 @@ scanBtn.addEventListener("click", async () => {
         !best || r.result.form_snapshot.length > best.result.form_snapshot.length ? r : best,
       null,
     );
+    // The "About" blurb can live in the top frame even when the form itself
+    // is in an embedded ATS iframe — search every scanned frame (not just
+    // ones with fields), lowest frameId (top frame) first.
+    const aboutFrame = injectionResults
+      .filter((r) => r.result && r.result.about_text)
+      .sort((a, b) => a.frameId - b.frameId)[0];
 
     const formSnapshot = [];
     for (const { frameId, result } of framesWithFields) {
@@ -521,13 +580,16 @@ scanBtn.addEventListener("click", async () => {
     }
 
     const cvId = cvSelect.value ? Number(cvSelect.value) : null;
+    lastPageText = bestFrame ? bestFrame.result.page_text : "";
+    lastAboutText = aboutFrame ? aboutFrame.result.about_text : "";
     const eeoSettings = await loadEeoSettings();
     const response = await fetch(`${CORE_URL}/api/v1/applications/scan/`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         url: tab.url,
-        page_text: bestFrame ? bestFrame.result.page_text : "",
+        page_text: lastPageText,
+        about_text: lastAboutText,
         form_snapshot: formSnapshot,
         cv_id: cvId,
         eeo_answers: eeoSettings,
@@ -536,15 +598,57 @@ scanBtn.addEventListener("click", async () => {
     if (!response.ok) throw new Error(`core returned ${response.status}`);
 
     const data = await response.json();
+    lastApplicationId = data.id;
     lastFieldMapping = applyEeoSettings(formSnapshot, data.field_mapping, eeoSettings);
     const skipped = lastFieldMapping.filter((f) => f.action === "skip").length;
     log(`Fill plan ready: ${lastFieldMapping.length - skipped} to fill, ${skipped} skipped.`);
     setStatus("Scanned — review, then Fill.");
     fillBtn.disabled = false;
+    generateClBtn.disabled = false;
     await saveScanState(tab.id, tab.url);
   } catch (err) {
     setStatus("Scan failed.");
     log(String(err));
+  }
+});
+
+generateClBtn.addEventListener("click", async () => {
+  if (!lastApplicationId) return;
+  setStatus("Generating cover letter...");
+  generateClBtn.disabled = true;
+
+  try {
+    const response = await fetch(`${CORE_URL}/api/v1/applications/generate-cover-letter/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        application_id: lastApplicationId,
+        page_text: lastPageText,
+        about_text: lastAboutText,
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || `core returned ${response.status}`);
+
+    coverLetterPreview.value = data.text;
+    coverLetterPreview.hidden = false;
+
+    if (data.entries.length && lastFieldMapping) {
+      const entriesByRef = Object.fromEntries(data.entries.map((e) => [e.ref, e]));
+      lastFieldMapping = lastFieldMapping.map((item) => entriesByRef[item.ref] || item);
+      log(`Cover letter regenerated — applied to ${data.entries.length} field(s), Fill will use it.`);
+    } else {
+      log("Cover letter generated — no cover-letter field detected on this page; copy it above.");
+    }
+    setStatus("Cover letter ready.");
+
+    const tab = await getActiveTab();
+    await saveScanState(tab.id, tab.url);
+  } catch (err) {
+    setStatus("Cover letter generation failed.");
+    log(String(err));
+  } finally {
+    generateClBtn.disabled = false;
   }
 });
 

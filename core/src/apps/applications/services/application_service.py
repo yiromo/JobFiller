@@ -6,7 +6,7 @@ from django.conf import settings
 
 from agent import cover_letter
 from agent.eeo_mapper import resolve_eeo_fields
-from agent.field_mapper import build_fill_plan
+from agent.field_mapper import build_fill_plan, is_cover_letter_field
 from agent.llm_mapper import augment_skipped_fields
 from agent.profile import Profile
 from apps.applications.dto import ScanRequestDTO, ScanResultDTO
@@ -17,6 +17,18 @@ from apps.cvs.repositories.interfaces import ICvRepository
 logger = logging.getLogger(__name__)
 
 _COVER_LETTER_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+class ApplicationNotFoundError(Exception):
+    pass
+
+
+class NoCvOnApplicationError(Exception):
+    pass
+
+
+class MimoNotConfiguredError(Exception):
+    pass
 
 
 class ApplicationService:
@@ -41,7 +53,9 @@ class ApplicationService:
                 cv_raw_text=cv.raw_text,
                 page_text=payload.page_text,
             )
-            field_mapping = self._resolve_cover_letter(field_mapping, cv, payload.page_text)
+            field_mapping = self._resolve_cover_letter(
+                field_mapping, cv, payload.page_text, payload.about_text
+            )
         field_mapping = self._resolve_eeo(field_mapping, payload.form_snapshot, payload.eeo_answers)
 
         site = urlparse(payload.url).netloc
@@ -63,9 +77,7 @@ class ApplicationService:
 
         fields_by_ref = {field["ref"]: field for field in form_snapshot}
         pending_fields = [fields_by_ref[ref] for ref in pending_refs if ref in fields_by_ref]
-        resolved_by_ref = {
-            r["ref"]: r for r in resolve_eeo_fields(pending_fields, eeo_answers)
-        }
+        resolved_by_ref = {r["ref"]: r for r in resolve_eeo_fields(pending_fields, eeo_answers)}
 
         return [
             resolved_by_ref.get(
@@ -78,7 +90,7 @@ class ApplicationService:
 
     @staticmethod
     def _resolve_cover_letter(
-        field_mapping: list[dict], cv: CvDTO, page_text: str
+        field_mapping: list[dict], cv: CvDTO, page_text: str, about_text: str
     ) -> list[dict]:
         placeholders = {"cover_letter_upload", "cover_letter_type"}
         if not any(item["action"] in placeholders for item in field_mapping):
@@ -87,7 +99,7 @@ class ApplicationService:
         text = None
         if settings.MIMO_API_KEY:
             try:
-                text = cover_letter.generate(cv.raw_text, page_text, cv.full_name)
+                text = cover_letter.generate(cv.raw_text, page_text, cv.full_name, about_text)
             except Exception:
                 logger.exception("Cover letter generation failed; leaving fields skipped")
 
@@ -102,19 +114,13 @@ class ApplicationService:
                     resolved.append({**item, "value": "", "action": "skip", "confidence": 0.0})
             elif item["action"] == "cover_letter_upload":
                 if text:
-                    filename = f"Cover_Letter_{cv.full_name.replace(' ', '_') or 'Applicant'}.docx"
-                    file_bytes = cover_letter.render_docx(text)
                     resolved.append(
                         {
                             "ref": item["ref"],
                             "value": "",
                             "action": "upload",
                             "confidence": 0.9,
-                            "file": {
-                                "filename": filename,
-                                "mime_type": _COVER_LETTER_MIME,
-                                "base64": base64.b64encode(file_bytes).decode("ascii"),
-                            },
+                            "file": ApplicationService._cover_letter_file_payload(cv, text),
                         }
                     )
                 else:
@@ -122,6 +128,54 @@ class ApplicationService:
             else:
                 resolved.append(item)
         return resolved
+
+    def regenerate_cover_letter(self, application_id: int, page_text: str, about_text: str) -> dict:
+        record = self._repo.get(application_id)
+        if record is None:
+            raise ApplicationNotFoundError
+
+        cv = self._cv_repo.get(record.cv_id) if record.cv_id is not None else None
+        if cv is None:
+            raise NoCvOnApplicationError
+
+        if not settings.MIMO_API_KEY:
+            raise MimoNotConfiguredError
+
+        text = cover_letter.generate(cv.raw_text, page_text, cv.full_name, about_text)
+
+        entries = [
+            self._cover_letter_entry(field, cv, text)
+            for field in record.form_snapshot
+            if is_cover_letter_field(field)
+        ]
+        entries_by_ref = {entry["ref"]: entry for entry in entries}
+        field_mapping = [entries_by_ref.get(item["ref"], item) for item in record.field_mapping]
+        self._repo.update_field_mapping(application_id, field_mapping)
+
+        return {"text": text, "entries": entries}
+
+    @staticmethod
+    def _cover_letter_entry(field: dict, cv: CvDTO, text: str) -> dict:
+        ref = field["ref"]
+        if field.get("type") == "file":
+            return {
+                "ref": ref,
+                "value": "",
+                "action": "upload",
+                "confidence": 0.9,
+                "file": ApplicationService._cover_letter_file_payload(cv, text),
+            }
+        return {"ref": ref, "value": text, "action": "type", "confidence": 0.9}
+
+    @staticmethod
+    def _cover_letter_file_payload(cv: CvDTO, text: str) -> dict:
+        filename = f"Cover_Letter_{cv.full_name.replace(' ', '_') or 'Applicant'}.docx"
+        file_bytes = cover_letter.render_docx(text)
+        return {
+            "filename": filename,
+            "mime_type": _COVER_LETTER_MIME,
+            "base64": base64.b64encode(file_bytes).decode("ascii"),
+        }
 
     @staticmethod
     def _profile_from_cv(cv: CvDTO) -> Profile:

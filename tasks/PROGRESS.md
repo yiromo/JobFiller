@@ -2,6 +2,59 @@
 
 Newest first. One entry per feature commit — added when the feature actually lands, not before.
 
+## Done
+
+- **Manual "Generate Cover Letter" button + About-section context** — scan-time generation
+  (`ApplicationService._resolve_cover_letter`) only ever ran once per scan and only for fields the
+  keyword match caught; there was no way to re-roll a letter or get one at all on a page with no
+  detected cover-letter field. Added `POST /api/v1/applications/generate-cover-letter/`
+  (`{application_id, page_text, about_text}` -> `{text, entries}`): `ApplicationService
+  .regenerate_cover_letter` loads the persisted `Application` by id (not a fresh CV/page_text pair
+  from the request — cv_id and form_snapshot come from the stored row, so the button doesn't need
+  to re-send everything scan already captured), re-identifies cover-letter refs from the stored
+  `form_snapshot` via a new `agent.field_mapper.is_cover_letter_field` (extracted from the same
+  check `_map_field` already used, so both stay in sync on what counts), regenerates, and persists
+  the updated entries back into `field_mapping` (`ApplicationRepository.get`/
+  `update_field_mapping`, new `ApplicationDTO`) — so a later Fill uses the new text. A
+  no-CV-on-record application returns 400 and an unset `MIMO_API_KEY` returns 503 (mirrors the
+  scan path's degrade-not-crash guard, but a manual click needs an explicit answer instead of a
+  silent skip). Zero matching refs still returns 200 with `entries: []` so the button also works
+  for copy-paste on a page with no recognized cover-letter field at all.
+  Extension: `popup.html`/`.js` add a "Generate Cover Letter" button and a readonly preview
+  `<textarea>`; clicking it calls the new endpoint with the page text/about text captured at scan
+  time (does not re-run `scanPage`, which would re-stamp `data-jf-ref` and duplicate the
+  frame-selection logic for no gain) and splices the returned `entries` into `lastFieldMapping` by
+  ref. The popup document is destroyed on every outside click (existing `storage.session` comment
+  in `popup.js`), so `lastApplicationId`/`lastPageText`/`lastAboutText`/the preview text are wired
+  into the existing `saveScanState`/`restoreScanState` round trip alongside `lastFieldMapping` —
+  without this the button would silently go stale (disabled, unrecoverable short of a full
+  re-scan) the moment the user clicked anything on the page, which is the common case. Gating is
+  now purely "a scan produced an `Application` id" rather than "a CV was selected at scan time" —
+  the actual CV check happens server-side against the persisted record, and `cvSelect`'s value
+  isn't itself persisted across popup reopens, so gating on it at restore time would have been
+  wrong anyway.
+  Also: `scanPage`'s `extractAboutText` pulls the posting's own "About the company/role" blurb
+  from the *untruncated* body text (page_text's LLM-context field is cut at 15000 chars and an
+  About section can sit past that) and sends it separately as `about_text` on both the scan and
+  generate-cover-letter requests; `agent/cover_letter.generate()` gives it its own labeled block
+  in the prompt rather than folding it into the generic job-posting text. The heuristic requires
+  the candidate "About" line's next non-empty line to read like real prose (>=60 chars) before
+  accepting it, specifically so a bare nav link ("About" in the header, followed immediately by
+  another short nav item) doesn't get picked up as the section. `about_text` is taken from the
+  lowest-frameId frame that has one (not tied to `bestFrame`, which is chosen by field count) since
+  the About blurb is typically in the top frame even when the actual form is in an embedded ATS
+  iframe. Verified end-to-end against the running container with real persisted data: `curl`'d the
+  new endpoint for `Application` #32 (a real KoBold/Greenhouse posting, `cv_id=3`) with a synthetic
+  about_text and got back a letter that referenced the about text's specifics, an `entries` list
+  with the correct `upload`+`.docx` shape for the page's `cover_letter` file field, and confirmed
+  the write landed in `Application.field_mapping` in the DB; separately verified the 400 (no CV on
+  the application, using #26) and 404 (nonexistent application id) paths, and the empty-`entries`
+  copy-paste path (#29, no cover-letter field on that page). `ruff check` + `manage.py check`
+  clean, `web-ext lint` clean (same pre-existing manifest warnings), `node --check` clean on the
+  extension JS. Not yet driven in a real browser — the popup button click, the preview textarea,
+  and the storage-session persistence round trip are reviewed but unverified in an actual
+  Firefox/Zen popup.
+
 ## Fixes
 
 - **Cover-letter fields skipped when unlabeled, silently — root cause of "cover letter never
@@ -21,8 +74,8 @@ Newest first. One entry per feature commit — added when the feature actually l
   and would have broken `_LINKEDIN_KEYWORDS` against a hypothetical `"linked-in"` id — this fix
   is scoped to the one keyword list that needed it). Verified by patching the fix into the running
   `job-filler-core-1` container and replaying the exact #32 field through `build_fill_plan`: now
-  resolves to `cover_letter_upload`. This also fully verifies "Scan hidden file inputs" below —
-  the previously-unverified Greenhouse case was this bug, not (only) a visibility gap.
+  resolves to `cover_letter_upload`. This also fully verifies "Scan hidden file inputs" further
+  below — the previously-unverified Greenhouse case was this bug, not (only) a visibility gap.
 
 ## Done
 
@@ -123,8 +176,6 @@ Newest first. One entry per feature commit — added when the feature actually l
   checks still apply). Confirmed via real persisted data (`Application` #27/#32, see the
   cover-letter keyword fix above): the hidden file input was scanned and reached core fine — the
   remaining miss on that page was the keyword-matching bug, not this visibility gap.
-
-## Done
 
 - **Cover letter generator (.docx)** — any field matching "cover letter" (haystack: label/name/
   id/placeholder) now gets a real generated letter instead of being skipped or handed to the

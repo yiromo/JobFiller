@@ -20,12 +20,18 @@ the posting doesn't give you a fact, rather than leaving a blank to fill in.
 Respond with the letter's plain text only — no subject line, no markdown, no commentary."""
 
 
-def generate(cv_raw_text: str, page_text: str, applicant_name: str) -> str:
+def generate(cv_raw_text: str, page_text: str, applicant_name: str, about_text: str = "") -> str:
     client = OpenAI(api_key=settings.MIMO_API_KEY, base_url=settings.MIMO_BASE_URL)
+    about_block = (
+        f'\n\nAbout the company/role (from the posting\'s "About" section):\n{about_text[:2000]}'
+        if about_text
+        else ""
+    )
     user_content = (
         f"Candidate name: {applicant_name}\n\n"
         f"CV text:\n{cv_raw_text[:8000]}\n\n"
         f"Job posting text:\n{(page_text or '')[:8000]}"
+        f"{about_block}"
     )
     response = client.chat.completions.create(
         model=settings.MIMO_MODEL,

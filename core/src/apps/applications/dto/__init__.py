@@ -1,3 +1,3 @@
-from .application_dto import ScanRequestDTO, ScanResultDTO
+from .application_dto import ApplicationDTO, ScanRequestDTO, ScanResultDTO
 
-__all__ = ["ScanRequestDTO", "ScanResultDTO"]
+__all__ = ["ApplicationDTO", "ScanRequestDTO", "ScanResultDTO"]
