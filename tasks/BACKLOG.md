@@ -2,12 +2,11 @@
 
 Roughly in order. Not started unless noted in `PROGRESS.md`.
 
-1. **MiMo LLM integration** (`core/src/agent/`) — replace/augment the heuristic mapper with a
-   real `mimo-v2.5` call for fields the heuristic can't classify (open-ended questions, custom
-   comboboxes). Blocked on a rotated API key in `core/.env` (`MIMO_API_KEY`) —
-   the key pasted earlier in chat must not be reused as-is.
+1. ~~**MiMo LLM integration**~~ — done, see `tasks/PROGRESS.md`. Remaining under this heading:
    - Confirm the exact `image_url` payload shape against the real API before using vision
-     (docs didn't show an example at plan time).
+     (docs didn't show an example at plan time) — needed for backlog item 6.
+   - A user-answers profile (salary expectations, relocation, visa sponsorship, notice period)
+     so `llm_mapper`'s logistics hard-skips can eventually be answered instead of always skipped.
 2. **CV structuring** — parse CV raw text into structured JSON (skills, experience, education)
    via MiMo, instead of just regex email/phone.
 3. **Multi-CV "best fit" matching** — score uploaded CVs against a scanned job posting, auto-pick
@@ -20,8 +19,8 @@ Roughly in order. Not started unless noted in `PROGRESS.md`.
    screenshot (`tabs.captureVisibleTab`, `activeTab` permission) alongside the HTML for that
    one field. This is the one part of the pipeline that's a real LangGraph graph (confidence
    branch + retry); everything before it is a plain pipeline.
-7. **Custom combobox filling** — Greenhouse/Ashby-style JS comboboxes (not native `<select>`)
-   need click+type+keydown simulation, not a value-set. Currently these are always skipped.
+7. ~~**Custom combobox filling**~~ — done, see `tasks/PROGRESS.md` (type + poll for
+   `[role="option"]` + click best match, in `popup.js`'s `applyFillPlan`).
 8. **Application submit tracking** — record scan → fill → submitted status once there's a
    reason to (nothing writes a status today, so no `status` field exists yet either).
 9. **Proactive/workflow app** — explicitly out of scope until the extension is proven on all 5

@@ -73,17 +73,34 @@ function scanPage() {
       placeholder: el.placeholder || "",
       options: el.tagName === "SELECT" ? Array.from(el.options).map((o) => o.textContent.trim()) : [],
       required: el.required || el.getAttribute("aria-required") === "true",
+      // role/aria-haspopup/aria-controls are what distinguish a custom JS
+      // combobox (Greenhouse/Ashby style) from a plain text input — a native
+      // <select> is already identified by `tag`.
+      role: el.getAttribute("role") || "",
+      aria_haspopup: el.getAttribute("aria-haspopup") || "",
+      aria_controls: el.getAttribute("aria-controls") || "",
     });
   });
 
-  return { url: window.location.href, form_snapshot: fields };
+  // Truncated: only meant to give the LLM job-posting context for open-ended
+  // questions, not to reproduce the page.
+  return {
+    url: window.location.href,
+    form_snapshot: fields,
+    page_text: document.body.innerText.slice(0, 15000),
+  };
 }
 
 // Runs inside the page. `plan` is the field_mapping array core returned;
 // `fileByRef` maps a ref to { base64, filename, mimeType } for
 // any "upload" actions — fetched by popup.js beforehand, since content
 // scripts can't reliably reach the core API without extra host permissions.
-function applyFillPlan(plan, fileByRef) {
+//
+// Must be async: filling a custom combobox (Greenhouse/Ashby style) requires
+// typing into it and waiting for its JS-rendered option list to appear.
+// scripting.executeScript awaits a returned Promise and resolves to its
+// settled value, so this works the same as the old synchronous version did.
+async function applyFillPlan(plan, fileByRef) {
   const nativeInputSetter = Object.getOwnPropertyDescriptor(
     window.HTMLInputElement.prototype,
     "value",
@@ -104,29 +121,98 @@ function applyFillPlan(plan, fileByRef) {
     el.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
-  return plan.map((item) => {
+  function clickOption(optionEl) {
+    for (const type of ["pointerdown", "mousedown", "mouseup", "click"]) {
+      optionEl.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true }));
+    }
+  }
+
+  function findOptions(el) {
+    const controlsId = el.getAttribute("aria-controls") || el.getAttribute("aria-owns");
+    const container = controlsId ? document.getElementById(controlsId) : document;
+    if (!container) return [];
+    return Array.from(container.querySelectorAll('[role="option"]'));
+  }
+
+  function bestMatch(options, value) {
+    const target = value.trim().toLowerCase();
+    return (
+      options.find((o) => o.textContent.trim().toLowerCase() === target) ||
+      options.find((o) => o.textContent.trim().toLowerCase().includes(target)) ||
+      null
+    );
+  }
+
+  async function waitFor(predicate, timeoutMs = 2000, intervalMs = 100) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const result = predicate();
+      if (result) return result;
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+    return null;
+  }
+
+  // A native <select>'s options are real DOM nodes with fixed values — no
+  // typing or waiting needed. A custom combobox (role="combobox", not a real
+  // <select>) has to be driven like a user would: type into it, wait for its
+  // async-rendered option list, then click the matching option.
+  async function selectValue(el, value) {
+    if (el.tagName === "SELECT") {
+      el.value = value;
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    }
+
+    setValue(el, value);
+    const options = await waitFor(() => {
+      const found = findOptions(el);
+      return found.length > 0 ? found : null;
+    });
+    if (!options) return false;
+
+    const match = bestMatch(options, value);
+    if (!match) return false;
+    clickOption(match);
+    return true;
+  }
+
+  const results = [];
+  // Sequential, not parallel: opening one combobox's option list can close
+  // another's, so fills must happen one at a time.
+  for (const item of plan) {
     const el = document.querySelector(`[data-jf-ref="${CSS.escape(item.ref)}"]`);
-    if (!el) return { ref: item.ref, ok: false, reason: "not-found" };
+    if (!el) {
+      results.push({ ref: item.ref, ok: false, reason: "not-found" });
+      continue;
+    }
 
     try {
       switch (item.action) {
         case "type":
           setValue(el, item.value);
-          return { ref: item.ref, ok: true };
-        case "select":
-          if (el.tagName !== "SELECT") {
-            return { ref: item.ref, ok: false, reason: "not-a-native-select" };
-          }
-          el.value = item.value;
-          el.dispatchEvent(new Event("change", { bubbles: true }));
-          return { ref: item.ref, ok: true };
+          results.push({ ref: item.ref, ok: true });
+          break;
+        case "select": {
+          const applied = await selectValue(el, item.value);
+          results.push(
+            applied
+              ? { ref: item.ref, ok: true }
+              : { ref: item.ref, ok: false, reason: "no-matching-option" },
+          );
+          break;
+        }
         case "check":
           el.checked = Boolean(item.value);
           el.dispatchEvent(new Event("change", { bubbles: true }));
-          return { ref: item.ref, ok: true };
+          results.push({ ref: item.ref, ok: true });
+          break;
         case "upload": {
           const fileInfo = fileByRef[item.ref];
-          if (!fileInfo) return { ref: item.ref, ok: false, reason: "no-file-data" };
+          if (!fileInfo) {
+            results.push({ ref: item.ref, ok: false, reason: "no-file-data" });
+            break;
+          }
           // scripting.executeScript args must be JSON-serializable — an
           // ArrayBuffer wouldn't survive the trip, so the bytes travel as
           // base64 and get decoded back here.
@@ -138,17 +224,20 @@ function applyFillPlan(plan, fileByRef) {
           transfer.items.add(file);
           el.files = transfer.files;
           el.dispatchEvent(new Event("change", { bubbles: true }));
-          return { ref: item.ref, ok: true };
+          results.push({ ref: item.ref, ok: true });
+          break;
         }
         case "skip":
-          return { ref: item.ref, ok: true, reason: "skipped" };
+          results.push({ ref: item.ref, ok: true, reason: "skipped" });
+          break;
         default:
-          return { ref: item.ref, ok: false, reason: `unsupported-action:${item.action}` };
+          results.push({ ref: item.ref, ok: false, reason: `unsupported-action:${item.action}` });
       }
     } catch (err) {
-      return { ref: item.ref, ok: false, reason: String(err) };
+      results.push({ ref: item.ref, ok: false, reason: String(err) });
     }
-  });
+  }
+  return results;
 }
 
 async function getActiveTab() {

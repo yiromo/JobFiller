@@ -54,8 +54,42 @@ Newest first. One entry per feature commit — added when the feature actually l
   again via a built Docker image (`docker build` + `docker run` + curl against the container).
 - **Repo scaffold** — monorepo layout, root README, CLAUDE.md, tasks/.
 
+- **MiMo LLM pass + custom combobox filling** — `agent/llm_mapper.py` sends whatever the
+  heuristic mapper skipped (minus EEO, legal attestations, and unanswerable-from-a-CV logistics
+  questions — travel/relocation/salary/notice/visa/start-date, all hard pre-filtered, never sent
+  to the model) to `mimo-v2.5` in one batched call per scan, grounded in the CV's raw text and
+  the scanned page's text. A no-op (returns the heuristic plan unchanged) when `MIMO_API_KEY` is
+  empty or the call fails — never crashes a scan. Native `<select>` answers are validated
+  server-side against the field's real `options` list (exact, then substring match, else skip)
+  so the model can't invent an option that doesn't exist. `popup.js`'s scan step now also sends
+  `role`/`aria-haspopup`/`aria-controls` per field and the page's visible text, so the model can
+  tell a custom JS combobox from a plain text input and has job-description context for
+  open-ended questions. `applyFillPlan` is now `async` and fills sequentially (not
+  `Promise.all`): a "select" on a non-native-`<select>` element types the value, polls (2s) for
+  `[role="option"]` inside `aria-controls` (or the whole document), and clicks the best
+  case-insensitive match — this is the actual mechanical fix for Greenhouse/Ashby-style
+  comboboxes (School/Degree/Discipline, Country, etc.) that were previously always skipped.
+  Verified: `ruff check` + `manage.py check` clean; live-called the real MiMo API (key confirmed
+  live via `/v1/models`, `response_format: json_object` confirmed to return clean JSON); curled
+  `/api/v1/applications/scan/` with a form snapshot built from the actual Canonical/Greenhouse
+  fields in the user's screenshots (essay question, "willing to travel" select, country select,
+  AI-use attestation select, gender select, a combobox-flagged school field) — essay answer
+  correctly grounded in the real test CV's actual work history, country/school correctly
+  answered from CV facts, gender/attestation correctly hard-skipped, and — after a live bug was
+  caught and fixed (see below) — "willing to travel" correctly hard-skipped instead of the model
+  confidently guessing "Yes". Combobox click-and-poll mechanics can only be confirmed in a real
+  browser, not curl — not yet done.
+
 ## Fixes
 
+- **MiMo confidently guessed "Yes" to an unanswerable question** — live-tested "are you willing
+  to travel 2-4x/year?" (a preference question, not a CV fact) and the model answered "Yes" at
+  confidence 1.0, ignoring the system prompt's explicit "skip if unknowable" instruction. A
+  prompt cannot be trusted to self-police this category. Fixed by hard pre-filtering
+  travel/relocation/salary/notice-period/visa/start-date questions out of the LLM call entirely
+  (`agent/llm_mapper.py`'s `_LOGISTICS_KEYWORDS`), same mechanism as the EEO/attestation
+  hard-skips — verified by re-running the same scan and confirming the field now comes back
+  `action: "skip"`.
 - **LinkedIn/GitHub/GitLab fields were always skipped even when answerable** — `profile.py`
   never extracted those URLs from CV text, so `field_mapper.py` had no data to offer even for
   a plain text field it could otherwise fill. Added regex extraction (`linkedin_url`, `git_url`)

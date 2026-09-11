@@ -40,6 +40,7 @@ class CvRepository(ICvRepository):
         return CvDTO(
             id=obj.id,
             original_filename=obj.original_filename,
+            raw_text=obj.raw_text,
             full_name=obj.full_name,
             email=obj.email,
             phone=obj.phone,

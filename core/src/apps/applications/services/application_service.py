@@ -1,9 +1,11 @@
 from urllib.parse import urlparse
 
 from agent.field_mapper import build_fill_plan
+from agent.llm_mapper import augment_skipped_fields
 from agent.profile import Profile
 from apps.applications.dto import ScanRequestDTO, ScanResultDTO
 from apps.applications.repositories.interfaces import IApplicationRepository
+from apps.cvs.dto import CvDTO
 from apps.cvs.repositories.interfaces import ICvRepository
 
 
@@ -17,8 +19,19 @@ class ApplicationService:
         self._cv_repo = cv_repo
 
     def scan(self, payload: ScanRequestDTO) -> ScanResultDTO:
-        profile, resolved_cv_id = self._resolve_profile(payload.cv_id)
+        cv = self._cv_repo.get(payload.cv_id) if payload.cv_id is not None else None
+        profile = self._profile_from_cv(cv) if cv else None
+        resolved_cv_id = cv.id if cv else None
+
         field_mapping = build_fill_plan(payload.form_snapshot, profile, resolved_cv_id)
+        if cv is not None:
+            field_mapping = augment_skipped_fields(
+                form_snapshot=payload.form_snapshot,
+                field_mapping=field_mapping,
+                cv_raw_text=cv.raw_text,
+                page_text=payload.page_text,
+            )
+
         site = urlparse(payload.url).netloc
         return self._repo.create(
             url=payload.url,
@@ -28,17 +41,12 @@ class ApplicationService:
             cv_id=resolved_cv_id,
         )
 
-    def _resolve_profile(self, cv_id: int | None) -> tuple[Profile | None, int | None]:
-        if cv_id is None:
-            return None, None
-        cv = self._cv_repo.get(cv_id)
-        if cv is None:
-            return None, None
-        profile = Profile(
+    @staticmethod
+    def _profile_from_cv(cv: CvDTO) -> Profile:
+        return Profile(
             full_name=cv.full_name,
             email=cv.email,
             phone=cv.phone,
             linkedin_url=cv.linkedin_url,
             git_url=cv.git_url,
         )
-        return profile, cv.id

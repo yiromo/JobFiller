@@ -58,11 +58,12 @@ Don't put DB queries or business logic in views — mirror an existing app. Apps
 - `cvs` — CV upload/list/file-download. Regex-based email/phone extraction lives here for now
   (`agent/profile.py` builds the structured profile from a CV's raw text).
 - `applications` — `POST /api/v1/applications/scan/`: takes a page's `form_snapshot`, returns
-  a fill plan built by `agent/field_mapper.py`.
+  a fill plan built by `agent/field_mapper.py` (heuristic pass) then `agent/llm_mapper.py`
+  (MiMo pass over whatever the heuristic skipped, only if `MIMO_API_KEY` is set).
 
-`agent/` (`core/src/agent/`) is a **plain module, not a Django app** — it has no models. It's
-injected into `cvs`/`applications` services via their own containers. Don't turn it into a
-layered app; there's nothing to layer.
+`agent/` (`core/src/agent/`) is a **plain module, not a Django app** — it has no models. Its
+functions are called directly from `applications`/`cvs` services (not DI-injected — there's
+nothing stateful to inject). Don't turn it into a layered app; there's nothing to layer.
 
 Settings: SQLite (no multi-user, nothing Redis-dependent, no deploy target yet — revisit if
 that changes), `python-decouple` for env vars, CORS open to `moz-extension://` origins for
@@ -76,14 +77,18 @@ candidate field with a `data-jf-ref` attribute (existing `id` reused when presen
 ```json
 {
   "url": "...",
+  "page_text": "...",
   "form_snapshot": [
     {"ref": "...", "tag": "input", "type": "text", "name": "...", "id": "...",
-     "label": "...", "placeholder": "...", "options": [...], "required": true}
+     "label": "...", "placeholder": "...", "options": [...], "required": true,
+     "role": "combobox", "aria_haspopup": "listbox", "aria_controls": "...listbox-id..."}
   ]
 }
 ```
 
-Core returns:
+`page_text` (job posting text, truncated) and `role`/`aria_haspopup`/`aria_controls` exist only
+to give the LLM pass context and to tell a custom combobox apart from a plain text input — the
+heuristic pass ignores them. Core returns:
 
 ```json
 [{"ref": "...", "value": "...", "action": "type|select|check|upload|skip", "confidence": 0.0}]
@@ -91,7 +96,8 @@ Core returns:
 
 `ref` is the only thing the extension uses to find the element again — never a CSS selector or
 guessed XPath. Fields the content script identifies as honeypots (`aria-hidden="true"`,
-`tabindex="-1"` traps) or demographic/EEO questions are never sent for auto-fill guessing.
+`tabindex="-1"` traps), demographic/EEO questions, or legal attestations ("I agree...", privacy/
+terms consent) are never sent for auto-fill guessing, by either mapper.
 
 ## Non-obvious things (these will bite you)
 
@@ -99,15 +105,20 @@ guessed XPath. Fields the content script identifies as honeypots (`aria-hidden="
   (`Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set`) then
   dispatch `input`/`change` events. See `extension/src/content.js`.
 - **Custom comboboxes** (Greenhouse/Ashby's country/gender/location pickers) are not native
-  `<select>` — they're a text input + a JS-rendered listbox. Setting a value doesn't select an
-  option. The mapper skips these rather than faking a fill; see `tasks/BACKLOG.md` item 7.
-- **EEO/demographic fields are never auto-filled**, even if the mapper could guess an answer —
-  these are legally-sensitive voluntary disclosures. This is a hard rule in
-  `agent/field_mapper.py`, not a confidence threshold.
+  `<select>` — a text input plus a JS-rendered listbox. `applyFillPlan` in `popup.js` handles
+  this by typing the value, polling for `[role="option"]` elements (inside `aria-controls` if
+  given, else the whole document), and clicking the best case-insensitive match — this is why
+  it's `async` and fills sequentially, not in parallel (opening one combobox can close another).
+- **EEO/demographic fields and legal attestations are never auto-filled**, even if a mapper
+  could guess an answer — EEO because it's a legally-sensitive voluntary disclosure, attestations
+  ("I agree...", AI-use/privacy/terms consent) because that's the applicant's own click to make.
+  Hard rules in `agent/field_mapper.py` (`EEO_KEYWORDS`) and `agent/llm_mapper.py`
+  (`_ATTESTATION_KEYWORDS`), not a confidence threshold — never relax these via prompting alone.
 - **Refs don't survive a full re-render.** If the SPA re-renders the form between Scan and
   Fill, the stamped `data-jf-ref` attributes are gone — the fix is re-scanning, not retrying.
-- Only `core/.env` (git-ignored) holds secrets, e.g. `MIMO_API_KEY` once that's wired in. Never
-  put a key in a commit, a chat message that becomes a commit, or `docker-compose.yml`.
+- Only `core/.env` (git-ignored) holds secrets — `MIMO_API_KEY` included. Never put a key in a
+  commit or `docker-compose.yml`. An empty `MIMO_API_KEY` is a valid, supported state:
+  `llm_mapper.augment_skipped_fields` no-ops and the heuristic-only plan is returned as-is.
 
 ## Conventions
 

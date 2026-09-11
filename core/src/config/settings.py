@@ -124,3 +124,4 @@ REST_FRAMEWORK = {
 # ---------------------------------------------------------------------------
 MIMO_API_KEY = config("MIMO_API_KEY", default="")
 MIMO_BASE_URL = config("MIMO_BASE_URL", default="https://api.xiaomimimo.com/v1")
+MIMO_MODEL = config("MIMO_MODEL", default="mimo-v2.5")

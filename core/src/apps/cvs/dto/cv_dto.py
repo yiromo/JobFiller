@@ -6,6 +6,7 @@ from datetime import datetime
 class CvDTO:
     id: int
     original_filename: str
+    raw_text: str
     full_name: str
     email: str
     phone: str

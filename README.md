@@ -48,10 +48,13 @@ grant — remove it and "Load Temporary Add-on…" again).
 
 ## Status
 
-`core`'s field-mapping is a heuristic (keyword/regex) matcher, not an LLM yet — it fills
-contact fields (name/email/phone) and the resume upload from your CV, and skips anything it
-can't answer confidently: job-specific questions, custom dropdown pickers, and — always,
-regardless of confidence — EEO/demographic questions (gender, ethnicity, veteran, disability
-status). See `tasks/PROGRESS.md` for what's actually built and `tasks/BACKLOG.md` for what's
-next (MiMo integration for the fields the heuristic can't handle, CV structuring, fit rate,
-multi-CV matching). No proactive/background app yet (out of scope for now).
+`core`'s field-mapping runs in two passes: a heuristic (keyword/regex) matcher fills contact
+fields (name/email/phone/LinkedIn/GitHub) and the resume upload for free; whatever it skips is
+then sent to MiMo (`mimo-v2.5`, only if `MIMO_API_KEY` is set in `core/.env`) grounded in the
+CV text and the scanned page, including custom JS comboboxes (Greenhouse/Ashby-style — the
+extension types + picks from the rendered option list). Never auto-answered, by either pass,
+regardless of confidence: EEO/demographic questions, legal attestations ("I agree..."), and
+logistics questions a CV can't answer (travel, relocation, salary, visa, start date). See
+`tasks/PROGRESS.md` for what's actually built and `tasks/BACKLOG.md` for what's next (CV
+structuring, fit rate, multi-CV best-fit matching). No proactive/background app yet (out of
+scope for now).

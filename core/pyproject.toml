@@ -12,6 +12,7 @@ dependencies = [
     "pypdf",
     "python-docx",
     "gunicorn",
+    "openai",
 ]
 
 [dependency-groups]

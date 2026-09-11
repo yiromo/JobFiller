@@ -11,12 +11,16 @@ class FormFieldSerializer(serializers.Serializer):
     placeholder = serializers.CharField(required=False, allow_blank=True, default="")
     options = serializers.ListField(child=serializers.CharField(), required=False, default=list)
     required = serializers.BooleanField(required=False, default=False)
+    role = serializers.CharField(required=False, allow_blank=True, default="")
+    aria_haspopup = serializers.CharField(required=False, allow_blank=True, default="")
+    aria_controls = serializers.CharField(required=False, allow_blank=True, default="")
 
 
 class ScanRequestSerializer(serializers.Serializer):
     url = serializers.URLField(max_length=2048)
     form_snapshot = FormFieldSerializer(many=True)
     cv_id = serializers.IntegerField(required=False, allow_null=True, default=None)
+    page_text = serializers.CharField(required=False, allow_blank=True, default="")
 
 
 class FieldActionSerializer(serializers.Serializer):

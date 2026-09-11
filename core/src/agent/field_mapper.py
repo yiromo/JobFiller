@@ -2,7 +2,8 @@ from agent.profile import Profile
 
 # Order matters: more specific categories are checked before generic ones
 # (e.g. "preferred name" must not fall through to the full-name match).
-_EEO_KEYWORDS = ("gender", "ethnicity", "hispanic", "latino", "veteran", "disability", "race")
+# Public — shared with llm_mapper.py so both stay in sync on what's never auto-answered.
+EEO_KEYWORDS = ("gender", "ethnicity", "hispanic", "latino", "veteran", "disability", "race")
 _RESUME_KEYWORDS = ("resume", "cv")
 _EMAIL_KEYWORDS = ("email", "e-mail")
 _PHONE_KEYWORDS = ("phone", "mobile", "telephone")
@@ -12,6 +13,10 @@ _LAST_NAME_KEYWORDS = ("last name", "surname", "family name")
 _FULL_NAME_KEYWORDS = ("full name", "your name")
 _LINKEDIN_KEYWORDS = ("linkedin",)
 _GIT_KEYWORDS = ("github", "gitlab")
+
+
+def field_haystack(field: dict) -> str:
+    return " ".join(str(field.get(key, "")) for key in ("label", "name", "id", "placeholder")).lower()
 
 
 def build_fill_plan(
@@ -24,9 +29,7 @@ def build_fill_plan(
 
 def _map_field(field: dict, profile: Profile | None, cv_id: int | None) -> dict:
     ref = field["ref"]
-    haystack = " ".join(
-        str(field.get(key, "")) for key in ("label", "name", "id", "placeholder")
-    ).lower()
+    haystack = field_haystack(field)
 
     def skip() -> dict:
         return {"ref": ref, "value": "", "action": "skip", "confidence": 0.0}
@@ -36,7 +39,7 @@ def _map_field(field: dict, profile: Profile | None, cv_id: int | None) -> dict:
 
     # Never guess on legally-sensitive voluntary disclosures, regardless of
     # profile data or confidence — this is a hard rule, not a threshold.
-    if any(keyword in haystack for keyword in _EEO_KEYWORDS):
+    if any(keyword in haystack for keyword in EEO_KEYWORDS):
         return skip()
 
     if field.get("type") == "file":
@@ -73,7 +76,7 @@ def _map_field(field: dict, profile: Profile | None, cv_id: int | None) -> dict:
     if any(keyword in haystack for keyword in _GIT_KEYWORDS):
         return type_value(profile.git_url, 0.8) if profile.git_url else skip()
 
-    # Custom comboboxes (location/country pickers, etc.) aren't distinguishable
-    # from plain text inputs in the current form_snapshot schema, and anything
-    # else here is a job-specific question a CV can't answer — skip, don't guess.
+    # Anything else here — job-specific questions, custom comboboxes, semantic
+    # select matching — needs actual reasoning, not keyword matching. Skipped
+    # here; ApplicationService forwards these to llm_mapper if MiMo is configured.
     return skip()

@@ -7,6 +7,7 @@ class ScanRequestDTO:
     url: str
     form_snapshot: list[dict]
     cv_id: int | None = None
+    page_text: str = ""
 
 
 @dataclass(frozen=True)
