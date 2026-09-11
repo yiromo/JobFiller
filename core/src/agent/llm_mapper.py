@@ -57,14 +57,18 @@ candidate's CV (and, for context, the job posting text). Rules:
 - If a field's tag is "select" or its role is "combobox": respond with "select" and, when a \
 non-empty options list is given, copy one option verbatim; otherwise give a short canonical \
 value (e.g. a country or degree name) for the extension to pick from the page's own list.
+- If a field's type is "checkbox" (each option in a checkbox-list question is scanned as its own \
+field with the option's own text as its label): respond with "check" and value "true" only if \
+the CV supports that specific option being the correct one; otherwise respond "skip" for that \
+option. Never respond "check" with value "false" — to leave an option unchecked, use "skip".
 - For "input"/"textarea" fields, respond with "type" and a free-text answer, concise \
 (roughly 50-150 words unless the question implies a single fact).
 - If the CV does not support a confident, honest answer (unknown fact, or a personal/logistics \
 question like salary, relocation, or availability with no CV basis), respond with "skip" — \
 never guess.
 Respond with a JSON object: {"fields": [{"ref": <ref>, "value": <string>, \
-"action": "type"|"select"|"skip", "confidence": <0-1 number>}, ...]} — one entry per field \
-given, in the same order, using the exact "ref" values given."""
+"action": "type"|"select"|"check"|"skip", "confidence": <0-1 number>}, ...]} — one entry per \
+field given, in the same order, using the exact "ref" values given."""
 
 
 def _is_llm_eligible(field: dict) -> bool:
@@ -150,6 +154,11 @@ def validate_override(override: dict, field: dict) -> dict:
     value = str(override.get("value") or "").strip()
     confidence = override.get("confidence", 0.5)
 
+    if action == "check":
+        if value.lower() in ("true", "yes", "1"):
+            return {"ref": ref, "value": "true", "action": "check", "confidence": _clamp(confidence)}
+        return {"ref": ref, "value": "", "action": "skip", "confidence": 0.0}
+
     if action not in ("type", "select") or not value:
         return {"ref": ref, "value": "", "action": "skip", "confidence": 0.0}
 
@@ -170,9 +179,11 @@ def validate_override(override: dict, field: dict) -> dict:
             return {"ref": ref, "value": "", "action": "skip", "confidence": 0.0}
         value = matched
 
-    try:
-        confidence = max(0.0, min(1.0, float(confidence)))
-    except (TypeError, ValueError):
-        confidence = 0.5
+    return {"ref": ref, "value": value, "action": action, "confidence": _clamp(confidence)}
 
-    return {"ref": ref, "value": value, "action": action, "confidence": confidence}
+
+def _clamp(confidence) -> float:
+    try:
+        return max(0.0, min(1.0, float(confidence)))
+    except (TypeError, ValueError):
+        return 0.5

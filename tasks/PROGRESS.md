@@ -33,6 +33,40 @@ Newest first. One entry per feature commit — added when the feature actually l
 
 ## Fixes
 
+- **Checkbox-list questions (single choice rendered as separate `<input type="checkbox">`
+  fields) silently never got checked** — a real Ashby form (Toggl) has a "which best describes
+  your experience" question rendered as five independent checkbox inputs, each with the option
+  text as its own label. `llm_mapper`'s system prompt only documented `"type"`/`"select"`
+  actions, so MiMo had no correct action for a `type: "checkbox"` field and guessed `"select"`
+  with the option's own label text as the value — `validate_override` let it through unvalidated
+  (no `options` list to check against on a checkbox field), and `popup.js`'s fill routes a
+  `"select"` action through `selectValue` regardless of element type, which types text into a
+  checkbox input and looks for `[role="option"]` elements that don't exist there, so the checkbox
+  was never actually checked. Confirmed by pulling the real `Application.form_snapshot` from
+  SQLite for that scan and reproducing the exact bad response locally (`action: "select"`, value
+  either the option's own label or the bare word `"select"`). Fixed by adding a `"check"` action
+  to the prompt (checkbox fields must respond `check`+`"true"` or `skip`, never `check`+`"false"`
+  — `popup.js`'s `el.checked = Boolean(item.value)` would treat any non-empty string, including
+  `"false"`, as checked) and handling it in `validate_override` before the generic
+  type/select path. Verified: re-ran the exact reproduction, `cb0` (the option the CV actually
+  supports) now returns `check`/`true`, the other four correctly `skip`.
+  Also investigated in the same pass, both against the real logged scan: (1) the same scan's four
+  essay `<textarea>` fields all came back with the literal bare value `"type"` (already-correct
+  behavior: `validate_override`'s existing bare-echo check turns this into `skip`) — reproduced
+  the same batch of fields against the real CV twice outside the app and got full grounded
+  answers both times, so this is genuine model flakiness on that one live call, not a code defect
+  (matches the "stochastic prompt-echo" conclusion from the earlier single-field version of this
+  same failure mode, now confirmed reproducible-but-intermittent rather than assumed). (2) the
+  custom-combobox "Location" field (`role: combobox`, no scanned `options`) got a plausible
+  CV-grounded value ("Astana, Kazakhstan") that then visibly sat in the input without being
+  selected from the site's own dropdown — this is the documented `selectValue` typed-text
+  fallback (`CLAUDE.md`), not a new bug; needs the popup's per-field log output
+  (`ok`/`no-matching-option`/`dropdown-never-opened`) to tell which case it hit. (3) two Yes/No
+  toggle questions on the same page never appeared in `form_snapshot` at all — not native
+  radio/checkbox inputs, so invisible to `scanPage`'s scan, the same class of gap as
+  `tasks/BACKLOG.md` item 8 (button/div-based widgets with no underlying form control); needs
+  the real outerHTML before building a fix, not guessed at.
+
 - **Click the dropdown's real toggle instead of guessing at click targets** — a real fill log
   showed every custom-combobox field on a react-select-based ATS (KoBold's Greenhouse-alternative
   form) failing with `no-matching-option`, while native `<select>` fields on the same page worked
