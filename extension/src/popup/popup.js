@@ -438,6 +438,14 @@ async function buildFileMap(plan) {
   const fileByRef = {};
   for (const item of plan) {
     if (item.action !== "upload") continue;
+    if (item.file) {
+      fileByRef[item.ref] = {
+        base64: item.file.base64,
+        filename: item.file.filename,
+        mimeType: item.file.mime_type,
+      };
+      continue;
+    }
     const cv = cvsCache.find((c) => String(c.id) === item.value);
     if (!cv) continue;
     const response = await fetch(`${CORE_URL}/api/v1/cvs/${cv.id}/file/`);

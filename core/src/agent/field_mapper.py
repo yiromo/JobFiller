@@ -5,6 +5,7 @@ from agent.profile import Profile
 # Public — shared with llm_mapper.py so both stay in sync on what's never auto-answered.
 EEO_KEYWORDS = ("gender", "ethnicity", "hispanic", "latino", "veteran", "disability", "race")
 _RESUME_KEYWORDS = ("resume", "cv")
+_COVER_LETTER_KEYWORDS = ("cover letter",)
 _EMAIL_KEYWORDS = ("email", "e-mail")
 _PHONE_KEYWORDS = ("phone", "mobile", "telephone")
 _PREFERRED_NAME_KEYWORDS = ("prefer",)
@@ -43,9 +44,14 @@ def _map_field(field: dict, profile: Profile | None, cv_id: int | None) -> dict:
         return skip()
 
     if field.get("type") == "file":
+        if any(keyword in haystack for keyword in _COVER_LETTER_KEYWORDS) and cv_id is not None:
+            return {"ref": ref, "value": "", "action": "cover_letter_upload", "confidence": 0.7}
         if any(keyword in haystack for keyword in _RESUME_KEYWORDS) and cv_id is not None:
             return {"ref": ref, "value": str(cv_id), "action": "upload", "confidence": 0.9}
         return skip()
+
+    if any(keyword in haystack for keyword in _COVER_LETTER_KEYWORDS) and cv_id is not None:
+        return {"ref": ref, "value": "", "action": "cover_letter_type", "confidence": 0.7}
 
     if profile is None:
         return skip()

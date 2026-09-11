@@ -60,7 +60,8 @@ confidence: EEO/demographic questions, legal attestations ("I agree..."), and lo
 questions a CV can't answer (travel, relocation, salary, visa, start date). The one exception:
 Manage CVs > Settings lets you type your own EEO answers once, filled exactly as typed by the
 extension itself (never by core, never inferred) — leave a row blank to keep that question
-skipped. See
+skipped. Any "cover letter" field is generated fresh per scan (grounded in your CV and the job
+posting) — a paste field gets the text, a file-upload field gets a generated `.docx`. See
 `tasks/PROGRESS.md` for what's actually built and `tasks/BACKLOG.md` for what's next (CV
 structuring, fit rate, multi-CV best-fit matching). No proactive/background app yet (out of
 scope for now).

@@ -14,7 +14,8 @@ Roughly in order. Not started unless noted in `PROGRESS.md`.
 4. **Fit rate** — quick % match score for a job posting vs. the chosen/best CV.
 5. **CV generator/adjuster** — tailor a CV's summary/bullets to a specific job posting. Output
    structured JSON + markdown; no PDF rendering (out of scope — see yiromo.com's pdflatex
-   pipeline if that's wanted later).
+   pipeline if that's wanted later). Partially covered in spirit by the cover letter generator
+   (see `tasks/PROGRESS.md`) — same MiMo-grounded-in-CV pattern, applied to the CV itself.
 6. **Vision fallback** — when the heuristic/LLM mapper has low confidence on a field, send a
    screenshot (`tabs.captureVisibleTab`, `activeTab` permission) alongside the HTML for that
    one field. This is the one part of the pipeline that's a real LangGraph graph (confidence
@@ -30,3 +31,9 @@ Roughly in order. Not started unless noted in `PROGRESS.md`.
    reason to (nothing writes a status today, so no `status` field exists yet either).
 10. **Proactive/workflow app** — explicitly out of scope until the extension is proven on all 5
    test sites. Background crawling/auto-scroll/multi-site queueing lives here, not before.
+11. **Yes/No button-pair widgets** — a real ATS form (screenshot) has "Are you 18 or older?"
+   etc. as two styled Yes/No buttons per question, not a native `<input type="radio">` group or
+   `<select>` — `scanPage` only scans `input, select, textarea`, so these are currently invisible
+   to the scanner and never filled. Not built — waiting on the outerHTML of one such widget to
+   know whether it's a hidden radio input behind styled labels or plain buttons with no
+   underlying form control at all; the fix differs for each and shouldn't be guessed blind.

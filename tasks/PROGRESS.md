@@ -4,6 +4,26 @@ Newest first. One entry per feature commit — added when the feature actually l
 
 ## Done
 
+- **Cover letter generator (.docx)** — any field matching "cover letter" (haystack: label/name/
+  id/placeholder) now gets a real generated letter instead of being skipped or handed to the
+  generic LLM pass. New `agent/cover_letter.py`: `generate()` makes one dedicated MiMo call per
+  scan (separate from `llm_mapper`'s batch pass — a proper 250-400 word, three/four-paragraph
+  letter needs its own prompt, not the general "concise 50-150 word" one), `render_docx()` builds
+  the `.docx` via `python-docx` (already a dependency). `field_mapper.py` marks matching fields
+  with placeholder actions (`cover_letter_type` for paste fields, `cover_letter_upload` for file
+  fields) before the resume/profile checks run, so the general LLM pass never touches them (it
+  only acts on `action: "skip"`). `ApplicationService._resolve_cover_letter` generates once and
+  resolves both placeholders from the same text — a paste field becomes a plain `type` action, a
+  file field becomes an `upload` action carrying the docx bytes inline as base64 in a new `file`
+  field on the mapping item (no stored CV row behind it, unlike résumé upload) so the extension
+  can attach it via the same `DataTransfer` path with no extra fetch. If MiMo is unconfigured or
+  the generation call fails, both placeholders fall back to `skip` (never partially fill, never
+  crash the scan — same guard pattern as `llm_mapper.augment_skipped_fields`). Verified via curl
+  against a real CV: the file-upload field came back with a valid `.docx` (correct `PK` zip
+  signature, ~37KB), the paste field came back with a 303-word, three-paragraph letter grounded
+  in the actual CV/job-posting text, no bracketed placeholders. Not yet driven in a real browser.
+  Note: the generated letter's text is persisted as part of the `Application` row's
+  `field_mapping` in SQLite (not regenerated-and-discarded) — same as every other LLM answer.
 - **Fix bare "type"/"select" value slipping past the echo-strip guard** — the earlier
   action-keyword-echo fix (`_ACTION_ECHO_RE`) only stripped a leading `"type "`/`"select "` when
   followed by real content; a value that was the bare word `"type"` with nothing after it (no

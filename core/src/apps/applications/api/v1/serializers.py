@@ -23,11 +23,20 @@ class ScanRequestSerializer(serializers.Serializer):
     page_text = serializers.CharField(required=False, allow_blank=True, default="")
 
 
+class FileAttachmentSerializer(serializers.Serializer):
+    filename = serializers.CharField()
+    mime_type = serializers.CharField()
+    base64 = serializers.CharField()
+
+
 class FieldActionSerializer(serializers.Serializer):
     ref = serializers.CharField()
     value = serializers.CharField(allow_blank=True)
     action = serializers.ChoiceField(choices=["type", "select", "check", "upload", "skip"])
     confidence = serializers.FloatField()
+    # Present only for a generated cover letter's "upload" action — the extension
+    # attaches these bytes directly instead of fetching a stored CV by `value`.
+    file = FileAttachmentSerializer(required=False, allow_null=True)
 
 
 class ScanResultSerializer(serializers.Serializer):
