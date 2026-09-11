@@ -1,0 +1,26 @@
+body {
+  width: 480px;
+}
+
+#cv-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+#cv-list li {
+  padding: 8px 0;
+  border-bottom: 1px solid #eee;
+}
+
+#cv-list li:last-child {
+  border-bottom: none;
+}
+
+.cv-name {
+  font-weight: 600;
+}
+
+.cv-filename {
+  color: #666;
+}

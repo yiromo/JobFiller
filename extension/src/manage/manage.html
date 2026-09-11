@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Job Filler — Manage CVs</title>
+    <link rel="stylesheet" href="../popup/popup.css" />
+    <link rel="stylesheet" href="manage.css" />
+  </head>
+  <body>
+    <h1>Manage CVs</h1>
+    <p id="status">Loading...</p>
+
+    <div class="actions">
+      <input id="cv-file-input" type="file" accept=".pdf,.docx" hidden />
+      <button id="cv-upload-btn" type="button">Upload CV</button>
+    </div>
+
+    <ul id="cv-list"></ul>
+
+    <script src="manage.js"></script>
+  </body>
+</html>

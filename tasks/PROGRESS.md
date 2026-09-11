@@ -56,6 +56,20 @@ Newest first. One entry per feature commit — added when the feature actually l
 
 ## Fixes
 
+- **Upload CV closed the popup, and a scan was lost on every popup close** — two separate
+  bugs, same root cause of "the popup is a fragile, disposable document." (1) Clicking a hidden
+  file input's `.click()` from inside a panel popup opens a native file picker, which steals
+  focus and closes the popup before a selection can complete — a longstanding Firefox
+  limitation, made 100% reproducible here because Flatpak Firefox/Zen brokers that picker
+  through a separate `xdg-desktop-portal` process. Fixed by moving CV upload/listing to its own
+  persistent extension page (`extension/src/manage/`), opened via `browser.tabs.create` from a
+  "Manage CVs" button — `tabs.create` to the extension's own page needs no extra permission.
+  (2) The popup document (and all its JS state, including the last scan's `field_mapping`) is
+  destroyed and recreated every time it closes — a scan and a subsequent Fill had to happen in
+  one uninterrupted popup session. Fixed with `storage.session` (new `storage` permission),
+  keyed per-tab and checked against the tab's current URL before restoring, so reopening the
+  popup on the same page brings back the last scan instead of starting over.
+
 - **Popup appeared blank in the browser** — root cause was a Flatpak sandbox, not CSS. Zen on
   Linux is commonly installed via Flatpak, which only grants filesystem access to whatever the
   file-picker portal was pointed at. "Load Temporary Add-on…" reads `manifest.json` through that

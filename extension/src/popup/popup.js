@@ -5,8 +5,7 @@ const logEl = document.getElementById("log");
 const scanBtn = document.getElementById("scan-btn");
 const fillBtn = document.getElementById("fill-btn");
 const cvSelect = document.getElementById("cv-select");
-const cvFileInput = document.getElementById("cv-file-input");
-const cvUploadBtn = document.getElementById("cv-upload-btn");
+const manageCvsBtn = document.getElementById("manage-cvs-btn");
 
 let lastFieldMapping = null;
 let cvsCache = [];
@@ -157,6 +156,34 @@ async function getActiveTab() {
   return tab;
 }
 
+// The popup document is destroyed and recreated every time it closes, so any
+// in-memory state (lastFieldMapping) is normally lost between opens.
+// storage.session keeps the last scan per tab, cleared on browser restart —
+// it's tied to the page's live DOM refs, which don't survive that anyway.
+function scanStorageKey(tabId) {
+  return `scan:${tabId}`;
+}
+
+async function saveScanState(tabId, url) {
+  await browser.storage.session.set({
+    [scanStorageKey(tabId)]: { url, fieldMapping: lastFieldMapping, logText: logEl.textContent },
+  });
+}
+
+async function restoreScanState() {
+  const tab = await getActiveTab();
+  if (!tab) return;
+  const key = scanStorageKey(tab.id);
+  const stored = await browser.storage.session.get(key);
+  const entry = stored[key];
+  if (!entry || entry.url !== tab.url) return;
+
+  lastFieldMapping = entry.fieldMapping;
+  logEl.textContent = entry.logText || "";
+  fillBtn.disabled = false;
+  setStatus("Restored previous scan — review, then Fill.");
+}
+
 function arrayBufferToBase64(buffer) {
   let binary = "";
   const bytes = new Uint8Array(buffer);
@@ -206,26 +233,12 @@ async function buildFileMap(plan) {
   return fileByRef;
 }
 
-cvUploadBtn.addEventListener("click", () => cvFileInput.click());
-
-cvFileInput.addEventListener("change", async () => {
-  const file = cvFileInput.files[0];
-  if (!file) return;
-  setStatus("Uploading CV...");
-  try {
-    const formData = new FormData();
-    formData.append("file", file);
-    const response = await fetch(`${CORE_URL}/api/v1/cvs/`, { method: "POST", body: formData });
-    if (!response.ok) throw new Error(`core returned ${response.status}`);
-    const cv = await response.json();
-    await loadCvs(cv.id);
-    setStatus(`Uploaded ${cv.original_filename}.`);
-  } catch (err) {
-    setStatus("CV upload failed.");
-    log(String(err));
-  } finally {
-    cvFileInput.value = "";
-  }
+// File pickers opened from a panel popup steal focus and close it before a
+// selection completes (worse still under a Flatpak browser, where the
+// picker is a separate portal process) — CV upload lives on its own
+// extension tab instead, which doesn't close on focus loss.
+manageCvsBtn.addEventListener("click", () => {
+  browser.tabs.create({ url: browser.runtime.getURL("src/manage/manage.html") });
 });
 
 scanBtn.addEventListener("click", async () => {
@@ -255,6 +268,7 @@ scanBtn.addEventListener("click", async () => {
     log(`Fill plan ready: ${lastFieldMapping.length - skipped} to fill, ${skipped} skipped.`);
     setStatus("Scanned — review, then Fill.");
     fillBtn.disabled = false;
+    await saveScanState(tab.id, result.url);
   } catch (err) {
     setStatus("Scan failed.");
     log(String(err));
@@ -287,3 +301,4 @@ loadCvs().catch((err) => {
   setStatus("Could not reach core API.");
   log(String(err));
 });
+restoreScanState();

@@ -26,8 +26,9 @@ docker compose up --build
 Extension (Firefox / Zen), with `core` running on `localhost:8000`:
 1. Go to `about:debugging#/runtime/this-firefox`.
 2. "Load Temporary Add-on…" → select `extension/manifest.json`.
-3. Open a job posting (e.g. a `job-boards.greenhouse.io` listing), click the extension icon,
-   upload a CV, click "Scan this page", then "Fill application".
+3. Click the extension icon → "Manage CVs" to upload one or more CVs (each stays listed for
+   reuse). Then open a job posting (e.g. a `job-boards.greenhouse.io` listing), click the
+   extension icon, pick a CV from the dropdown, click "Scan this page", then "Fill application".
 4. Check the popup's log for skipped fields, and check the form itself before submitting
    anything — nothing here submits a form for you.
 
