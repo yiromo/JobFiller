@@ -318,11 +318,6 @@ async function applyFillPlan(plan, fileByRef) {
   return results;
 }
 
-// EEO/demographic fields are a hard skip in core, by design — no AI or
-// heuristic ever answers them. This is the one, explicit exception: values
-// the user typed into Manage CVs > Settings, applied here client-side, never
-// sent to or decided by core. An empty/unmatched setting leaves the field
-// skipped; nothing is ever inferred or defaulted.
 async function loadEeoSettings() {
   const stored = await browser.storage.local.get("eeoAnswers");
   return (stored.eeoAnswers || []).filter((row) => row.match && row.answer);
@@ -526,6 +521,7 @@ scanBtn.addEventListener("click", async () => {
     }
 
     const cvId = cvSelect.value ? Number(cvSelect.value) : null;
+    const eeoSettings = await loadEeoSettings();
     const response = await fetch(`${CORE_URL}/api/v1/applications/scan/`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -534,12 +530,12 @@ scanBtn.addEventListener("click", async () => {
         page_text: bestFrame ? bestFrame.result.page_text : "",
         form_snapshot: formSnapshot,
         cv_id: cvId,
+        eeo_answers: eeoSettings,
       }),
     });
     if (!response.ok) throw new Error(`core returned ${response.status}`);
 
     const data = await response.json();
-    const eeoSettings = await loadEeoSettings();
     lastFieldMapping = applyEeoSettings(formSnapshot, data.field_mapping, eeoSettings);
     const skipped = lastFieldMapping.filter((f) => f.action === "skip").length;
     log(`Fill plan ready: ${lastFieldMapping.length - skipped} to fill, ${skipped} skipped.`);

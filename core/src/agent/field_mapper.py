@@ -38,10 +38,8 @@ def _map_field(field: dict, profile: Profile | None, cv_id: int | None) -> dict:
     def type_value(value: str, confidence: float) -> dict:
         return {"ref": ref, "value": value, "action": "type", "confidence": confidence}
 
-    # Never guess on legally-sensitive voluntary disclosures, regardless of
-    # profile data or confidence — this is a hard rule, not a threshold.
     if any(keyword in haystack for keyword in EEO_KEYWORDS):
-        return skip()
+        return {"ref": ref, "value": "", "action": "eeo_pending", "confidence": 0.0}
 
     if field.get("type") == "file":
         if any(keyword in haystack for keyword in _COVER_LETTER_KEYWORDS) and cv_id is not None:

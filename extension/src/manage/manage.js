@@ -48,11 +48,6 @@ cvFileInput.addEventListener("change", async () => {
   }
 });
 
-// EEO/demographic settings — these are the ONLY source that ever fills an
-// EEO field. Core's field mapper and the MiMo pass hard-skip these
-// regardless of confidence; the user's own typed answer here is the one
-// exception, applied client-side in popup.js. No default rows ship with an
-// answer — only what the user explicitly types gets filled.
 const EEO_STORAGE_KEY = "eeoAnswers";
 const DEFAULT_EEO_ROWS = [
   { match: "gender", answer: "" },

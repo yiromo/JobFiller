@@ -16,11 +16,17 @@ class FormFieldSerializer(serializers.Serializer):
     aria_controls = serializers.CharField(required=False, allow_blank=True, default="")
 
 
+class EeoAnswerSerializer(serializers.Serializer):
+    match = serializers.CharField()
+    answer = serializers.CharField(allow_blank=True)
+
+
 class ScanRequestSerializer(serializers.Serializer):
     url = serializers.URLField(max_length=2048)
     form_snapshot = FormFieldSerializer(many=True)
     cv_id = serializers.IntegerField(required=False, allow_null=True, default=None)
     page_text = serializers.CharField(required=False, allow_blank=True, default="")
+    eeo_answers = EeoAnswerSerializer(many=True, required=False, default=list)
 
 
 class FileAttachmentSerializer(serializers.Serializer):

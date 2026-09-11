@@ -102,7 +102,7 @@ def augment_skipped_fields(
         return field_mapping
 
     return [
-        _validate_override(overrides[mapping["ref"]], fields_by_ref[mapping["ref"]])
+        validate_override(overrides[mapping["ref"]], fields_by_ref[mapping["ref"]])
         if mapping["ref"] in overrides
         else mapping
         for mapping in field_mapping
@@ -144,7 +144,7 @@ def _call_llm(candidates: list[dict], cv_raw_text: str, page_text: str) -> list[
     return fields
 
 
-def _validate_override(override: dict, field: dict) -> dict:
+def validate_override(override: dict, field: dict) -> dict:
     ref = field["ref"]
     action = override.get("action")
     value = str(override.get("value") or "").strip()

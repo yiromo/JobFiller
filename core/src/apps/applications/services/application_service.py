@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 from django.conf import settings
 
 from agent import cover_letter
+from agent.eeo_mapper import resolve_eeo_fields
 from agent.field_mapper import build_fill_plan
 from agent.llm_mapper import augment_skipped_fields
 from agent.profile import Profile
@@ -41,6 +42,7 @@ class ApplicationService:
                 page_text=payload.page_text,
             )
             field_mapping = self._resolve_cover_letter(field_mapping, cv, payload.page_text)
+        field_mapping = self._resolve_eeo(field_mapping, payload.form_snapshot, payload.eeo_answers)
 
         site = urlparse(payload.url).netloc
         return self._repo.create(
@@ -50,6 +52,29 @@ class ApplicationService:
             field_mapping=field_mapping,
             cv_id=resolved_cv_id,
         )
+
+    @staticmethod
+    def _resolve_eeo(
+        field_mapping: list[dict], form_snapshot: list[dict], eeo_answers: list[dict]
+    ) -> list[dict]:
+        pending_refs = {item["ref"] for item in field_mapping if item["action"] == "eeo_pending"}
+        if not pending_refs:
+            return field_mapping
+
+        fields_by_ref = {field["ref"]: field for field in form_snapshot}
+        pending_fields = [fields_by_ref[ref] for ref in pending_refs if ref in fields_by_ref]
+        resolved_by_ref = {
+            r["ref"]: r for r in resolve_eeo_fields(pending_fields, eeo_answers)
+        }
+
+        return [
+            resolved_by_ref.get(
+                item["ref"], {"ref": item["ref"], "value": "", "action": "skip", "confidence": 0.0}
+            )
+            if item["action"] == "eeo_pending"
+            else item
+            for item in field_mapping
+        ]
 
     @staticmethod
     def _resolve_cover_letter(

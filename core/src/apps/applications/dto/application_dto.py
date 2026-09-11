@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 
@@ -8,6 +8,7 @@ class ScanRequestDTO:
     form_snapshot: list[dict]
     cv_id: int | None = None
     page_text: str = ""
+    eeo_answers: list[dict] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

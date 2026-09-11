@@ -2,6 +2,35 @@
 
 Newest first. One entry per feature commit — added when the feature actually lands, not before.
 
+## Done
+
+- **EEO Settings answers routed through a dedicated AI pass instead of verbatim client-side
+  matching** — the old `applyEeoSettings` client-side fill required the Settings answer text to
+  literally substring-match a field's real option text (e.g. "i do not have any" never matched
+  "No, I do not have a disability"), so real ATS EEO selects mostly stayed skipped. Changed the
+  boundary from "core never sees EEO fields" to "AI never invents an EEO answer":
+  `field_mapper.py` now marks EEO fields `eeo_pending` instead of `skip`;
+  `ApplicationService._resolve_eeo` resolves that via new `agent/eeo_mapper.py`, one MiMo call
+  whose prompt receives *only* the EEO fields and the user's `{match, answer}` rows (no CV text,
+  no job posting text — nothing else to invent from), so it can normalize wording and disambiguate
+  e.g. a "hispanic" row from a "race" row and pick the closest real `<select>` option. Extension
+  now sends `eeoAnswers` as `eeo_answers` on the scan request; `applyEeoSettings` is kept as the
+  client-side verbatim fallback for anything core still returns `skip` on. `_resolve_eeo` runs
+  after the cover-letter step, not before `augment_skipped_fields`, so an `eeo_pending` field
+  never becomes an `action: "skip"` candidate for the CV-grounded LLM pass. Reused
+  `llm_mapper.validate_override` (renamed from `_validate_override`) for the new mapper instead
+  of copying it, so the action-keyword-echo strip (`_ACTION_ECHO_RE`, from a prior live bug) isn't
+  duplicated. Note: resolved EEO answers are now persisted in `Application.field_mapping` in
+  SQLite like every other mapped field — they no longer stay entirely client-side. Verified via curl
+  against the real MiMo API with a synthetic snapshot matching the actual Settings rows in use
+  (gender/hispanic/race/veteran/disability): correct option picked for every native `<select>`,
+  correct free-text normalization for a plain input, "hispanic: im asian" correctly resolved to
+  "No" on a distinct ethnicity-question select rather than leaking into the race question, and
+  all three negative cases confirmed skip (no relevant row, empty-answer row, no `eeo_answers` sent).
+  `ruff check` + `manage.py check` clean, `web-ext lint` clean (same pre-existing warnings). Not
+  yet re-verified against a real ATS page in a live browser. Known gap, unchanged: radio-rendered
+  EEO questions still aren't handled by either path (`tasks/BACKLOG.md` item 8).
+
 ## Fixes
 
 - **Click the dropdown's real toggle instead of guessing at click targets** — a real fill log

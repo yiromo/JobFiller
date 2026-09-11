@@ -86,7 +86,8 @@ candidate field with a `data-jf-ref` attribute (existing `id` reused when presen
     {"ref": "...", "tag": "input", "type": "text", "name": "...", "id": "...",
      "label": "...", "placeholder": "...", "options": [...], "required": true,
      "role": "combobox", "aria_haspopup": "listbox", "aria_controls": "...listbox-id..."}
-  ]
+  ],
+  "eeo_answers": [{"match": "gender", "answer": "male"}]
 }
 ```
 
@@ -104,8 +105,10 @@ those bytes directly instead of fetching a stored CV by `value` (which is empty 
 
 `ref` is the only thing the extension uses to find the element again — never a CSS selector or
 guessed XPath. Fields the content script identifies as honeypots (`aria-hidden="true"`,
-`tabindex="-1"` traps), demographic/EEO questions, or legal attestations ("I agree...", privacy/
-terms consent) are never sent for auto-fill guessing, by either mapper.
+`tabindex="-1"` traps) or legal attestations ("I agree...", privacy/terms consent) are never sent
+for auto-fill guessing, by either mapper. Demographic/EEO questions are never guessed from a CV
+or job posting either, but they are routed through a dedicated AI pass grounded strictly in the
+user's own `eeo_answers` rows — see the "EEO/demographic" bullets below.
 
 ## Non-obvious things (these will bite you)
 
@@ -131,21 +134,30 @@ terms consent) are never sent for auto-fill guessing, by either mapper.
   whole call, but a cross-origin frame still needs the `<all_urls>` optional permission granted
   via Manage CVs > Page access to be scanned at all — `activeTab` alone only covers the top
   frame and same-origin frames.
-- **EEO/demographic fields and legal attestations are never auto-filled by core**, even if a
-  mapper could guess an answer — EEO because it's a legally-sensitive voluntary disclosure,
-  attestations ("I agree...", AI-use/privacy/terms consent) because that's the applicant's own
-  click to make. Hard rules in `agent/field_mapper.py` (`EEO_KEYWORDS`) and `agent/llm_mapper.py`
-  (`_ATTESTATION_KEYWORDS`), not a confidence threshold — never relax these via prompting alone,
-  and never route EEO answers through core (see next bullet for the one sanctioned exception).
-- **The one exception to "never fill EEO": the user's own typed answers in Manage CVs >
-  Settings** (`extension/src/manage/`), applied entirely client-side in `popup.js`
-  (`applyEeoSettings`) after core's plan comes back — core never sees these, no LLM is involved,
-  nothing is inferred. Rows are `{match, answer}`; `match` is matched as a substring against a
-  skipped field's label/name/id/placeholder, and `answer` is filled verbatim (matched against a
-  native `<select>`'s options first, left skipped if no option matches). An empty `answer` keeps
-  a field skipped — the default stays "don't guess" for anything the user hasn't explicitly
-  declared. Radio-button-rendered EEO questions aren't handled yet (not seen on any test site so
-  far); don't build that blind — confirm the actual markup on a real ATS first.
+- **Legal attestations are never auto-filled by core**, even if a mapper could guess an answer —
+  that's the applicant's own click to make. Hard rule in `agent/llm_mapper.py`
+  (`_ATTESTATION_KEYWORDS`), not a confidence threshold — never relax this via prompting alone.
+- **EEO/demographic fields are never guessed from a CV or job posting** — `agent/field_mapper.py`
+  (`EEO_KEYWORDS`) marks them `eeo_pending` instead of running the normal heuristic/LLM passes,
+  and `ApplicationService._resolve_eeo` resolves that placeholder via `agent/eeo_mapper.py`: one
+  dedicated MiMo call whose prompt receives *only* the EEO fields and the user's own
+  `{match, answer}` Settings rows (typed in Manage CVs > Settings, sent as `eeo_answers` on the
+  scan request) — no CV text, no job posting text, so the model has nothing else to invent an
+  answer from. It may normalize wording or pick the closest matching option (e.g. "im asian" for
+  a "hispanic" row correctly resolves a separate ethnicity question to "No", distinct from a
+  "race" row), but every value still traces back to something the user explicitly typed; a field
+  with no matching row, an empty row, or an unconfigured/failed MiMo call resolves to `skip`
+  (`agent/eeo_mapper.py`'s `resolve_eeo_fields` degrades to all-skip in every one of those cases,
+  same never-crash-the-scan pattern as `llm_mapper`/`cover_letter`). `popup.js`'s
+  `applyEeoSettings` still runs afterward as a client-side verbatim fallback for anything core
+  still returned `skip` on. `ApplicationService._resolve_eeo` runs after the cover-letter step,
+  not before `augment_skipped_fields` — an `eeo_pending` field must stay out of that pass's
+  `action == "skip"` candidate filter, so it's never sent to the CV-grounded LLM pass at all.
+  Resolved EEO values are persisted in `Application.field_mapping` in SQLite like every other
+  answer (same as the cover-letter text) — they no longer stay entirely client-side. Radio-button-
+  rendered EEO questions aren't handled by either path yet
+  (not seen on any test site so far); don't build that blind — confirm the actual markup on a
+  real ATS first.
 - **Refs don't survive a full re-render.** If the SPA re-renders the form between Scan and
   Fill, the stamped `data-jf-ref` attributes are gone — the fix is re-scanning, not retrying.
 - Only `core/.env` (git-ignored) holds secrets — `MIMO_API_KEY` included. Never put a key in a

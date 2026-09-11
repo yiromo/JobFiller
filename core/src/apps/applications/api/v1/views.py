@@ -18,6 +18,7 @@ class ApplicationScanView(APIView):
             form_snapshot=[dict(f) for f in serializer.validated_data["form_snapshot"]],
             cv_id=serializer.validated_data["cv_id"],
             page_text=serializer.validated_data["page_text"],
+            eeo_answers=[dict(row) for row in serializer.validated_data["eeo_answers"]],
         )
         service = ApplicationsContainer.application_service()
         result = service.scan(payload)
