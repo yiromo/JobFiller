@@ -2,6 +2,283 @@
   if (window.__jfPanelMounted) return;
   window.__jfPanelMounted = true;
 
+  // Inlined: a content script fetching its own extension files needs web_accessible_resources.
+  const PANEL_CSS = `
+:host {
+  all: initial;
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 2147483647;
+  font-family: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+.jf-corner-tab {
+  position: fixed;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+  width: 36px;
+  height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #111111;
+  color: #4ade80;
+  border: 1px solid #2a2a2a;
+  border-right: none;
+  cursor: pointer;
+}
+
+.jf-corner-tab:hover {
+  background: #1a1a1a;
+  border-color: #3a3a3a;
+}
+
+.jf-corner-tab[hidden] {
+  display: none;
+}
+
+.jf-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 340px;
+  max-width: calc(100vw - 24px);
+  display: flex;
+  flex-direction: column;
+  background: #0a0a0a;
+  color: #e5e5e5;
+  border-left: 1px solid #2a2a2a;
+  overflow-y: auto;
+}
+
+.jf-panel[hidden] {
+  display: none;
+}
+
+.jf-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid #2a2a2a;
+  flex: none;
+}
+
+.jf-logo {
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  font-size: 12px;
+  color: #4ade80;
+}
+
+.jf-close {
+  background: none;
+  border: none;
+  color: #a0a0a0;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.jf-close:hover {
+  color: #e5e5e5;
+}
+
+.jf-body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.jf-row,
+.jf-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.jf-select {
+  flex: 1;
+  min-width: 0;
+}
+
+.jf-select,
+.jf-btn,
+.jf-textarea {
+  background: #111111;
+  color: #e5e5e5;
+  border: 1px solid #2a2a2a;
+  padding: 7px 10px;
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.jf-btn {
+  flex: 1;
+  cursor: pointer;
+  text-align: center;
+}
+
+.jf-btn:hover:not(:disabled) {
+  border-color: #4ade80;
+  color: #4ade80;
+}
+
+.jf-btn:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.jf-btn-primary {
+  border-color: #4ade80;
+  color: #4ade80;
+}
+
+.jf-icon-btn {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  padding: 0;
+}
+
+.jf-status {
+  margin: 0;
+  color: #a0a0a0;
+  font-size: 12px;
+}
+
+.jf-textarea {
+  width: 100%;
+  height: 130px;
+  resize: vertical;
+}
+
+.jf-log {
+  margin: 0;
+  max-height: 200px;
+  overflow-y: auto;
+  background: #111111;
+  border: 1px solid #2a2a2a;
+  padding: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 11px;
+  color: #a0a0a0;
+}
+
+.jf-card {
+  position: relative;
+  background: #111111;
+  border: 1px solid #2a2a2a;
+  padding: 12px;
+}
+
+.jf-card[hidden] {
+  display: none;
+}
+
+.jf-corner-frame::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.35;
+  background-repeat: no-repeat;
+  background-image:
+    linear-gradient(#4ade80, #4ade80),
+    linear-gradient(#4ade80, #4ade80),
+    linear-gradient(#4ade80, #4ade80),
+    linear-gradient(#4ade80, #4ade80),
+    linear-gradient(#4ade80, #4ade80),
+    linear-gradient(#4ade80, #4ade80),
+    linear-gradient(#4ade80, #4ade80),
+    linear-gradient(#4ade80, #4ade80);
+  background-size:
+    10px 1px, 1px 10px,
+    10px 1px, 1px 10px,
+    10px 1px, 1px 10px,
+    10px 1px, 1px 10px;
+  background-position:
+    left top, left top,
+    right top, right top,
+    left bottom, left bottom,
+    right bottom, right bottom;
+}
+
+.jf-score {
+  font-size: 22px;
+  font-weight: 600;
+  color: #4ade80;
+  margin-bottom: 6px;
+}
+
+.jf-summary {
+  margin: 0 0 8px;
+  color: #e5e5e5;
+  line-height: 1.5;
+}
+
+.jf-section {
+  margin-top: 12px;
+}
+
+.jf-section h2 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #6b6b6b;
+  margin: 0 0 6px;
+  font-weight: 600;
+}
+
+.jf-section ul {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.jf-section li {
+  margin-bottom: 6px;
+  line-height: 1.4;
+}
+
+.jf-source {
+  font-size: 11px;
+  color: #4ade80;
+  text-decoration: none;
+}
+
+.jf-source:hover {
+  text-decoration: underline;
+}
+
+.jf-log::-webkit-scrollbar,
+.jf-panel::-webkit-scrollbar {
+  width: 8px;
+}
+
+.jf-log::-webkit-scrollbar-track,
+.jf-panel::-webkit-scrollbar-track {
+  background: #0a0a0a;
+}
+
+.jf-log::-webkit-scrollbar-thumb,
+.jf-panel::-webkit-scrollbar-thumb {
+  background: #2a2a2a;
+}
+`;
+
   const SVG_NS = "http://www.w3.org/2000/svg";
 
   // Builds DOM nodes directly (no innerHTML/HTML-string parsing) so the
@@ -431,8 +708,5 @@
     });
   }
 
-  fetch(browser.runtime.getURL("src/content/panel.css"))
-    .then((r) => r.text())
-    .then(mount)
-    .catch((err) => console.error("Job Filler panel failed to load:", err));
+  mount(PANEL_CSS);
 })();

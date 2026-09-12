@@ -31,6 +31,14 @@ Newest first. One entry per feature commit — added when the feature actually l
   now always granted. Not yet built: a "hide the corner tab on this site" affordance — flagged as
   a likely follow-up now that the tab appears everywhere, including sites that aren't job
   applications, rather than built speculatively ahead of anyone hitting that friction.
+  **Fixed after first real-world test:** the panel never rendered on any page — `panel.js`
+  loaded its CSS via `fetch(browser.runtime.getURL("src/content/panel.css"))`, but Manifest V3
+  requires a content script's own fetches of extension files to be declared in
+  `web_accessible_resources`, which wasn't set, so the fetch silently failed and `mount()` (which
+  builds the whole panel) never ran. Fixed by inlining the CSS as a string constant in `panel.js`
+  instead of granting `web_accessible_resources` — that flag would also expose the file to every
+  page's own scripts, which isn't needed here. `panel.css` is deleted; the CSS now lives in
+  `panel.js`.
 
 - **"Analyze Application" button — CV fit, company insight, and job-market stats grounded in
   live web search** — new `POST /api/v1/applications/analyze/`
