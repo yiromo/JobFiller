@@ -6,10 +6,6 @@
   const PANEL_CSS = `
 :host {
   all: initial;
-  position: fixed;
-  top: 0;
-  right: 0;
-  z-index: 2147483647;
   font-family: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
   font-size: 13px;
   -webkit-font-smoothing: antialiased;
@@ -391,7 +387,17 @@
 
   const host = document.createElement("div");
   host.id = "job-filler-panel-host";
-  document.documentElement.appendChild(host);
+  // Inline + !important, not a :host{} rule in the shadow stylesheet — a page's own
+  // stylesheet can out-specificity :host, but almost never beats an inline style.
+  for (const [prop, value] of Object.entries({
+    position: "fixed",
+    top: "0",
+    left: "0",
+    "z-index": "2147483647",
+  })) {
+    host.style.setProperty(prop, value, "important");
+  }
+  document.body.appendChild(host);
   const shadow = host.attachShadow({ mode: "closed" });
 
   const $ = (id) => shadow.getElementById(id);

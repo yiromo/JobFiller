@@ -41,7 +41,18 @@ Newest first. One entry per feature commit — added when the feature actually l
   `panel.js`. **Also fixed:** the panel docked flush to the viewport edges (full height, no gap,
   no shadow), so on sites with a dark fixed header its background just fused with the page's own
   — insetting the panel 16px from every edge and adding a real box-shadow makes it read as a
-  floating card regardless of what's behind it.
+  floating card regardless of what's behind it. **Also fixed, found by extracting the user's own
+  installed Simplify Copilot `.xpi` and reading its content script:** the host element's
+  `position`/`z-index` were set via a `:host {}` rule inside the shadow stylesheet, which has
+  fairly low CSS specificity and can lose to a page's own stylesheet (this is almost certainly
+  why it kept visually merging into Fastly's header even after the inset/shadow fix — the host
+  itself, unlike its shadow-encapsulated children, lives in the light DOM and is fully subject to
+  page CSS). Simplify sets these as plain inline styles on the host via JS instead, which beats
+  page stylesheets regardless of specificity; matched that, with `!important` for extra safety,
+  and moved the host from `document.documentElement` to `document.body` to match. Also compared
+  Simplify's fill technique (native `HTMLInputElement`/`HTMLTextAreaElement` prototype value
+  setter to bypass React's tracking, same core trick `applyFillPlan` already uses) — functionally
+  equivalent to what's already shipped, no change made since Fill hasn't been reported broken.
 
 - **"Analyze Application" button — CV fit, company insight, and job-market stats grounded in
   live web search** — new `POST /api/v1/applications/analyze/`
