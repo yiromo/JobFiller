@@ -4,6 +4,55 @@ Newest first. One entry per feature commit — added when the feature actually l
 
 ## Done
 
+- **"Analyze Application" button — CV fit, company insight, and job-market stats grounded in
+  live web search** — new `POST /api/v1/applications/analyze/`
+  (`{application_id, page_text, about_text}` -> `{fit_score, fit_summary, company_insights,
+  market_stats, apply_timing, suggestions}`). MiMo alone has no internet access and would
+  fabricate "current" company facts and statistics, which defeats the point of an analysis meant
+  to reflect real, current conditions — so `agent/analyzer.py` adds a real search step via the
+  Tavily API (`TAVILY_API_KEY`, new optional `.env` setting, same empty-key-disables pattern as
+  `MIMO_API_KEY`): one MiMo call extracts `{company, role, company_query, market_query}` from the
+  job posting text, two Tavily searches run (`topic: "general"` for the company, `topic: "news"`
+  + `time_range: "month"` for market/demand stats so figures are actually fresh), then a second
+  MiMo call synthesizes the final report — grounded strictly in the given CV/posting text for
+  `fit_score`/`fit_summary`, and strictly in the Tavily snippets for `company_insights`/
+  `market_stats` (each point required to carry the source `url`/`published_date` it came from;
+  empty array rather than an invented fact if search found nothing useful). Reuses the CV-prose
+  house style from `cover_letter.py` (no em dash, no AI-assistant stock phrasing) since this is
+  also free-form generated text. `ApplicationService.analyze_application` mirrors
+  `regenerate_cover_letter`'s error shape: 404 unknown application, 400 no CV on the record, 503
+  if either `MIMO_API_KEY` or the new `SearchNotConfiguredError` (`TAVILY_API_KEY`) is unset —
+  never silently degrades to hallucinated stats, since grounding is the entire point of this
+  feature. No new persistence (ephemeral per click, like cover-letter regeneration's returned
+  text). Extension: new "Analyze Application" button (gated on `lastApplicationId`, same as
+  Generate Cover Letter) renders the report into a new `#analysis-result` block built via DOM
+  APIs (`textContent`, not `innerHTML`) since `company_insights`/`market_stats` ultimately
+  originate from third-party web search results relayed through the LLM — untrusted content —
+  and source links are restricted to `http(s)` with `rel="noopener noreferrer"`. Wired into the
+  existing `saveScanState`/`restoreScanState` round trip alongside the cover-letter preview so
+  the report survives a popup close. `analyze()` logs the extracted search queries and Tavily hit
+  counts, and `_synthesize` logs MiMo's raw parsed response (same `logger.warning` pattern as
+  `llm_mapper`/`eeo_mapper`) so a "why is this section empty" report is diagnosable from
+  `docker logs` rather than guessed at; `_synthesize` also normalizes every field with `.get(...,
+  default)` before returning, since `response_format=json_object` guarantees valid JSON but not
+  that MiMo's keys match the prompt (this codebase has documented prompt-drift flakiness
+  elsewhere) — a missing key degrades to an empty/zero field instead of a 500. Gunicorn's
+  `--timeout` raised from 60 to 180 in `core/Dockerfile`: this feature's worst case is four
+  sequential MiMo/Tavily calls (45+20+20+60s), which the old 60s timeout would have had gunicorn
+  kill mid-request. Verified live end to end against the real `Application` #35
+  (CircleCI/Greenhouse, `cv_id=3`) with a realistic job-posting text: a fit score with concrete
+  CV-gap reasoning, company insights and market stats each citing a real source URL (one run's
+  empty `company_insights` turned out to be normal search/synthesis variance, not a bug — a
+  second identical curl after adding the logging returned 2 grounded company facts and 2 dated
+  market stats, confirmed via `docker logs`), an apply-timing note based on the posting's stated
+  age, and CV-specific suggestions; separately verified 404 (nonexistent application), 400
+  (`#26`, no CV on record), and confirmed the Tavily request/response shape by hand
+  (`Authorization: Bearer`, `results[].{url, title, content, published_date}`) before writing the
+  client, rather than guessing the API from memory. `ruff check` clean on all new/edited files
+  (pre-existing formatting drift in 5 unrelated files, untouched), `manage.py check` clean,
+  `web-ext lint` clean (same pre-existing manifest warnings), `node --check` clean on `popup.js`.
+  Not yet driven in a real browser.
+
 - **Manual "Generate Cover Letter" button + About-section context** — scan-time generation
   (`ApplicationService._resolve_cover_letter`) only ever ran once per scan and only for fields the
   keyword match caught; there was no way to re-roll a letter or get one at all on a page with no

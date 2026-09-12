@@ -6,6 +6,8 @@ const scanBtn = document.getElementById("scan-btn");
 const fillBtn = document.getElementById("fill-btn");
 const generateClBtn = document.getElementById("generate-cl-btn");
 const coverLetterPreview = document.getElementById("cover-letter-preview");
+const analyzeBtn = document.getElementById("analyze-btn");
+const analysisResult = document.getElementById("analysis-result");
 const cvSelect = document.getElementById("cv-select");
 const manageCvsBtn = document.getElementById("manage-cvs-btn");
 
@@ -15,6 +17,7 @@ let cvsCache = [];
 let lastApplicationId = null;
 let lastPageText = "";
 let lastAboutText = "";
+let lastAnalysis = null;
 
 function log(message) {
   logEl.textContent += `${message}\n`;
@@ -432,6 +435,7 @@ async function saveScanState(tabId, url) {
       pageText: lastPageText,
       aboutText: lastAboutText,
       coverLetterText: coverLetterPreview.hidden ? "" : coverLetterPreview.value,
+      analysis: lastAnalysis,
     },
   });
 }
@@ -452,10 +456,13 @@ async function restoreScanState() {
   lastAboutText = entry.aboutText || "";
   fillBtn.disabled = false;
   generateClBtn.disabled = !lastApplicationId;
+  analyzeBtn.disabled = !lastApplicationId;
   if (entry.coverLetterText) {
     coverLetterPreview.value = entry.coverLetterText;
     coverLetterPreview.hidden = false;
   }
+  lastAnalysis = entry.analysis || null;
+  if (lastAnalysis) renderAnalysis(lastAnalysis);
   setStatus("Restored previous scan — review, then Fill.");
 }
 
@@ -528,7 +535,10 @@ scanBtn.addEventListener("click", async () => {
   setStatus("Scanning...");
   fillBtn.disabled = true;
   generateClBtn.disabled = true;
+  analyzeBtn.disabled = true;
   coverLetterPreview.hidden = true;
+  analysisResult.hidden = true;
+  lastAnalysis = null;
   lastFieldMapping = null;
   lastApplicationId = null;
   lastPageText = "";
@@ -605,6 +615,7 @@ scanBtn.addEventListener("click", async () => {
     setStatus("Scanned — review, then Fill.");
     fillBtn.disabled = false;
     generateClBtn.disabled = false;
+    analyzeBtn.disabled = false;
     await saveScanState(tab.id, tab.url);
   } catch (err) {
     setStatus("Scan failed.");
@@ -649,6 +660,125 @@ generateClBtn.addEventListener("click", async () => {
     log(String(err));
   } finally {
     generateClBtn.disabled = false;
+  }
+});
+
+function safeExternalUrl(url) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") return parsed.href;
+  } catch (err) {
+    return null;
+  }
+  return null;
+}
+
+// Built via textContent, never innerHTML — these strings trace back to web search results.
+function appendSourcedList(container, title, items) {
+  if (!items || items.length === 0) return;
+  const section = document.createElement("div");
+  section.className = "analysis-section";
+  const heading = document.createElement("h2");
+  heading.textContent = title;
+  section.appendChild(heading);
+
+  const list = document.createElement("ul");
+  for (const item of items) {
+    const li = document.createElement("li");
+    li.appendChild(document.createTextNode(item.point || ""));
+    const url = safeExternalUrl(item.url);
+    if (url) {
+      li.appendChild(document.createTextNode(" "));
+      const link = document.createElement("a");
+      link.href = url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.className = "analysis-source";
+      link.textContent = item.published_date ? `source (${item.published_date})` : "source";
+      li.appendChild(link);
+    }
+    list.appendChild(li);
+  }
+  section.appendChild(list);
+  container.appendChild(section);
+}
+
+function renderAnalysis(data) {
+  while (analysisResult.firstChild) analysisResult.removeChild(analysisResult.firstChild);
+
+  const score = document.createElement("div");
+  score.className = "analysis-score";
+  score.textContent = `Fit score: ${data.fit_score}/100`;
+  analysisResult.appendChild(score);
+
+  const summary = document.createElement("p");
+  summary.textContent = data.fit_summary || "";
+  analysisResult.appendChild(summary);
+
+  appendSourcedList(analysisResult, "Company insights", data.company_insights);
+  appendSourcedList(analysisResult, "Market stats", data.market_stats);
+
+  if (data.apply_timing) {
+    const section = document.createElement("div");
+    section.className = "analysis-section";
+    const heading = document.createElement("h2");
+    heading.textContent = "When to apply";
+    section.appendChild(heading);
+    const p = document.createElement("p");
+    p.textContent = data.apply_timing;
+    section.appendChild(p);
+    analysisResult.appendChild(section);
+  }
+
+  if (data.suggestions && data.suggestions.length) {
+    const section = document.createElement("div");
+    section.className = "analysis-section";
+    const heading = document.createElement("h2");
+    heading.textContent = "Other ideas";
+    section.appendChild(heading);
+    const list = document.createElement("ul");
+    for (const suggestion of data.suggestions) {
+      const li = document.createElement("li");
+      li.textContent = suggestion;
+      list.appendChild(li);
+    }
+    section.appendChild(list);
+    analysisResult.appendChild(section);
+  }
+
+  analysisResult.hidden = false;
+}
+
+analyzeBtn.addEventListener("click", async () => {
+  if (!lastApplicationId) return;
+  setStatus("Analyzing application...");
+  analyzeBtn.disabled = true;
+
+  try {
+    const response = await fetch(`${CORE_URL}/api/v1/applications/analyze/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        application_id: lastApplicationId,
+        page_text: lastPageText,
+        about_text: lastAboutText,
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || `core returned ${response.status}`);
+
+    lastAnalysis = data;
+    renderAnalysis(data);
+    log("Analysis ready.");
+    setStatus("Analysis ready.");
+
+    const tab = await getActiveTab();
+    await saveScanState(tab.id, tab.url);
+  } catch (err) {
+    setStatus("Analysis failed.");
+    log(String(err));
+  } finally {
+    analyzeBtn.disabled = false;
   }
 });
 

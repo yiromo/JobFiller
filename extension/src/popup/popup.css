@@ -77,3 +77,42 @@ button:disabled {
   resize: vertical;
   box-sizing: border-box;
 }
+
+#analysis-result {
+  margin-bottom: 8px;
+  padding: 8px;
+  background: #f5f5f5;
+  border: 1px solid #ccc;
+  box-sizing: border-box;
+}
+
+.analysis-score {
+  font-size: 20px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.analysis-section {
+  margin-top: 8px;
+}
+
+.analysis-section h2 {
+  font-size: 12px;
+  text-transform: uppercase;
+  color: #555;
+  margin: 0 0 4px;
+}
+
+.analysis-section ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.analysis-section li {
+  margin-bottom: 4px;
+}
+
+.analysis-source {
+  font-size: 11px;
+  color: #666;
+}

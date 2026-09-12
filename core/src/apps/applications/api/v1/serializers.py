@@ -62,3 +62,24 @@ class GenerateCoverLetterRequestSerializer(serializers.Serializer):
 class GenerateCoverLetterResponseSerializer(serializers.Serializer):
     text = serializers.CharField()
     entries = FieldActionSerializer(many=True)
+
+
+class AnalyzeRequestSerializer(serializers.Serializer):
+    application_id = serializers.IntegerField()
+    page_text = serializers.CharField(required=False, allow_blank=True, default="")
+    about_text = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class SourcedPointSerializer(serializers.Serializer):
+    point = serializers.CharField()
+    url = serializers.CharField(required=False, allow_blank=True, default="")
+    published_date = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class AnalysisResponseSerializer(serializers.Serializer):
+    fit_score = serializers.IntegerField()
+    fit_summary = serializers.CharField()
+    company_insights = SourcedPointSerializer(many=True, required=False, default=list)
+    market_stats = SourcedPointSerializer(many=True, required=False, default=list)
+    apply_timing = serializers.CharField(required=False, allow_blank=True, default="")
+    suggestions = serializers.ListField(child=serializers.CharField(), required=False, default=list)
