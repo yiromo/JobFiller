@@ -169,6 +169,28 @@ Newest first. One entry per feature commit — added when the feature actually l
   and the storage-session persistence round trip are reviewed but unverified in an actual
   Firefox/Zen popup.
 
+- **Delete a stored CV** — `DELETE /api/v1/cvs/{id}/` (new `CvDetailView`), 204 on success, 404 if
+  already gone/unknown. `CvRepository.delete` removes the file from disk (`FieldFile.delete(save=
+  False)`, confirmed via `find` inside the running container that the file is actually gone, not
+  just orphaned) before deleting the row. `Application.cv` is `on_delete=SET_NULL`, so past
+  applications keep their persisted `field_mapping` with `cv` nulled, not cascaded away. Manage
+  CVs (`extension/src/manage/`) gets a "Delete" button per row (`confirm()` before calling it,
+  `#cv-list li` switched to flex so the button doesn't overhang the row like a stray `float:
+  right` would have — `.cv-name`/`.cv-filename` stay put, button pinned right via `margin-left:
+  auto`) — a 404 response is treated the same as success (already gone) rather than surfaced as
+  an error. Checked, not guessed, what happens when a scan/fill still references a since-deleted
+  CV (the panel's `cvSelect` only refreshes on mount, so an already-open tab can still hold a
+  stale id): `ApplicationService`'s scan path already resolves `cv_id` via `_cv_repo.get(...)`
+  and falls back to `None` if not found (confirmed live: `cv_id: 9999` scans fine, degrades to
+  no-CV/no-profile data, no `IntegrityError`) — pre-existing behavior, not new; and
+  `background.js`'s `buildFileMap` already `continue`s past a CV missing from a fresh
+  `fetchCvs()` call, which surfaces as the existing per-ref `no-file-data` failure in
+  `applyFillPlan` rather than aborting the whole fill. Verified end to end against the real
+  running container (rebuilt via `docker compose up --build` to pick up the new endpoint): real
+  upload → 200 file download → 204 delete → gone from the list → 404 on file download → 404 on a
+  second delete. `ruff check`/`manage.py check`/`web-ext lint` clean. The Manage UI itself (the
+  button, the confirm dialog, the list refresh) is not yet driven in a real browser.
+
 ## Fixes
 
 - **`findToggleControl` could click "Clear selections" instead of the dropdown toggle, wiping a

@@ -31,3 +31,11 @@ class CvFileDownloadView(APIView):
         if cv is None:
             raise Http404
         return FileResponse(open(cv.file_path, "rb"), filename=cv.original_filename)
+
+
+class CvDetailView(APIView):
+    def delete(self, request, cv_id: int) -> Response:
+        service = CvsContainer.cv_service()
+        if not service.delete(cv_id):
+            raise Http404
+        return Response(status=status.HTTP_204_NO_CONTENT)

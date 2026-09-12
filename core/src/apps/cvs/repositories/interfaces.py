@@ -22,3 +22,6 @@ class ICvRepository(ABC):
 
     @abstractmethod
     def get(self, cv_id: int) -> CvDTO | None: ...
+
+    @abstractmethod
+    def delete(self, cv_id: int) -> bool: ...

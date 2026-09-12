@@ -23,10 +23,29 @@ async function loadCvs() {
     const filename = document.createElement("span");
     filename.className = "cv-filename";
     filename.textContent = cv.original_filename;
-    li.append(name, " — ", filename);
+    const deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.className = "cv-delete-btn";
+    deleteBtn.textContent = "Delete";
+    deleteBtn.addEventListener("click", () => deleteCv(cv.id, cv.original_filename));
+    li.append(name, " — ", filename, deleteBtn);
     cvListEl.appendChild(li);
   }
   setStatus(cvs.length ? `${cvs.length} CV(s) uploaded.` : "No CVs uploaded yet.");
+}
+
+async function deleteCv(cvId, filename) {
+  if (!confirm(`Delete "${filename}"? This can't be undone.`)) return;
+  setStatus(`Deleting ${filename}...`);
+  try {
+    const response = await fetch(`${CORE_URL}/api/v1/cvs/${cvId}/`, { method: "DELETE" });
+    if (!response.ok && response.status !== 404) {
+      throw new Error(`core returned ${response.status}`);
+    }
+    await loadCvs();
+  } catch (err) {
+    setStatus(`Delete failed: ${err}`);
+  }
 }
 
 cvUploadBtn.addEventListener("click", () => cvFileInput.click());

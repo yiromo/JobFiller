@@ -28,3 +28,6 @@ class CvService:
 
     def get(self, cv_id: int) -> CvDTO | None:
         return self._repo.get(cv_id)
+
+    def delete(self, cv_id: int) -> bool:
+        return self._repo.delete(cv_id)

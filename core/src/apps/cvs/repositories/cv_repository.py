@@ -35,6 +35,14 @@ class CvRepository(ICvRepository):
         obj = Cv.objects.filter(id=cv_id).first()
         return self._to_dto(obj) if obj else None
 
+    def delete(self, cv_id: int) -> bool:
+        obj = Cv.objects.filter(id=cv_id).first()
+        if obj is None:
+            return False
+        obj.file.delete(save=False)
+        obj.delete()
+        return True
+
     @staticmethod
     def _to_dto(obj: Cv) -> CvDTO:
         return CvDTO(
