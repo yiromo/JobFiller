@@ -38,7 +38,10 @@ Newest first. One entry per feature commit — added when the feature actually l
   builds the whole panel) never ran. Fixed by inlining the CSS as a string constant in `panel.js`
   instead of granting `web_accessible_resources` — that flag would also expose the file to every
   page's own scripts, which isn't needed here. `panel.css` is deleted; the CSS now lives in
-  `panel.js`.
+  `panel.js`. **Also fixed:** the panel docked flush to the viewport edges (full height, no gap,
+  no shadow), so on sites with a dark fixed header its background just fused with the page's own
+  — insetting the panel 16px from every edge and adding a real box-shadow makes it read as a
+  floating card regardless of what's behind it.
 
 - **"Analyze Application" button — CV fit, company insight, and job-market stats grounded in
   live web search** — new `POST /api/v1/applications/analyze/`

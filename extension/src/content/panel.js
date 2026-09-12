@@ -33,6 +33,7 @@
   color: #4ade80;
   border: 1px solid #2a2a2a;
   border-right: none;
+  box-shadow: -4px 0 16px rgba(0, 0, 0, 0.4);
   cursor: pointer;
 }
 
@@ -47,16 +48,17 @@
 
 .jf-panel {
   position: fixed;
-  top: 0;
-  right: 0;
-  bottom: 0;
+  top: 16px;
+  right: 16px;
+  bottom: 16px;
   width: 340px;
-  max-width: calc(100vw - 24px);
+  max-width: calc(100vw - 32px);
   display: flex;
   flex-direction: column;
   background: #0a0a0a;
   color: #e5e5e5;
-  border-left: 1px solid #2a2a2a;
+  border: 1px solid #2a2a2a;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
   overflow-y: auto;
 }
 
