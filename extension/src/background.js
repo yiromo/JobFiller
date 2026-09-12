@@ -166,13 +166,17 @@ async function applyFillPlan(plan, fileByRef) {
     return Array.from(document.querySelectorAll('[role="option"]'));
   }
 
-  // react-select-style widgets render a dedicated toggle (an icon/button
-  // sibling of the text input, inside the same control wrapper) that opens
-  // the menu independent of focus — clicking the input itself doesn't
-  // always do it.
+  // Toggle lives in the control wrapper; a "Clear" indicator often precedes it in the DOM.
   function findToggleControl(el) {
     const control = el.closest('[class*="control" i]');
-    return control ? control.querySelector('button, [role="button"], svg') : null;
+    if (!control) return null;
+    const clickable = Array.from(control.querySelectorAll('button, [role="button"], svg'));
+    return (
+      clickable.find((c) => {
+        const labelSource = c.closest('button, [role="button"]') || c;
+        return !/clear/i.test(labelSource.getAttribute("aria-label") || "");
+      }) || null
+    );
   }
 
   function bestMatch(options, value) {

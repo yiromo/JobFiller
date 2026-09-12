@@ -171,6 +171,31 @@ Newest first. One entry per feature commit — added when the feature actually l
 
 ## Fixes
 
+- **`findToggleControl` could click "Clear selections" instead of the dropdown toggle, wiping a
+  pre-filled combobox** — got the real outerHTML of a live Greenhouse "My pronouns are:" widget
+  (react-select-style, `role="combobox"` on the input, already showing a valid default of
+  `(He, Him, His)`) after the user flagged that these dropdowns "need to choose, not just type."
+  Its `.select__indicators` wrapper renders a `button[aria-label="Clear selections"]` *before*
+  `button[aria-label="Toggle flyout"]` — `findToggleControl`'s old
+  `control.querySelector('button, [role="button"], svg')` returns the first match in document
+  order, which is Clear, not Toggle. Clicking Clear on a pre-filled field wipes its value; the
+  code then waits 2s for a menu that never opens (Clear doesn't open one), falls through to the
+  typing fallback, and usually recovers by typing+matching — but if `bestMatch` misses on that
+  fallback, the field ends up **empty** instead of left at its original correct value, which is
+  worse than doing nothing. Fixed by filtering candidates: for each clickable node, check its
+  closest `button`/`[role="button"]` ancestor's `aria-label` (not the node's own — the icon `svg`
+  inside the Clear button has no label of its own and would otherwise still pass, with its
+  bubbled click still triggering the button's real handler) and skip anything matching `/clear/i`.
+  Scoped to the one signal actually observed (`aria-label` text) rather than widening to a
+  "prefer the last indicator" or "match toggle/open/dropdown" heuristic with no second markup
+  sample to support it — a widget with an *unlabeled* clear control would still be exposed to
+  this bug; needs another real sample to fix generally. React-select's ClearIndicator typically
+  only renders once a value exists, so this most likely explains failures specifically on
+  *pre-filled/defaulted* dropdown fields — plausible, not confirmed, as the likely cause of some
+  of the still-unverified `no-matching-option` results logged in the KoBold combobox fix above.
+  Not yet re-verified live — needs the user to re-test this field and report the per-ref log line
+  (`ok` / `no-matching-option` / `dropdown-never-opened`) for `question_67944728`.
+
 - **Cover-letter fields skipped when unlabeled, silently — root cause of "cover letter never
   attaches, résumé does"** — `_COVER_LETTER_KEYWORDS` only matched the literal phrase "cover
   letter" (a space required), while `_RESUME_KEYWORDS` matches single words with no such
