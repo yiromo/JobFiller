@@ -127,15 +127,19 @@ async function applyFillPlan(plan, fileByRef) {
     "value",
   ).set;
 
-  // React (and most SPA frameworks) tracks value changes through its own
-  // event system, not the DOM property — setting `el.value` directly is
-  // invisible to it. Calling the native setter first, then dispatching the
-  // events React listens for, makes the framework pick up the change.
+  // Native setter bypasses React's value tracking; the full key-event sandwich also reaches
+  // autocomplete/masked-input widgets that key off keyboard events, not just a value change.
   function setValue(el, value) {
     const setter = el.tagName === "TEXTAREA" ? nativeTextareaSetter : nativeInputSetter;
+    const eventInit = { bubbles: true, cancelable: true };
+    el.focus();
+    el.dispatchEvent(new Event("keydown", eventInit));
+    el.dispatchEvent(new Event("keypress", eventInit));
     setter.call(el, value);
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-    el.dispatchEvent(new Event("change", { bubbles: true }));
+    el.dispatchEvent(new Event("textInput", eventInit));
+    el.dispatchEvent(new Event("input", eventInit));
+    el.dispatchEvent(new Event("keyup", eventInit));
+    el.dispatchEvent(new Event("change", eventInit));
   }
 
   function clickOption(optionEl) {
@@ -572,12 +576,24 @@ async function handleAnalyze(message) {
   return { ok: true, analysis: data };
 }
 
+function scanStorageKey(tabId) {
+  return `scan:${tabId}`;
+}
+
 browser.runtime.onMessage.addListener((message, sender) => {
   const tabId = sender.tab?.id;
 
   switch (message.type) {
     case "whoami":
       return Promise.resolve({ tabId });
+    case "saveState":
+      return browser.storage.session
+        .set({ [scanStorageKey(tabId)]: message.state })
+        .then(() => ({ ok: true }));
+    case "getState":
+      return browser.storage.session
+        .get(scanStorageKey(tabId))
+        .then((stored) => ({ entry: stored[scanStorageKey(tabId)] || null }));
     case "loadCvs":
       return fetchCvs().then((cvs) => ({ ok: true, cvs }));
     case "scan":

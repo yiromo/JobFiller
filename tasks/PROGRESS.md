@@ -49,10 +49,25 @@ Newest first. One entry per feature commit — added when the feature actually l
   itself, unlike its shadow-encapsulated children, lives in the light DOM and is fully subject to
   page CSS). Simplify sets these as plain inline styles on the host via JS instead, which beats
   page stylesheets regardless of specificity; matched that, with `!important` for extra safety,
-  and moved the host from `document.documentElement` to `document.body` to match. Also compared
-  Simplify's fill technique (native `HTMLInputElement`/`HTMLTextAreaElement` prototype value
-  setter to bypass React's tracking, same core trick `applyFillPlan` already uses) — functionally
-  equivalent to what's already shipped, no change made since Fill hasn't been reported broken.
+  and moved the host from `document.documentElement` to `document.body` to match. **Also fixed:**
+  `saveScanState`/`restoreScanState` in `panel.js` called `browser.storage.session.set`/`.get`
+  directly, which crashed (`TypeError: can't access property "set", browser.storage.session is
+  undefined`) — content scripts don't get `storage.session` in Firefox by default, only
+  privileged extension contexts (confirmed Simplify's own content script avoids calling it at
+  all, for the same reason). Moved the reads/writes into `background.js` (new `saveState`/
+  `getState` message cases, keyed the same `scan:<tabId>` way); `panel.js` now only ever talks to
+  it via `send()`. Per an explicit ask to adopt Simplify's fill technique where it's actually
+  better, compared its value-setting function too: same native-setter core `applyFillPlan`
+  already used, but wrapped in a fuller event sandwich
+  (`focus`/`keydown`/`keypress`/[setter]/`textInput`/`input`/`keyup`/`change` vs. just
+  `input`/`change`) to also reach autocomplete/masked-input widgets that key off keyboard events
+  rather than a value change. Adopted that into `background.js`'s `setValue`; deliberately did
+  not adopt Simplify's `.click()` call in the same function — this codebase's comboboxes already
+  have a dedicated toggle-click flow (`findToggleControl`/`selectValue`), so an extra click on
+  the plain-text path looked like added risk with no matching benefit. Not yet re-verified live:
+  the crash happened during scan-state save, right after a successful scan but before Fill was
+  reached, so this is the first real test of Fill (and the new event sequence) in the new
+  in-page-panel architecture.
 
 - **"Analyze Application" button — CV fit, company insight, and job-market stats grounded in
   live web search** — new `POST /api/v1/applications/analyze/`

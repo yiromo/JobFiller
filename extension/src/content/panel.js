@@ -427,14 +427,10 @@
     return browser.runtime.sendMessage({ type, ...payload });
   }
 
-  function scanStorageKey(tabId) {
-    return `scan:${tabId}`;
-  }
-
   async function saveScanState() {
     if (myTabId == null) return;
-    await browser.storage.session.set({
-      [scanStorageKey(myTabId)]: {
+    await send("saveState", {
+      state: {
         url: window.location.href,
         fieldMapping: lastFieldMapping,
         refFrameMap,
@@ -456,9 +452,7 @@
     myTabId = tabId;
     if (myTabId == null) return;
 
-    const key = scanStorageKey(myTabId);
-    const stored = await browser.storage.session.get(key);
-    const entry = stored[key];
+    const { entry } = await send("getState", {});
     if (!entry || entry.url !== window.location.href) return;
 
     lastFieldMapping = entry.fieldMapping;
