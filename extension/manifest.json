@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Job Filler",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Scans a job application form and fills it from your CV via the local job-filler core API.",
   "browser_specific_settings": {
     "gecko": {
@@ -12,11 +12,20 @@
       }
     }
   },
-  "permissions": ["activeTab", "scripting", "storage"],
-  "host_permissions": ["http://localhost:8000/*", "http://127.0.0.1:8000/*"],
-  "optional_permissions": ["<all_urls>"],
-  "action": {
-    "default_popup": "src/popup/popup.html",
-    "default_title": "Job Filler"
-  }
+  "permissions": ["scripting", "storage"],
+  "host_permissions": [
+    "<all_urls>",
+    "http://localhost:8000/*",
+    "http://127.0.0.1:8000/*"
+  ],
+  "background": {
+    "scripts": ["src/background.js"]
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["src/content/panel.js"],
+      "run_at": "document_idle"
+    }
+  ]
 }

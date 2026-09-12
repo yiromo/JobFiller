@@ -1,34 +1,7 @@
 const CORE_URL = "http://localhost:8000";
 
-const statusEl = document.getElementById("status");
-const logEl = document.getElementById("log");
-const scanBtn = document.getElementById("scan-btn");
-const fillBtn = document.getElementById("fill-btn");
-const generateClBtn = document.getElementById("generate-cl-btn");
-const coverLetterPreview = document.getElementById("cover-letter-preview");
-const analyzeBtn = document.getElementById("analyze-btn");
-const analysisResult = document.getElementById("analysis-result");
-const cvSelect = document.getElementById("cv-select");
-const manageCvsBtn = document.getElementById("manage-cvs-btn");
-
-let lastFieldMapping = null;
-let refFrameMap = {};
-let cvsCache = [];
-let lastApplicationId = null;
-let lastPageText = "";
-let lastAboutText = "";
-let lastAnalysis = null;
-
-function log(message) {
-  logEl.textContent += `${message}\n`;
-}
-
-function setStatus(message) {
-  statusEl.textContent = message;
-}
-
 // Runs inside the page, injected via scripting.executeScript — cannot
-// reference anything from popup.js's scope.
+// reference anything from this file's scope.
 function scanPage() {
   let refCounter = 0;
 
@@ -137,7 +110,7 @@ function scanPage() {
 
 // Runs inside the page. `plan` is the field_mapping array core returned;
 // `fileByRef` maps a ref to { base64, filename, mimeType } for
-// any "upload" actions — fetched by popup.js beforehand, since content
+// any "upload" actions — fetched by background.js beforehand, since content
 // scripts can't reliably reach the core API without extra host permissions.
 //
 // Must be async: filling a custom combobox (Greenhouse/Ashby style) requires
@@ -371,7 +344,7 @@ function bestOptionMatch(options, value) {
   );
 }
 
-function applyEeoSettings(formSnapshot, fieldMapping, eeoSettings) {
+function applyEeoSettings(formSnapshot, fieldMapping, eeoSettings, logLines) {
   if (!eeoSettings.length) return fieldMapping;
   const fieldsByRef = Object.fromEntries(formSnapshot.map((f) => [f.ref, f]));
   let filled = 0;
@@ -403,67 +376,12 @@ function applyEeoSettings(formSnapshot, fieldMapping, eeoSettings) {
     return { ref: mapping.ref, value: setting.answer, action, confidence: 1 };
   });
 
-  if (filled) log(`Filled ${filled} field(s) from your Settings answers.`);
+  if (filled) logLines.push(`Filled ${filled} field(s) from your Settings answers.`);
   if (unmatched) {
-    log(`${unmatched} Settings answer(s) matched a field but not any of its options — adjust`);
-    log(`  the answer's wording in Manage CVs > Settings to match this site.`);
+    logLines.push(`${unmatched} Settings answer(s) matched a field but not any of its options —`);
+    logLines.push(`  adjust the answer's wording in Manage CVs > Settings to match this site.`);
   }
   return result;
-}
-
-async function getActiveTab() {
-  const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
-  return tab;
-}
-
-// The popup document is destroyed and recreated every time it closes, so any
-// in-memory state (lastFieldMapping) is normally lost between opens.
-// storage.session keeps the last scan per tab, cleared on browser restart —
-// it's tied to the page's live DOM refs, which don't survive that anyway.
-function scanStorageKey(tabId) {
-  return `scan:${tabId}`;
-}
-
-async function saveScanState(tabId, url) {
-  await browser.storage.session.set({
-    [scanStorageKey(tabId)]: {
-      url,
-      fieldMapping: lastFieldMapping,
-      refFrameMap,
-      logText: logEl.textContent,
-      applicationId: lastApplicationId,
-      pageText: lastPageText,
-      aboutText: lastAboutText,
-      coverLetterText: coverLetterPreview.hidden ? "" : coverLetterPreview.value,
-      analysis: lastAnalysis,
-    },
-  });
-}
-
-async function restoreScanState() {
-  const tab = await getActiveTab();
-  if (!tab) return;
-  const key = scanStorageKey(tab.id);
-  const stored = await browser.storage.session.get(key);
-  const entry = stored[key];
-  if (!entry || entry.url !== tab.url) return;
-
-  lastFieldMapping = entry.fieldMapping;
-  refFrameMap = entry.refFrameMap || {};
-  logEl.textContent = entry.logText || "";
-  lastApplicationId = entry.applicationId || null;
-  lastPageText = entry.pageText || "";
-  lastAboutText = entry.aboutText || "";
-  fillBtn.disabled = false;
-  generateClBtn.disabled = !lastApplicationId;
-  analyzeBtn.disabled = !lastApplicationId;
-  if (entry.coverLetterText) {
-    coverLetterPreview.value = entry.coverLetterText;
-    coverLetterPreview.hidden = false;
-  }
-  lastAnalysis = entry.analysis || null;
-  if (lastAnalysis) renderAnalysis(lastAnalysis);
-  setStatus("Restored previous scan — review, then Fill.");
 }
 
 function arrayBufferToBase64(buffer) {
@@ -481,25 +399,17 @@ function guessMimeType(filename) {
   return "application/octet-stream";
 }
 
-async function loadCvs(selectId) {
+async function fetchCvs() {
   const response = await fetch(`${CORE_URL}/api/v1/cvs/`);
   if (!response.ok) throw new Error(`core returned ${response.status}`);
-  cvsCache = await response.json();
-
-  cvSelect.innerHTML = '<option value="">No CV selected</option>';
-  for (const cv of cvsCache) {
-    const option = document.createElement("option");
-    option.value = String(cv.id);
-    option.textContent = `${cv.full_name || cv.original_filename} — ${cv.original_filename}`;
-    cvSelect.appendChild(option);
-  }
-  if (selectId) cvSelect.value = String(selectId);
+  return response.json();
 }
 
 // Fetches the file bytes for every "upload" action in the plan, keyed by ref,
 // so applyFillPlan (running in the page) can attach them via DataTransfer.
 async function buildFileMap(plan) {
   const fileByRef = {};
+  let cvsCache = null;
   for (const item of plan) {
     if (item.action !== "upload") continue;
     if (item.file) {
@@ -510,6 +420,7 @@ async function buildFileMap(plan) {
       };
       continue;
     }
+    if (!cvsCache) cvsCache = await fetchCvs();
     const cv = cvsCache.find((c) => String(c.id) === item.value);
     if (!cv) continue;
     const response = await fetch(`${CORE_URL}/api/v1/cvs/${cv.id}/file/`);
@@ -523,315 +434,165 @@ async function buildFileMap(plan) {
   return fileByRef;
 }
 
-// File pickers opened from a panel popup steal focus and close it before a
-// selection completes (worse still under a Flatpak browser, where the
-// picker is a separate portal process) — CV upload lives on its own
-// extension tab instead, which doesn't close on focus loss.
-manageCvsBtn.addEventListener("click", () => {
-  browser.tabs.create({ url: browser.runtime.getURL("src/manage/manage.html") });
-});
+async function handleScan(message, tabId) {
+  const logLines = [];
+  // allFrames catches ATS forms embedded in a cross-origin iframe (e.g.
+  // Newton/gnewton career pages) — <all_urls> is a required permission now,
+  // so this always has access.
+  const injectionResults = await browser.scripting.executeScript({
+    target: { tabId, allFrames: true },
+    func: scanPage,
+  });
 
-scanBtn.addEventListener("click", async () => {
-  setStatus("Scanning...");
-  fillBtn.disabled = true;
-  generateClBtn.disabled = true;
-  analyzeBtn.disabled = true;
-  coverLetterPreview.hidden = true;
-  analysisResult.hidden = true;
-  lastAnalysis = null;
-  lastFieldMapping = null;
-  lastApplicationId = null;
-  lastPageText = "";
-  lastAboutText = "";
-  refFrameMap = {};
+  const framesWithFields = injectionResults.filter(
+    (r) => r.result && r.result.form_snapshot.length > 0,
+  );
+  const bestFrame = framesWithFields.reduce(
+    (best, r) =>
+      !best || r.result.form_snapshot.length > best.result.form_snapshot.length ? r : best,
+    null,
+  );
+  // The "About" blurb can live in the top frame even when the form itself is
+  // in an embedded ATS iframe — search every scanned frame (not just ones
+  // with fields), lowest frameId (top frame) first.
+  const aboutFrame = injectionResults
+    .filter((r) => r.result && r.result.about_text)
+    .sort((a, b) => a.frameId - b.frameId)[0];
 
-  try {
-    const tab = await getActiveTab();
-    // allFrames catches ATS forms embedded in a cross-origin iframe (e.g.
-    // Newton/gnewton career pages) — Firefox returns partial results for
-    // frames we lack permission for instead of rejecting the whole call, so
-    // this is safe even before the user grants <all_urls> in Manage CVs.
-    const injectionResults = await browser.scripting.executeScript({
-      target: { tabId: tab.id, allFrames: true },
-      func: scanPage,
-    });
-
-    const framesWithFields = injectionResults.filter(
-      (r) => r.result && r.result.form_snapshot.length > 0,
-    );
-    const bestFrame = framesWithFields.reduce(
-      (best, r) =>
-        !best || r.result.form_snapshot.length > best.result.form_snapshot.length ? r : best,
-      null,
-    );
-    // The "About" blurb can live in the top frame even when the form itself
-    // is in an embedded ATS iframe — search every scanned frame (not just
-    // ones with fields), lowest frameId (top frame) first.
-    const aboutFrame = injectionResults
-      .filter((r) => r.result && r.result.about_text)
-      .sort((a, b) => a.frameId - b.frameId)[0];
-
-    const formSnapshot = [];
-    for (const { frameId, result } of framesWithFields) {
-      for (const field of result.form_snapshot) {
-        const ref = `${frameId}:${field.ref}`;
-        refFrameMap[ref] = { frameId, localRef: field.ref };
-        formSnapshot.push({ ...field, ref });
-      }
+  const refFrameMap = {};
+  const formSnapshot = [];
+  for (const { frameId, result } of framesWithFields) {
+    for (const field of result.form_snapshot) {
+      const ref = `${frameId}:${field.ref}`;
+      refFrameMap[ref] = { frameId, localRef: field.ref };
+      formSnapshot.push({ ...field, ref });
     }
-    log(`Found ${formSnapshot.length} fields across ${framesWithFields.length} frame(s).`);
-
-    if (formSnapshot.length === 0 && injectionResults.length <= 1) {
-      const hasAllUrls = await browser.permissions.contains({ origins: ["<all_urls>"] });
-      if (!hasAllUrls) {
-        log("No embedded-frame access yet — if this form loads inside an iframe, grant");
-        log("  access in Manage CVs > Page access, then scan again.");
-      }
-    }
-
-    const cvId = cvSelect.value ? Number(cvSelect.value) : null;
-    lastPageText = bestFrame ? bestFrame.result.page_text : "";
-    lastAboutText = aboutFrame ? aboutFrame.result.about_text : "";
-    const eeoSettings = await loadEeoSettings();
-    const response = await fetch(`${CORE_URL}/api/v1/applications/scan/`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        url: tab.url,
-        page_text: lastPageText,
-        about_text: lastAboutText,
-        form_snapshot: formSnapshot,
-        cv_id: cvId,
-        eeo_answers: eeoSettings,
-      }),
-    });
-    if (!response.ok) throw new Error(`core returned ${response.status}`);
-
-    const data = await response.json();
-    lastApplicationId = data.id;
-    lastFieldMapping = applyEeoSettings(formSnapshot, data.field_mapping, eeoSettings);
-    const skipped = lastFieldMapping.filter((f) => f.action === "skip").length;
-    log(`Fill plan ready: ${lastFieldMapping.length - skipped} to fill, ${skipped} skipped.`);
-    setStatus("Scanned — review, then Fill.");
-    fillBtn.disabled = false;
-    generateClBtn.disabled = false;
-    analyzeBtn.disabled = false;
-    await saveScanState(tab.id, tab.url);
-  } catch (err) {
-    setStatus("Scan failed.");
-    log(String(err));
   }
-});
+  logLines.push(`Found ${formSnapshot.length} fields across ${framesWithFields.length} frame(s).`);
 
-generateClBtn.addEventListener("click", async () => {
-  if (!lastApplicationId) return;
-  setStatus("Generating cover letter...");
-  generateClBtn.disabled = true;
+  const pageText = bestFrame ? bestFrame.result.page_text : "";
+  const aboutText = aboutFrame ? aboutFrame.result.about_text : "";
+  const eeoSettings = await loadEeoSettings();
+  const response = await fetch(`${CORE_URL}/api/v1/applications/scan/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      url: message.url,
+      page_text: pageText,
+      about_text: aboutText,
+      form_snapshot: formSnapshot,
+      cv_id: message.cvId,
+      eeo_answers: eeoSettings,
+    }),
+  });
+  if (!response.ok) throw new Error(`core returned ${response.status}`);
 
-  try {
-    const response = await fetch(`${CORE_URL}/api/v1/applications/generate-cover-letter/`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        application_id: lastApplicationId,
-        page_text: lastPageText,
-        about_text: lastAboutText,
-      }),
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || `core returned ${response.status}`);
+  const data = await response.json();
+  const fieldMapping = applyEeoSettings(formSnapshot, data.field_mapping, eeoSettings, logLines);
+  const skipped = fieldMapping.filter((f) => f.action === "skip").length;
+  logLines.push(`Fill plan ready: ${fieldMapping.length - skipped} to fill, ${skipped} skipped.`);
 
-    coverLetterPreview.value = data.text;
-    coverLetterPreview.hidden = false;
-
-    if (data.entries.length && lastFieldMapping) {
-      const entriesByRef = Object.fromEntries(data.entries.map((e) => [e.ref, e]));
-      lastFieldMapping = lastFieldMapping.map((item) => entriesByRef[item.ref] || item);
-      log(`Cover letter regenerated — applied to ${data.entries.length} field(s), Fill will use it.`);
-    } else {
-      log("Cover letter generated — no cover-letter field detected on this page; copy it above.");
-    }
-    setStatus("Cover letter ready.");
-
-    const tab = await getActiveTab();
-    await saveScanState(tab.id, tab.url);
-  } catch (err) {
-    setStatus("Cover letter generation failed.");
-    log(String(err));
-  } finally {
-    generateClBtn.disabled = false;
-  }
-});
-
-function safeExternalUrl(url) {
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol === "http:" || parsed.protocol === "https:") return parsed.href;
-  } catch (err) {
-    return null;
-  }
-  return null;
+  return {
+    ok: true,
+    applicationId: data.id,
+    fieldMapping,
+    refFrameMap,
+    pageText,
+    aboutText,
+    logLines,
+  };
 }
 
-// Built via textContent, never innerHTML — these strings trace back to web search results.
-function appendSourcedList(container, title, items) {
-  if (!items || items.length === 0) return;
-  const section = document.createElement("div");
-  section.className = "analysis-section";
-  const heading = document.createElement("h2");
-  heading.textContent = title;
-  section.appendChild(heading);
+async function handleFill(message, tabId) {
+  const fileByRef = await buildFileMap(message.fieldMapping);
 
-  const list = document.createElement("ul");
-  for (const item of items) {
-    const li = document.createElement("li");
-    li.appendChild(document.createTextNode(item.point || ""));
-    const url = safeExternalUrl(item.url);
-    if (url) {
-      li.appendChild(document.createTextNode(" "));
-      const link = document.createElement("a");
-      link.href = url;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
-      link.className = "analysis-source";
-      link.textContent = item.published_date ? `source (${item.published_date})` : "source";
-      li.appendChild(link);
+  // Each field's ref only resolves inside the frame it was scanned from —
+  // group by frame and translate back to the un-prefixed ref that's actually
+  // stamped on the element there.
+  const itemsByFrame = new Map();
+  for (const item of message.fieldMapping) {
+    const info = message.refFrameMap[item.ref] || { frameId: 0, localRef: item.ref };
+    if (!itemsByFrame.has(info.frameId)) itemsByFrame.set(info.frameId, []);
+    itemsByFrame.get(info.frameId).push({ ...item, ref: info.localRef, globalRef: item.ref });
+  }
+
+  const allResults = [];
+  for (const [frameId, items] of itemsByFrame) {
+    const localFileByRef = {};
+    for (const item of items) {
+      if (fileByRef[item.globalRef]) localFileByRef[item.ref] = fileByRef[item.globalRef];
     }
-    list.appendChild(li);
-  }
-  section.appendChild(list);
-  container.appendChild(section);
-}
-
-function renderAnalysis(data) {
-  while (analysisResult.firstChild) analysisResult.removeChild(analysisResult.firstChild);
-
-  const score = document.createElement("div");
-  score.className = "analysis-score";
-  score.textContent = `Fit score: ${data.fit_score}/100`;
-  analysisResult.appendChild(score);
-
-  const summary = document.createElement("p");
-  summary.textContent = data.fit_summary || "";
-  analysisResult.appendChild(summary);
-
-  appendSourcedList(analysisResult, "Company insights", data.company_insights);
-  appendSourcedList(analysisResult, "Market stats", data.market_stats);
-
-  if (data.apply_timing) {
-    const section = document.createElement("div");
-    section.className = "analysis-section";
-    const heading = document.createElement("h2");
-    heading.textContent = "When to apply";
-    section.appendChild(heading);
-    const p = document.createElement("p");
-    p.textContent = data.apply_timing;
-    section.appendChild(p);
-    analysisResult.appendChild(section);
-  }
-
-  if (data.suggestions && data.suggestions.length) {
-    const section = document.createElement("div");
-    section.className = "analysis-section";
-    const heading = document.createElement("h2");
-    heading.textContent = "Other ideas";
-    section.appendChild(heading);
-    const list = document.createElement("ul");
-    for (const suggestion of data.suggestions) {
-      const li = document.createElement("li");
-      li.textContent = suggestion;
-      list.appendChild(li);
-    }
-    section.appendChild(list);
-    analysisResult.appendChild(section);
-  }
-
-  analysisResult.hidden = false;
-}
-
-analyzeBtn.addEventListener("click", async () => {
-  if (!lastApplicationId) return;
-  setStatus("Analyzing application...");
-  analyzeBtn.disabled = true;
-
-  try {
-    const response = await fetch(`${CORE_URL}/api/v1/applications/analyze/`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        application_id: lastApplicationId,
-        page_text: lastPageText,
-        about_text: lastAboutText,
-      }),
+    const plan = items.map(({ ref, value, action, confidence }) => ({
+      ref,
+      value,
+      action,
+      confidence,
+    }));
+    const [{ result }] = await browser.scripting.executeScript({
+      target: { tabId, frameIds: [frameId] },
+      func: applyFillPlan,
+      args: [plan, localFileByRef],
     });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || `core returned ${response.status}`);
+    allResults.push(...result.map((r) => ({ ...r, frameId })));
+  }
 
-    lastAnalysis = data;
-    renderAnalysis(data);
-    log("Analysis ready.");
-    setStatus("Analysis ready.");
+  const failed = allResults.filter((r) => !r.ok);
+  const logLines = [`Filled ${allResults.length - failed.length}/${allResults.length}.`];
+  failed.forEach((r) => logLines.push(`  frame ${r.frameId} / ${r.ref}: ${r.reason}`));
+  return { ok: true, logLines };
+}
 
-    const tab = await getActiveTab();
-    await saveScanState(tab.id, tab.url);
-  } catch (err) {
-    setStatus("Analysis failed.");
-    log(String(err));
-  } finally {
-    analyzeBtn.disabled = false;
+async function handleGenerateCoverLetter(message) {
+  const response = await fetch(`${CORE_URL}/api/v1/applications/generate-cover-letter/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      application_id: message.applicationId,
+      page_text: message.pageText,
+      about_text: message.aboutText,
+    }),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.detail || `core returned ${response.status}`);
+  return { ok: true, text: data.text, entries: data.entries };
+}
+
+async function handleAnalyze(message) {
+  const response = await fetch(`${CORE_URL}/api/v1/applications/analyze/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      application_id: message.applicationId,
+      page_text: message.pageText,
+      about_text: message.aboutText,
+    }),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.detail || `core returned ${response.status}`);
+  return { ok: true, analysis: data };
+}
+
+browser.runtime.onMessage.addListener((message, sender) => {
+  const tabId = sender.tab?.id;
+
+  switch (message.type) {
+    case "whoami":
+      return Promise.resolve({ tabId });
+    case "loadCvs":
+      return fetchCvs().then((cvs) => ({ ok: true, cvs }));
+    case "scan":
+      return handleScan(message, tabId).catch((err) => ({ ok: false, error: String(err) }));
+    case "fill":
+      return handleFill(message, tabId).catch((err) => ({ ok: false, error: String(err) }));
+    case "generateCoverLetter":
+      return handleGenerateCoverLetter(message).catch((err) => ({ ok: false, error: String(err) }));
+    case "analyze":
+      return handleAnalyze(message).catch((err) => ({ ok: false, error: String(err) }));
+    case "openManage":
+      return browser.tabs
+        .create({ url: browser.runtime.getURL("src/manage/manage.html") })
+        .then(() => ({ ok: true }));
+    default:
+      return undefined;
   }
 });
-
-fillBtn.addEventListener("click", async () => {
-  if (!lastFieldMapping) return;
-  setStatus("Filling...");
-
-  try {
-    const fileByRef = await buildFileMap(lastFieldMapping);
-    const tab = await getActiveTab();
-
-    // Each field's ref only resolves inside the frame it was scanned from —
-    // group by frame and translate back to the un-prefixed ref that's
-    // actually stamped on the element there.
-    const itemsByFrame = new Map();
-    for (const item of lastFieldMapping) {
-      const info = refFrameMap[item.ref] || { frameId: 0, localRef: item.ref };
-      if (!itemsByFrame.has(info.frameId)) itemsByFrame.set(info.frameId, []);
-      itemsByFrame.get(info.frameId).push({ ...item, ref: info.localRef, globalRef: item.ref });
-    }
-
-    const allResults = [];
-    for (const [frameId, items] of itemsByFrame) {
-      const localFileByRef = {};
-      for (const item of items) {
-        if (fileByRef[item.globalRef]) localFileByRef[item.ref] = fileByRef[item.globalRef];
-      }
-      const plan = items.map(({ ref, value, action, confidence }) => ({
-        ref,
-        value,
-        action,
-        confidence,
-      }));
-      const [{ result }] = await browser.scripting.executeScript({
-        target: { tabId: tab.id, frameIds: [frameId] },
-        func: applyFillPlan,
-        args: [plan, localFileByRef],
-      });
-      allResults.push(...result.map((r) => ({ ...r, frameId })));
-    }
-
-    const failed = allResults.filter((r) => !r.ok);
-    log(`Filled ${allResults.length - failed.length}/${allResults.length}.`);
-    failed.forEach((r) => log(`  frame ${r.frameId} / ${r.ref}: ${r.reason}`));
-    setStatus("Done — review before submitting.");
-  } catch (err) {
-    setStatus("Fill failed.");
-    log(String(err));
-  }
-});
-
-loadCvs().catch((err) => {
-  setStatus("Could not reach core API.");
-  log(String(err));
-});
-restoreScanState();

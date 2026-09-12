@@ -112,11 +112,22 @@ user's own `eeo_answers` rows — see the "EEO/demographic" bullets below.
 
 ## Non-obvious things (these will bite you)
 
+- **UI lives in a content script, not a toolbar popup.** `extension/src/content/panel.js` injects
+  on every page (`<all_urls>`, a required permission) and mounts a closed shadow DOM host with a
+  corner tab + slide-out panel — this replaced the old `action.default_popup`
+  (`popup.html`/`popup.js`) because a browser popup is destroyed on every close, including a tab
+  switch, wiping its UI state. A content-script-injected DOM node persists across tab switches for
+  free (it's just hidden, not destroyed); `browser.storage.session` (keyed `scan:<tabId>`) still
+  covers the one case that does reset it — a full page reload/navigation. `extension/src/
+  background.js` owns everything that needs privileged APIs unavailable to content scripts: all
+  `fetch` calls to core, and every `scripting.executeScript` injection (`scanPage`,
+  `applyFillPlan`) — `panel.js` talks to it via `browser.runtime.sendMessage`/`onMessage`, never
+  calls core or `scripting.*` directly.
 - **React-controlled inputs** don't pick up `el.value = x`. Use the native property setter
   (`Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set`) then
-  dispatch `input`/`change` events. See `extension/src/content.js`.
+  dispatch `input`/`change` events. See `applyFillPlan` in `extension/src/background.js`.
 - **Custom comboboxes** (Greenhouse/Ashby's country/gender/location pickers) are not native
-  `<select>` — a text input plus a JS-rendered listbox. `applyFillPlan` in `popup.js` decides
+  `<select>` — a text input plus a JS-rendered listbox. `applyFillPlan` in `background.js` decides
   this from the live element at fill time (`isDropdownLike` — role, `aria-haspopup`,
   `aria-autocomplete`, or `aria-controls`/`aria-owns`), not from the action core/Settings
   assigned, since different ATSs mark up dropdowns differently and an upstream guess can be
@@ -126,14 +137,13 @@ user's own `eeo_answers` rows — see the "EEO/demographic" bullets below.
   — falling back to leaving the typed text in place only if no option list ever appears. Fills
   are sequential (`async`, not parallel) because opening one combobox can close another.
 - **ATS forms embedded in a cross-origin iframe** (Newton/gnewton career pages are the known
-  case) are invisible to a same-frame-only scan — `scanBtn` injects `scanPage` with
-  `target: { tabId, allFrames: true }` and merges every frame's fields, prefixing each `ref`
-  with its `frameId` (`refFrameMap` in `popup.js` maps the prefixed ref back to `{frameId,
-  localRef}` for Fill, since a ref only resolves inside the frame it was scanned from). Firefox
-  returns partial results for frames the extension lacks permission for instead of failing the
-  whole call, but a cross-origin frame still needs the `<all_urls>` optional permission granted
-  via Manage CVs > Page access to be scanned at all — `activeTab` alone only covers the top
-  frame and same-origin frames.
+  case) are invisible to a same-frame-only scan — `background.js`'s scan handler injects
+  `scanPage` with `target: { tabId, allFrames: true }` and merges every frame's fields, prefixing
+  each `ref` with its `frameId` (`refFrameMap`, built in `background.js` and handed back to
+  `panel.js` to store, maps the prefixed ref back to `{frameId, localRef}` for Fill, since a ref
+  only resolves inside the frame it was scanned from). Firefox returns partial results for frames
+  the extension lacks permission for instead of failing the whole call; this now always has
+  access since `<all_urls>` is a required host permission (no more per-site opt-in flow).
 - **Legal attestations are never auto-filled by core**, even if a mapper could guess an answer —
   that's the applicant's own click to make. Hard rule in `agent/llm_mapper.py`
   (`_ATTESTATION_KEYWORDS`), not a confidence threshold — never relax this via prompting alone.
@@ -148,7 +158,7 @@ user's own `eeo_answers` rows — see the "EEO/demographic" bullets below.
   "race" row), but every value still traces back to something the user explicitly typed; a field
   with no matching row, an empty row, or an unconfigured/failed MiMo call resolves to `skip`
   (`agent/eeo_mapper.py`'s `resolve_eeo_fields` degrades to all-skip in every one of those cases,
-  same never-crash-the-scan pattern as `llm_mapper`/`cover_letter`). `popup.js`'s
+  same never-crash-the-scan pattern as `llm_mapper`/`cover_letter`). `background.js`'s
   `applyEeoSettings` still runs afterward as a client-side verbatim fallback for anything core
   still returned `skip` on. `ApplicationService._resolve_eeo` runs after the cover-letter step,
   not before `augment_skipped_fields` — an `eeo_pending` field must stay out of that pass's

@@ -4,6 +4,34 @@ Newest first. One entry per feature commit — added when the feature actually l
 
 ## Done
 
+- **In-page panel replaces the toolbar popup** — a browser popup (`action.default_popup`) is
+  destroyed and recreated every time it closes, including on a tab switch, which wiped all UI
+  state even though the underlying data was already saved. Fix: `extension/src/content/panel.js`
+  now injects on every page (`content_scripts`, `<all_urls>`) and mounts a closed shadow DOM host
+  with a small corner tab (right edge, vertically centered — clear of ATS "Submit" buttons that
+  commonly sit bottom-right) and a slide-out panel, styled dark/sharp/monospace to match the
+  user's `yiromo.com` portfolio aesthetic (JetBrains Mono, `#4ade80` accent, corner-bracket frame
+  motif) rather than reusing Simplify Copilot's literal light/blue look — only its layout
+  (corner tab, docked panel, sectioned results) was the reference. A content-script-injected DOM
+  node survives a tab switch for free (it's hidden, not destroyed); `browser.storage.session`
+  (keyed `scan:<tabId>`) still covers the one case that does reset it, a full page
+  reload/navigation. `extension/src/background.js` is new and owns everything a content script
+  can't do itself: all `fetch` calls to core and every `scripting.executeScript` injection
+  (`scanPage`, `applyFillPlan`, moved verbatim) — `panel.js` only talks to it via
+  `browser.runtime.sendMessage`/`onMessage`. `popup.html`/`popup.js`/`popup.css` are deleted;
+  `manifest.json` drops the `action` key entirely (no more toolbar icon — the corner tab is the
+  only entry point) and adds `background`/`content_scripts`. **Permission change, not silent:**
+  `<all_urls>` moves from `optional_permissions` (opt-in per site via Manage CVs > Page access,
+  now removed) to a required `host_permissions` entry, since the corner tab must appear
+  automatically on every page — this changes the install/update consent prompt to "Access your
+  data for all websites." `activeTab` is no longer needed and was dropped (the old popup relied on
+  its transient per-click grant; the content script has no such gate to begin with, and
+  `<all_urls>` already covers everything `scripting`/`tabs` need). `manage.html`/`manage.css`
+  restyled to match (same dark tokens); its "Grant page access" flow was removed since access is
+  now always granted. Not yet built: a "hide the corner tab on this site" affordance — flagged as
+  a likely follow-up now that the tab appears everywhere, including sites that aren't job
+  applications, rather than built speculatively ahead of anyone hitting that friction.
+
 - **"Analyze Application" button — CV fit, company insight, and job-market stats grounded in
   live web search** — new `POST /api/v1/applications/analyze/`
   (`{application_id, page_text, about_text}` -> `{fit_score, fit_summary, company_insights,
