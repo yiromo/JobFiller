@@ -17,6 +17,10 @@ candidate's CV, for the specific job posting given. Rules:
 - Close by signing off with the candidate's name.
 - Never use a bracketed placeholder like [Company Name] or [Your Name] — write around it if \
 the posting doesn't give you a fact, rather than leaving a blank to fill in.
+- Never use an em dash (—) or double hyphen (--). Use a period, comma, or "and"/"but" instead.
+- Write like a person, not an AI assistant: vary sentence length, avoid stock phrases like \
+"I am excited to apply" or "I am confident that", and don't over-use rhetorical triples or \
+overly polished transitions.
 Respond with the letter's plain text only — no subject line, no markdown, no commentary."""
 
 
