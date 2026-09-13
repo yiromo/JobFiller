@@ -17,6 +17,8 @@ from apps.applications.services.application_service import (
 from .serializers import (
     AnalysisResponseSerializer,
     AnalyzeRequestSerializer,
+    GenerateAnswerRequestSerializer,
+    GenerateAnswerResponseSerializer,
     GenerateCoverLetterRequestSerializer,
     GenerateCoverLetterResponseSerializer,
     ScanRequestSerializer,
@@ -113,3 +115,36 @@ class AnalyzeApplicationView(APIView):
                 status=status.HTTP_502_BAD_GATEWAY,
             )
         return Response(AnalysisResponseSerializer(result).data)
+
+
+class GenerateAnswerView(APIView):
+    def post(self, request) -> Response:
+        serializer = GenerateAnswerRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        service = ApplicationsContainer.application_service()
+        try:
+            result = service.generate_question_answer(
+                application_id=serializer.validated_data["application_id"],
+                question=serializer.validated_data["question"],
+                page_text=serializer.validated_data["page_text"],
+            )
+        except ApplicationNotFoundError:
+            raise Http404
+        except NoCvOnApplicationError:
+            return Response(
+                {"detail": "select a CV and re-scan before generating an answer"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except MimoNotConfiguredError:
+            return Response(
+                {"detail": "MiMo is not configured on this server"},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        except Exception:
+            logger.exception("Question answer generation failed")
+            return Response(
+                {"detail": "answer generation failed"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        return Response(GenerateAnswerResponseSerializer(result).data)

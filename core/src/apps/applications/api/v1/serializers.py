@@ -70,6 +70,16 @@ class AnalyzeRequestSerializer(serializers.Serializer):
     about_text = serializers.CharField(required=False, allow_blank=True, default="")
 
 
+class GenerateAnswerRequestSerializer(serializers.Serializer):
+    application_id = serializers.IntegerField()
+    question = serializers.CharField()
+    page_text = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class GenerateAnswerResponseSerializer(serializers.Serializer):
+    text = serializers.CharField()
+
+
 class SourcedPointSerializer(serializers.Serializer):
     point = serializers.CharField()
     url = serializers.CharField(required=False, allow_blank=True, default="")

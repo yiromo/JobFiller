@@ -4,7 +4,7 @@ from urllib.parse import urlparse
 
 from django.conf import settings
 
-from agent import analyzer, cover_letter
+from agent import analyzer, cover_letter, question_answer
 from agent.eeo_mapper import resolve_eeo_fields
 from agent.field_mapper import build_fill_plan, is_cover_letter_field
 from agent.llm_mapper import augment_skipped_fields
@@ -173,6 +173,21 @@ class ApplicationService:
             raise SearchNotConfiguredError
 
         return analyzer.analyze(cv.raw_text, page_text, cv.full_name, about_text)
+
+    def generate_question_answer(self, application_id: int, question: str, page_text: str) -> dict:
+        record = self._repo.get(application_id)
+        if record is None:
+            raise ApplicationNotFoundError
+
+        cv = self._cv_repo.get(record.cv_id) if record.cv_id is not None else None
+        if cv is None:
+            raise NoCvOnApplicationError
+
+        if not settings.MIMO_API_KEY:
+            raise MimoNotConfiguredError
+
+        text = question_answer.generate(cv.raw_text, question, page_text)
+        return {"text": text}
 
     @staticmethod
     def _cover_letter_entry(field: dict, cv: CvDTO, text: str) -> dict:

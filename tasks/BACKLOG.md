@@ -37,3 +37,7 @@ Roughly in order. Not started unless noted in `PROGRESS.md`.
    to the scanner and never filled. Not built — waiting on the outerHTML of one such widget to
    know whether it's a hidden radio input behind styled labels or plain buttons with no
    underlying form control at all; the fix differs for each and shouldn't be guessed blind.
+12. **"Generate with AI" per-field button: hide/disable toggle** — the inline button (see
+   `tasks/PROGRESS.md`) is attached to every scanned textarea on every page unconditionally, no
+   opt-out. Simplify Copilot ships exactly this as a settings toggle. Not built now — no reason
+   to believe it's intrusive yet, add it if a real site makes it feel that way.

@@ -177,6 +177,46 @@ Newest first. One entry per feature commit — added when the feature actually l
   1s `setInterval` ticking real elapsed seconds into the status text and shows the actual total
   on completion — an honest number instead of a guessed range copy.
 
+- **Per-field "Generate with AI" button on open-ended textareas** — inspected Simplify Copilot's
+  real implementation (`contentScriptMain.js`, `CustomQuestionAI` component) at the user's
+  request: theirs opens a modal ("Application Question AI") with a `browser.runtime.sendMessage
+  ({method:"requestGPTValue", question, ...})` call to their background script, then either
+  writes the result into the field or offers "Copy Answer to Clipboard". Built a simpler direct
+  version instead of copying the modal: a small inline "Generate with AI" button, styled in this
+  project's own dark/`#4ade80` aesthetic rather than Simplify's UI, appended right after every
+  scanned `<textarea>` that has a usable label/placeholder — clicking it fills that one field
+  directly, no intermediate dialog. Backend: `agent/question_answer.generate(cv_raw_text,
+  question, page_text)` (new, one MiMo call, same "ground strictly in CV text, honest if nothing
+  relevant" house style as `cover_letter.py`), `ApplicationService.generate_question_answer`
+  mirrors `regenerate_cover_letter`/`analyze_application`'s 404/400/503 error shape exactly, new
+  `POST /api/v1/applications/generate-answer/`. Extension: `background.js` gets a new injected
+  page-context function `attachGenerateButtons` (called once per frame right after a scan's core
+  response returns, so it has a real `application_id` to attach), and a `generateAnswer` message
+  case that proxies to the new endpoint — same architecture as every other privileged call in
+  this file. A field only gets a button once (`el.dataset.jfAiAttached`, survives across re-scans
+  in the same page load); `window.__jfScanContext` (not the closure's original
+  `applicationId`/`pageText` args) is what the click handler actually reads, so a re-scan with a
+  different CV/application updates *already-attached* buttons too, not just newly-seen ones —
+  caught before shipping: without this, switching CVs and re-scanning would silently keep
+  generating answers grounded in the old CV. Deliberately not gated on whether core already
+  filled the field — a cover-letter textarea gets the button too, and clicking it overwrites the
+  generated letter with a short 2-5 sentence answer instead; that's user-initiated, not a bug, but
+  worth knowing before reporting it as one. No hide/disable toggle (Simplify has one) — flagged in
+  `tasks/BACKLOG.md` item 12 rather than built speculatively. Verified live end to end against the
+  real running container (rebuilt via `docker compose up --build`): scanned a synthetic form with
+  the exact "If you require sponsorship now or in the future..." question from the reference
+  screenshot using the real test CV, got back a real grounded answer referencing the CV's actual
+  location; separately confirmed 404 (unknown application) and 400 (application with no CV on
+  record). `ruff check`/`manage.py check`/`web-ext lint` clean. **Not verified**: the actual
+  button click inside a real browser. This is the one genuinely new pattern in the codebase —
+  every other `scripting.executeScript`-injected function (`scanPage`, `applyFillPlan`) is
+  self-contained and returns a value; this one calls `browser.runtime.sendMessage` from inside an
+  injected function's persistent click listener, which should work in Firefox's default
+  "ISOLATED" execution world (same privilege level as a content script) but has not been observed
+  running. If the button does nothing or logs "Failed" immediately on click, check the page's own
+  console (not the extension's) for `browser is not defined` first — that pinpoints this exact
+  assumption being wrong.
+
 - **Delete a stored CV** — `DELETE /api/v1/cvs/{id}/` (new `CvDetailView`), 204 on success, 404 if
   already gone/unknown. `CvRepository.delete` removes the file from disk (`FieldFile.delete(save=
   False)`, confirmed via `find` inside the running container that the file is actually gone, not

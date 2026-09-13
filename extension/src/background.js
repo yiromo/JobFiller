@@ -108,6 +108,68 @@ function scanPage() {
   };
 }
 
+// Runs inside the page, injected via scripting.executeScript — cannot
+// reference anything from this file's scope.
+function attachGenerateButtons(fields, applicationId, pageText) {
+  // Shared by every button's click handler (old and new) so a re-scan with a
+  // different CV/application updates already-attached buttons too, not just
+  // ones attached this call.
+  window.__jfScanContext = { applicationId, pageText };
+
+  for (const field of fields) {
+    const el = document.querySelector(`[data-jf-ref="${CSS.escape(field.ref)}"]`);
+    if (!el || el.dataset.jfAiAttached) continue;
+    el.dataset.jfAiAttached = "1";
+    const question = field.label || field.placeholder;
+    if (!question) continue;
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "Generate with AI";
+    Object.assign(button.style, {
+      display: "block",
+      marginTop: "6px",
+      padding: "4px 10px",
+      fontFamily:
+        '"JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace',
+      fontSize: "12px",
+      color: "#4ade80",
+      background: "#111111",
+      border: "1px solid #2a2a2a",
+      borderRadius: "0",
+      cursor: "pointer",
+    });
+
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      button.textContent = "Generating...";
+      try {
+        const response = await browser.runtime.sendMessage({
+          type: "generateAnswer",
+          applicationId: window.__jfScanContext.applicationId,
+          question,
+          pageText: window.__jfScanContext.pageText,
+        });
+        if (!response?.ok) throw new Error(response?.error || "generation failed");
+        const setter = Object.getOwnPropertyDescriptor(
+          window.HTMLTextAreaElement.prototype,
+          "value",
+        ).set;
+        setter.call(el, response.text);
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+        button.textContent = "Regenerate with AI";
+      } catch (err) {
+        button.textContent = `Failed: ${err} (click to retry)`;
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+    el.insertAdjacentElement("afterend", button);
+  }
+}
+
 // Runs inside the page. `plan` is the field_mapping array core returned;
 // `fileByRef` maps a ref to { base64, filename, mimeType } for
 // any "upload" actions — fetched by background.js beforehand, since content
@@ -500,6 +562,27 @@ async function handleScan(message, tabId) {
   const skipped = fieldMapping.filter((f) => f.action === "skip").length;
   logLines.push(`Fill plan ready: ${fieldMapping.length - skipped} to fill, ${skipped} skipped.`);
 
+  let buttonsAttached = 0;
+  for (const { frameId, result } of framesWithFields) {
+    const textareaFields = result.form_snapshot
+      .filter((f) => f.tag === "textarea" && (f.label || f.placeholder))
+      .map((f) => ({ ref: f.ref, label: f.label, placeholder: f.placeholder }));
+    if (!textareaFields.length) continue;
+    try {
+      await browser.scripting.executeScript({
+        target: { tabId, frameIds: [frameId] },
+        func: attachGenerateButtons,
+        args: [textareaFields, data.id, pageText],
+      });
+      buttonsAttached += textareaFields.length;
+    } catch (err) {
+      logLines.push(`Couldn't attach "Generate with AI" buttons in frame ${frameId}: ${err}`);
+    }
+  }
+  if (buttonsAttached) {
+    logLines.push(`Added ${buttonsAttached} "Generate with AI" button(s) on open-ended fields.`);
+  }
+
   return {
     ok: true,
     applicationId: data.id,
@@ -580,6 +663,21 @@ async function handleAnalyze(message) {
   return { ok: true, analysis: data };
 }
 
+async function handleGenerateAnswer(message) {
+  const response = await fetch(`${CORE_URL}/api/v1/applications/generate-answer/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      application_id: message.applicationId,
+      question: message.question,
+      page_text: message.pageText,
+    }),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.detail || `core returned ${response.status}`);
+  return { ok: true, text: data.text };
+}
+
 function scanStorageKey(tabId) {
   return `scan:${tabId}`;
 }
@@ -608,6 +706,8 @@ browser.runtime.onMessage.addListener((message, sender) => {
       return handleGenerateCoverLetter(message).catch((err) => ({ ok: false, error: String(err) }));
     case "analyze":
       return handleAnalyze(message).catch((err) => ({ ok: false, error: String(err) }));
+    case "generateAnswer":
+      return handleGenerateAnswer(message).catch((err) => ({ ok: false, error: String(err) }));
     case "openManage":
       return browser.tabs
         .create({ url: browser.runtime.getURL("src/manage/manage.html") })
