@@ -4,6 +4,17 @@ Newest first. One entry per feature commit — added when the feature actually l
 
 ## Done
 
+- **"Scan this page" button fills as a live progress bar** — the button's own background is a
+  hard-stop `linear-gradient` driven by a `--jf-progress` CSS custom property, ticked every 100ms
+  on an easing curve (`92 * (1 - e^(-t/1.2))`) that approaches but never reaches 92% on its own —
+  scan has no incremental server-side progress to report (one round trip), so a real finish always
+  visibly jumps the rest of the way to 100% instead of the bar ever looking done before the result
+  is back. On success the button gets a `.jf-scan-done` class (solid `#4ade80` background, black
+  text, per the user's exact spec) that persists until the next scan resets it. Also disabled the
+  Scan button itself for the duration of the click (it wasn't before — Fill/Generate/Analyze
+  already disable themselves mid-click, Scan was the one exception), since a second click mid-scan
+  would have raced two `/scan/` calls and orphaned the first progress ticker.
+
 - **In-page panel replaces the toolbar popup** — a browser popup (`action.default_popup`) is
   destroyed and recreated every time it closes, including on a tab switch, which wiped all UI
   state even though the underlying data was already saved. Fix: `extension/src/content/panel.js`

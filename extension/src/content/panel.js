@@ -142,6 +142,17 @@
   color: #4ade80;
 }
 
+#jf-scan-btn {
+  --jf-progress: 0%;
+  background: linear-gradient(to right, #4ade80 var(--jf-progress), #111111 var(--jf-progress));
+}
+
+#jf-scan-btn.jf-scan-done {
+  background: #4ade80;
+  border-color: #4ade80;
+  color: #000000;
+}
+
 .jf-icon-btn {
   flex: none;
   display: flex;
@@ -600,6 +611,9 @@
     $("jf-manage-btn").addEventListener("click", () => send("openManage", {}));
 
     $("jf-scan-btn").addEventListener("click", async () => {
+      const scanBtn = $("jf-scan-btn");
+      scanBtn.classList.remove("jf-scan-done");
+      scanBtn.disabled = true;
       setStatus("Scanning...");
       $("jf-fill-btn").disabled = true;
       $("jf-generate-cl-btn").disabled = true;
@@ -613,6 +627,16 @@
       lastAboutText = "";
       refFrameMap = {};
 
+      // Scan has no incremental progress to report, so this approaches (never
+      // reaches) 92% on an easing curve — a real finish always jumps the rest
+      // of the way to 100%, so the bar never looks "done" before it is.
+      const startedAt = Date.now();
+      const ticker = setInterval(() => {
+        const elapsed = (Date.now() - startedAt) / 1000;
+        const pct = 92 * (1 - Math.exp(-elapsed / 1.2));
+        scanBtn.style.setProperty("--jf-progress", `${pct.toFixed(1)}%`);
+      }, 100);
+
       try {
         const cvId = $("jf-cv-select").value ? Number($("jf-cv-select").value) : null;
         const result = await send("scan", { url: window.location.href, cvId });
@@ -625,13 +649,19 @@
         lastAboutText = result.aboutText;
         result.logLines.forEach(log);
         setStatus("Scanned — review, then Fill.");
+        scanBtn.style.setProperty("--jf-progress", "100%");
+        scanBtn.classList.add("jf-scan-done");
         $("jf-fill-btn").disabled = false;
         $("jf-generate-cl-btn").disabled = false;
         $("jf-analyze-btn").disabled = false;
         await saveScanState();
       } catch (err) {
+        scanBtn.style.setProperty("--jf-progress", "0%");
         setStatus("Scan failed.");
         log(String(err));
+      } finally {
+        clearInterval(ticker);
+        scanBtn.disabled = false;
       }
     });
 
