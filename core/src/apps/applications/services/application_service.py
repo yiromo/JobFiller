@@ -8,6 +8,7 @@ from agent import analyzer, cover_letter, question_answer
 from agent.eeo_mapper import resolve_eeo_fields
 from agent.field_mapper import build_fill_plan, is_cover_letter_field
 from agent.llm_mapper import augment_skipped_fields
+from agent.option_resolver import resolve_options
 from agent.profile import Profile
 from apps.applications.dto import ScanRequestDTO, ScanResultDTO
 from apps.applications.repositories.interfaces import IApplicationRepository
@@ -131,6 +132,21 @@ class ApplicationService:
                     resolved.append({**item, "value": "", "action": "skip", "confidence": 0.0})
             else:
                 resolved.append(item)
+        return resolved
+
+    def resolve_options(self, application_id: int, fields: list[dict]) -> list[dict]:
+        record = self._repo.get(application_id)
+        if record is None:
+            raise ApplicationNotFoundError
+
+        labels_by_ref = {f["ref"]: f.get("label", "") for f in record.form_snapshot}
+        enriched = [{**f, "label": labels_by_ref.get(f["ref"], "")} for f in fields]
+        resolved = resolve_options(enriched)
+
+        resolved_by_ref = {r["ref"]: r for r in resolved}
+        field_mapping = [resolved_by_ref.get(item["ref"], item) for item in record.field_mapping]
+        self._repo.update_field_mapping(application_id, field_mapping)
+
         return resolved
 
     def regenerate_cover_letter(self, application_id: int, page_text: str, about_text: str) -> dict:

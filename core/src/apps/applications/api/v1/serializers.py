@@ -70,6 +70,21 @@ class AnalyzeRequestSerializer(serializers.Serializer):
     about_text = serializers.CharField(required=False, allow_blank=True, default="")
 
 
+class ResolveOptionSerializer(serializers.Serializer):
+    ref = serializers.CharField()
+    wanted = serializers.CharField(allow_blank=True)
+    options = serializers.ListField(child=serializers.CharField())
+
+
+class ResolveOptionsRequestSerializer(serializers.Serializer):
+    application_id = serializers.IntegerField()
+    fields = ResolveOptionSerializer(many=True)
+
+
+class ResolveOptionsResponseSerializer(serializers.Serializer):
+    fields = FieldActionSerializer(many=True)
+
+
 class GenerateAnswerRequestSerializer(serializers.Serializer):
     application_id = serializers.IntegerField()
     question = serializers.CharField()

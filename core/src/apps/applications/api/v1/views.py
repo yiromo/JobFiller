@@ -21,6 +21,8 @@ from .serializers import (
     GenerateAnswerResponseSerializer,
     GenerateCoverLetterRequestSerializer,
     GenerateCoverLetterResponseSerializer,
+    ResolveOptionsRequestSerializer,
+    ResolveOptionsResponseSerializer,
     ScanRequestSerializer,
     ScanResultSerializer,
 )
@@ -77,6 +79,22 @@ class GenerateCoverLetterView(APIView):
                 status=status.HTTP_502_BAD_GATEWAY,
             )
         return Response(GenerateCoverLetterResponseSerializer(result).data)
+
+
+class ResolveOptionsView(APIView):
+    def post(self, request) -> Response:
+        serializer = ResolveOptionsRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        service = ApplicationsContainer.application_service()
+        try:
+            fields = service.resolve_options(
+                application_id=serializer.validated_data["application_id"],
+                fields=[dict(f) for f in serializer.validated_data["fields"]],
+            )
+        except ApplicationNotFoundError:
+            raise Http404
+        return Response(ResolveOptionsResponseSerializer({"fields": fields}).data)
 
 
 class AnalyzeApplicationView(APIView):

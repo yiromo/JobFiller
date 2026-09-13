@@ -202,16 +202,28 @@ async function applyFillPlan(plan, fileByRef) {
     window.HTMLTextAreaElement.prototype,
     "value",
   ).set;
+  const nativeSelectSetter = Object.getOwnPropertyDescriptor(
+    window.HTMLSelectElement.prototype,
+    "value",
+  ).set;
+  const nativeCheckedSetter = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype,
+    "checked",
+  ).set;
 
-  // Native setter bypasses React's value tracking; the full key-event sandwich also reaches
-  // autocomplete/masked-input widgets that key off keyboard events, not just a value change.
   function setValue(el, value) {
-    const setter = el.tagName === "TEXTAREA" ? nativeTextareaSetter : nativeInputSetter;
     const eventInit = { bubbles: true, cancelable: true };
     el.focus();
     el.dispatchEvent(new Event("keydown", eventInit));
     el.dispatchEvent(new Event("keypress", eventInit));
-    setter.call(el, value);
+    if (el.tagName === "INPUT") {
+      nativeInputSetter.call(el, value);
+      el.setAttribute("value", value);
+    } else if (el.tagName === "TEXTAREA") {
+      nativeTextareaSetter.call(el, value);
+    } else if (el.isContentEditable) {
+      el.textContent = value;
+    }
     el.dispatchEvent(new Event("textInput", eventInit));
     el.dispatchEvent(new Event("input", eventInit));
     el.dispatchEvent(new Event("keyup", eventInit));
@@ -224,44 +236,132 @@ async function applyFillPlan(plan, fileByRef) {
     }
   }
 
-  // Without aria-controls/aria-owns (react-select-style widgets often set
-  // neither), scope to the menu that's actually a sibling of this field's
-  // control wrapper — searching the whole document risks matching stale
-  // `[role="option"]` elements left open from a previous field.
-  function findOptions(el) {
-    const controlsId = el.getAttribute("aria-controls") || el.getAttribute("aria-owns");
-    if (controlsId) {
-      const container = document.getElementById(controlsId);
-      if (container) return Array.from(container.querySelectorAll('[role="option"]'));
+  function fillText(el, value) {
+    if (el.isContentEditable) {
+      el.focus();
+      el.textContent = value;
+      el.dispatchEvent(new InputEvent("input", { bubbles: true, data: value }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      return el.textContent.trim() === value.trim() ? "contenteditable" : null;
     }
-    const control = el.closest('[class*="control" i]');
-    if (control?.parentElement) {
-      const found = Array.from(control.parentElement.querySelectorAll('[role="option"]'));
-      if (found.length) return found;
-    }
-    return Array.from(document.querySelectorAll('[role="option"]'));
+
+    setValue(el, value);
+    if (el.value === value) return "native-setter";
+
+    el.focus();
+    el.select?.();
+    document.execCommand("insertText", false, value);
+    if (el.value === value) return "exec-command";
+
+    el.value = value;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return el.value === value ? "direct" : null;
   }
 
-  // Toggle lives in the control wrapper; a "Clear" indicator often precedes it in the DOM.
-  function findToggleControl(el) {
-    const control = el.closest('[class*="control" i]');
-    if (!control) return null;
-    const clickable = Array.from(control.querySelectorAll('button, [role="button"], svg'));
+  function pressKey(el, key, init = {}) {
+    for (const type of ["keydown", "keyup"]) {
+      el.dispatchEvent(new KeyboardEvent(type, { key, bubbles: true, cancelable: true, ...init }));
+    }
+  }
+
+  function closeWidget(el) {
+    pressKey(el, "Escape");
+    el.blur();
+  }
+
+  function isRendered(optionEl) {
     return (
-      clickable.find((c) => {
-        const labelSource = c.closest('button, [role="button"]') || c;
-        return !/clear/i.test(labelSource.getAttribute("aria-label") || "");
-      }) || null
+      optionEl.getClientRects().length > 0 && getComputedStyle(optionEl).visibility !== "hidden"
     );
+  }
+
+  function widgetInstancePrefix(el) {
+    const ids = `${el.id || ""} ${el.getAttribute("aria-describedby") || ""} ${
+      el.getAttribute("aria-activedescendant") || ""
+    }`.split(/\s+/);
+    for (const id of ids) {
+      const stem = id.replace(/-(placeholder|live-region|input)$/, "").replace(/-option-\d+$/, "");
+      if (stem && stem !== id && !/["'\\]/.test(stem)) return stem;
+    }
+    return null;
+  }
+
+  function findOptions(el, before) {
+    const container = el.closest('[role="combobox"], [aria-haspopup="listbox"]') || el;
+    const controlsId = container.getAttribute("aria-controls") || container.getAttribute("aria-owns");
+    const scope = controlsId ? document.getElementById(controlsId) : null;
+    if (scope) {
+      return Array.from(scope.querySelectorAll('[role="option"]')).filter(isRendered);
+    }
+
+    const prefix = widgetInstancePrefix(el);
+    if (prefix) {
+      const scoped = Array.from(document.querySelectorAll(`[id^="${prefix}-option"]`)).filter(
+        isRendered,
+      );
+      if (scoped.length) return scoped;
+    }
+
+    return Array.from(document.querySelectorAll('[role="option"]'))
+      .filter(isRendered)
+      .filter((o) => !before.has(o));
+  }
+
+  function optionSnapshot() {
+    return new Set(document.querySelectorAll('[role="option"]'));
+  }
+
+  function selectedText(el) {
+    const control = el.closest('[role="combobox"]')?.parentElement || el.parentElement || el;
+    return `${el.value || ""} ${control.textContent || ""}`.toLowerCase();
+  }
+
+  function normalize(text) {
+    return (text || "")
+      .trim()
+      .toLowerCase()
+      .replace(/['’]/g, "")
+      .replace(/\s+/g, " ");
   }
 
   function bestMatch(options, value) {
-    const target = value.trim().toLowerCase();
-    return (
-      options.find((o) => o.textContent.trim().toLowerCase() === target) ||
-      options.find((o) => o.textContent.trim().toLowerCase().includes(target)) ||
-      null
+    const target = normalize(value);
+    if (!target) return null;
+    const texts = options.map((o) => normalize(o.textContent));
+
+    const exact = texts.indexOf(target);
+    if (exact !== -1) return options[exact];
+
+    const prefix = texts.findIndex(
+      (t) => t.startsWith(target) && /[^a-z0-9]/.test(t.charAt(target.length)),
     );
+    if (prefix !== -1) return options[prefix];
+
+    if (target.length >= 4) {
+      const contains = texts.findIndex((t) => t.includes(target));
+      if (contains !== -1) return options[contains];
+    }
+    return null;
+  }
+
+  function sizedTarget(el) {
+    let node = el;
+    for (let i = 0; i < 5 && node; i++) {
+      const rect = node.getBoundingClientRect();
+      if (rect.width >= 10 && rect.height >= 10) return node;
+      node = node.parentElement;
+    }
+    return el;
+  }
+
+  function scrollParent(node) {
+    let cur = node?.parentElement;
+    for (let i = 0; i < 6 && cur; i++) {
+      if (cur.scrollHeight > cur.clientHeight + 10) return cur;
+      cur = cur.parentElement;
+    }
+    return null;
   }
 
   async function waitFor(predicate, timeoutMs = 2000, intervalMs = 100) {
@@ -286,74 +386,166 @@ async function applyFillPlan(plan, fileByRef) {
     if (haspopup === "listbox" || haspopup === "true") return true;
     if (el.getAttribute("aria-autocomplete") === "list") return true;
     if (el.getAttribute("aria-controls") || el.getAttribute("aria-owns")) return true;
-    return false;
+    return Boolean(el.closest('[role="combobox"], [aria-haspopup="listbox"]'));
   }
 
-  // A native <select>'s options are real DOM nodes with fixed values — no
-  // typing or waiting needed. A custom combobox (role="combobox", not a real
-  // <select>) has to be driven like a user would: type into it, wait for its
-  // async-rendered option list, then click the matching option.
-  //
-  // Returns "selected" (an option was clicked), "no-match" (an option list
-  // appeared but nothing matched the value), or "no-options" (no widget ever
-  // opened — either isDropdownLike false-positived on a plain input, or the
-  // widget needs a different trigger than typing/click; the typed value is
-  // left in place either way, same as a plain "type" would have done).
+  function summarizeOptions(texts) {
+    return texts.slice(0, 10).map((t) => t.slice(0, 40));
+  }
+
   async function selectValue(el, value) {
     if (el.tagName === "SELECT") {
-      // `value` is the option's visible text (what core/settings matched
-      // against) — not necessarily its `value` attribute (e.g.
-      // <option value="US">United States</option>), so `el.value = value`
-      // silently no-ops whenever those differ. Match by text, set by the
-      // real option's `.value`.
-      const match = bestMatch(Array.from(el.options), value);
-      if (!match) return "no-match";
+      const options = Array.from(el.options);
+      const match = bestMatch(options, value);
+      if (!match) {
+        return { status: "no-match", wanted: value, options: options.map((o) => o.text.trim()) };
+      }
       el.value = match.value;
+      if (el.value !== match.value) nativeSelectSetter.call(el, match.value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
       el.dispatchEvent(new Event("change", { bubbles: true }));
-      return "selected";
+      return el.value === match.value
+        ? { status: "selected", via: "native-select" }
+        : { status: "unverified", wanted: value, selected: match.text.trim(), via: "native-select" };
     }
 
-    // Open first, before typing anything: a dedicated toggle (if one exists)
-    // reveals the real unfiltered option list, which is both a more reliable
-    // trigger than typing and avoids filtering a search-as-you-type list down
-    // to zero matches on a short/loosely-worded value.
-    el.focus();
-    const toggle = findToggleControl(el);
-    if (toggle) clickOption(toggle);
-
-    let options = await waitFor(() => {
-      const found = findOptions(el);
-      return found.length > 0 ? found : null;
-    });
-
-    if (!options) {
-      setValue(el, value);
-      options = await waitFor(() => {
-        const found = findOptions(el);
+    if (document.activeElement && document.activeElement !== el) {
+      closeWidget(document.activeElement);
+    }
+    const before = optionSnapshot();
+    const waitForOptions = (timeoutMs) =>
+      waitFor(() => {
+        const found = findOptions(el, before);
         return found.length > 0 ? found : null;
-      });
-      if (!options) {
-        setValue(el, value);
-        return "no-options";
+      }, timeoutMs);
+
+    const target = sizedTarget(el);
+    target.scrollIntoView({ block: "center" });
+    el.focus();
+
+    const openTactics = [
+      ["click", () => clickOption(el)],
+      ["click-box", () => target !== el && clickOption(target)],
+      ["arrow", () => pressKey(el, "ArrowDown")],
+      ["alt-arrow", () => pressKey(el, "ArrowDown", { altKey: true })],
+      ["space", () => pressKey(el, " ")],
+      ["typing", () => setValue(el, value.slice(0, 4))],
+    ];
+
+    const isExpanded = () =>
+      (el.closest('[role="combobox"], [aria-haspopup="listbox"]') || el).getAttribute(
+        "aria-expanded",
+      ) === "true" || el.getAttribute("aria-expanded") === "true";
+
+    let via = null;
+    let options = null;
+    let opened = null;
+    for (const [name, open] of openTactics) {
+      if (isExpanded()) {
+        options = await waitForOptions(1200);
+        if (options) via = opened || name;
+        break;
+      }
+      open();
+      opened = name;
+      options = await waitForOptions(900);
+      if (options) {
+        via = name;
+        break;
       }
     }
+    if (!options) return { status: "no-options", wanted: value, expanded: isExpanded() };
 
-    const match = bestMatch(options, value);
+    let match = bestMatch(options, value);
     if (!match) {
-      setValue(el, value);
-      return "no-match";
+      for (let round = 0; round < 16 && !match; round++) {
+        const box = scrollParent(findOptions(el, before)[0]);
+        if (!box) break;
+        const top = box.scrollTop;
+        box.scrollTop = top + box.clientHeight;
+        await new Promise((resolve) => setTimeout(resolve, 140));
+        if (box.scrollTop <= top) break;
+        match = bestMatch(findOptions(el, before), value);
+      }
+      if (match) via = `${via}+scroll`;
     }
-    clickOption(match);
-    return "selected";
+
+    if (!match) {
+      setValue(el, "");
+      closeWidget(el);
+      return {
+        status: "no-match",
+        wanted: value,
+        options: options.map((o) => o.textContent.trim()),
+        via,
+      };
+    }
+
+    const wantedText = match.textContent.trim();
+    match.scrollIntoView({ block: "center" });
+    const commitTactics = [
+      ["click", () => clickOption(match)],
+      ["native-click", () => match.click?.()],
+      ["enter", () => pressKey(el, "Enter")],
+      [
+        "type-enter",
+        () => {
+          setValue(el, wantedText);
+          pressKey(el, "Enter");
+        },
+      ],
+    ];
+
+    for (const [name, commit] of commitTactics) {
+      commit();
+      const settled = await waitFor(() => {
+        if (findOptions(el, before).length > 0) return null;
+        return selectedText(el).includes(wantedText.toLowerCase()) || null;
+      }, 700);
+      if (settled) return { status: "selected", via: `${via}+${name}` };
+    }
+
+    closeWidget(el);
+    return { status: "unverified", wanted: value, selected: wantedText, via };
   }
 
   function outcomeResult(ref, outcome) {
-    if (outcome === "selected") return { ref, ok: true };
-    if (outcome === "no-match") return { ref, ok: false, reason: "no-matching-option" };
-    return { ref, ok: false, reason: "dropdown-never-opened" };
+    if (outcome.status === "selected") return { ref, ok: true };
+    if (outcome.status === "no-match") {
+      const seen = summarizeOptions(outcome.options)
+        .map((s) => `"${s}"`)
+        .join(" | ");
+      const via = outcome.via ? ` via=${outcome.via}` : "";
+      return {
+        ref,
+        ok: false,
+        reason: `no-matching-option wanted="${outcome.wanted}" saw=${seen || "(none)"}${via}`,
+      };
+    }
+    if (outcome.status === "unverified") {
+      return {
+        ref,
+        ok: false,
+        reason: `selection-not-confirmed wanted="${outcome.wanted}" tried="${outcome.selected}" via=${outcome.via}`,
+      };
+    }
+    return {
+      ref,
+      ok: false,
+      reason: outcome.expanded
+        ? `options-unreachable wanted="${outcome.wanted}" (widget reported open, no options found)`
+        : `dropdown-never-opened wanted="${outcome.wanted}" (click/arrow/space/typing all tried)`,
+    };
   }
 
   const results = [];
+  const unresolved = [];
+  function trackUnresolved(ref, outcome) {
+    if (outcome.status === "no-match") {
+      unresolved.push({ ref, wanted: outcome.wanted, options: outcome.options });
+    }
+  }
+
   // Sequential, not parallel: opening one combobox's option list can close
   // another's, so fills must happen one at a time.
   for (const item of plan) {
@@ -367,20 +559,46 @@ async function applyFillPlan(plan, fileByRef) {
       switch (item.action) {
         case "type":
           if (isDropdownLike(el)) {
-            results.push(outcomeResult(item.ref, await selectValue(el, item.value)));
+            const outcome = await selectValue(el, item.value);
+            trackUnresolved(item.ref, outcome);
+            results.push(outcomeResult(item.ref, outcome));
           } else {
-            setValue(el, item.value);
-            results.push({ ref: item.ref, ok: true });
+            const tactic = fillText(el, item.value);
+            results.push(
+              tactic
+                ? { ref: item.ref, ok: true }
+                : { ref: item.ref, ok: false, reason: `value-did-not-stick wanted="${item.value}"` },
+            );
           }
           break;
-        case "select":
-          results.push(outcomeResult(item.ref, await selectValue(el, item.value)));
+        case "select": {
+          const outcome = await selectValue(el, item.value);
+          trackUnresolved(item.ref, outcome);
+          results.push(outcomeResult(item.ref, outcome));
           break;
-        case "check":
-          el.checked = Boolean(item.value);
-          el.dispatchEvent(new Event("change", { bubbles: true }));
-          results.push({ ref: item.ref, ok: true });
+        }
+        case "check": {
+          const want = Boolean(item.value);
+          if (el.checked !== want) {
+            sizedTarget(el).scrollIntoView({ block: "center" });
+            el.focus();
+            el.click();
+          }
+          if (el.checked !== want) {
+            clickOption(el);
+          }
+          if (el.checked !== want) {
+            nativeCheckedSetter.call(el, want);
+            el.dispatchEvent(new Event("input", { bubbles: true }));
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+          }
+          results.push(
+            el.checked === want
+              ? { ref: item.ref, ok: true }
+              : { ref: item.ref, ok: false, reason: `checkbox-did-not-toggle wanted=${want}` },
+          );
           break;
+        }
         case "upload": {
           const fileInfo = fileByRef[item.ref];
           if (!fileInfo) {
@@ -397,8 +615,14 @@ async function applyFillPlan(plan, fileByRef) {
           const transfer = new DataTransfer();
           transfer.items.add(file);
           el.files = transfer.files;
+          el.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
           el.dispatchEvent(new Event("change", { bubbles: true }));
-          results.push({ ref: item.ref, ok: true });
+          window.jQuery?.(el).trigger("change");
+          results.push(
+            el.files.length
+              ? { ref: item.ref, ok: true }
+              : { ref: item.ref, ok: false, reason: "file-did-not-attach" },
+          );
           break;
         }
         case "skip":
@@ -411,7 +635,7 @@ async function applyFillPlan(plan, fileByRef) {
       results.push({ ref: item.ref, ok: false, reason: String(err) });
     }
   }
-  return results;
+  return { results, unresolved };
 }
 
 async function loadEeoSettings() {
@@ -633,6 +857,7 @@ async function handleFill(message, tabId) {
   }
 
   const allResults = [];
+  const unresolvedByGlobalRef = new Map();
   for (const [frameId, items] of itemsByFrame) {
     const localFileByRef = {};
     for (const item of items) {
@@ -649,13 +874,81 @@ async function handleFill(message, tabId) {
       func: applyFillPlan,
       args: [plan, localFileByRef],
     });
-    allResults.push(...result.map((r) => ({ ...r, frameId })));
+    allResults.push(...result.results.map((r) => ({ ...r, frameId })));
+
+    const globalRefByLocalRef = new Map(items.map((item) => [item.ref, item.globalRef]));
+    for (const u of result.unresolved) {
+      unresolvedByGlobalRef.set(globalRefByLocalRef.get(u.ref), { ...u, frameId, localRef: u.ref });
+    }
   }
+
+  const { entries, error } = await resolveUnmatchedDropdowns(
+    tabId,
+    message.applicationId,
+    unresolvedByGlobalRef,
+    allResults,
+  );
 
   const failed = allResults.filter((r) => !r.ok);
   const logLines = [`Filled ${allResults.length - failed.length}/${allResults.length}.`];
   failed.forEach((r) => logLines.push(`  frame ${r.frameId} / ${r.ref}: ${r.reason}`));
-  return { ok: true, logLines };
+  if (unresolvedByGlobalRef.size) {
+    const picked = entries.filter((e) => e.action === "select" && e.value).length;
+    logLines.push(
+      error
+        ? `Could not resolve ${unresolvedByGlobalRef.size} dropdown(s) via core: ${error}`
+        : `Resolved ${picked}/${unresolvedByGlobalRef.size} dropdown(s) via core.`,
+    );
+  }
+  return { ok: true, logLines, entries };
+}
+
+async function resolveUnmatchedDropdowns(tabId, applicationId, unresolvedByGlobalRef, allResults) {
+  if (!unresolvedByGlobalRef.size) return { entries: [] };
+  if (!applicationId) return { entries: [], error: "no application id — re-scan first" };
+
+  let resolved;
+  try {
+    const response = await fetch(`${CORE_URL}/api/v1/applications/resolve-options/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        application_id: applicationId,
+        fields: Array.from(unresolvedByGlobalRef, ([ref, u]) => ({
+          ref,
+          wanted: u.wanted,
+          options: u.options,
+        })),
+      }),
+    });
+    if (!response.ok) return { entries: [], error: `core returned ${response.status}` };
+    resolved = (await response.json()).fields;
+  } catch (err) {
+    return { entries: [], error: String(err) };
+  }
+
+  const planByFrame = new Map();
+  for (const entry of resolved) {
+    if (entry.action !== "select" || !entry.value) continue;
+    const u = unresolvedByGlobalRef.get(entry.ref);
+    if (!u) continue;
+    if (!planByFrame.has(u.frameId)) planByFrame.set(u.frameId, []);
+    planByFrame.get(u.frameId).push({ ref: u.localRef, value: entry.value, action: "select" });
+  }
+
+  for (const [frameId, plan] of planByFrame) {
+    const [{ result }] = await browser.scripting.executeScript({
+      target: { tabId, frameIds: [frameId] },
+      func: applyFillPlan,
+      args: [plan, {}],
+    });
+    for (const r of result.results) {
+      const i = allResults.findIndex((x) => x.frameId === frameId && x.ref === r.ref);
+      if (i !== -1) allResults[i] = { ...r, frameId };
+    }
+  }
+
+  return { entries: resolved };
 }
 
 async function handleGenerateCoverLetter(message) {
@@ -760,7 +1053,10 @@ browser.runtime.onMessage.addListener((message, sender) => {
       return respond(handleGenerateAnswer(message).catch((err) => reportError("generateAnswer", err)));
     case "openManage":
       return respond(
-        browser.tabs.create({ url: browser.runtime.getURL("src/manage/manage.html") }).then(() => ({ ok: true })),
+        browser.tabs
+          .create({ url: browser.runtime.getURL("src/manage/manage.html") })
+          .then((tab) => browser.tabs.setZoom(tab.id, 0.3))
+          .then(() => ({ ok: true })),
       );
     default:
       logBg("UNKNOWN_MESSAGE_TYPE", { type: message.type, tabId });

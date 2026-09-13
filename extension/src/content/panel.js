@@ -115,6 +115,10 @@
   gap: 8px;
 }
 
+.jf-row > .jf-btn {
+  flex: 1;
+}
+
 .jf-tabs {
   display: flex;
   border-bottom: 1px solid #2a2a2a;
@@ -182,6 +186,7 @@
 .jf-link-btn[hidden] {
   display: none;
 }
+
 
 .jf-hint {
   margin: 0;
@@ -283,8 +288,19 @@
   padding: 8px;
   white-space: pre-wrap;
   word-break: break-word;
+  font-family: inherit;
   font-size: 11px;
+  line-height: 1.5;
+  letter-spacing: normal;
   color: #a0a0a0;
+}
+
+.jf-log-full {
+  max-height: 420px;
+}
+
+.jf-log-mini {
+  max-height: 140px;
 }
 
 .jf-card {
@@ -478,13 +494,22 @@
       "aria-selected": "false",
     });
     tabAnalyze.textContent = "Analyze application";
-    const tabs = h("div", { class: "jf-tabs", role: "tablist" }, [tabScan, tabAnalyze]);
+    const tabLogs = h("button", {
+      type: "button",
+      id: "jf-tab-logs",
+      class: "jf-tab",
+      role: "tab",
+      "aria-selected": "false",
+    });
+    tabLogs.textContent = "Logs";
+    const tabs = h("div", { class: "jf-tabs", role: "tablist" }, [tabScan, tabAnalyze, tabLogs]);
 
     const scanBtn = h("button", {
       type: "button",
       id: "jf-scan-btn",
       class: "jf-btn jf-btn-primary jf-big-btn jf-progress-btn",
       "data-mode": "scan",
+      disabled: "",
     });
     scanBtn.textContent = "Scan & Fill";
     const rescanBtn = h("button", { type: "button", id: "jf-rescan-btn", class: "jf-link-btn", hidden: "" });
@@ -500,11 +525,14 @@
 
     const coverLetterPreview = h("textarea", { id: "jf-cover-letter-preview", class: "jf-textarea", readonly: "", hidden: "" });
 
+    const scanLogEl = h("pre", { id: "jf-scan-log", class: "jf-log jf-log-mini", hidden: "" });
+
     const panelScan = h("div", { id: "jf-panel-scan", class: "jf-tab-panel", role: "tabpanel" }, [
       scanBtn,
       rescanBtn,
       generateClBtn,
       coverLetterPreview,
+      scanLogEl,
     ]);
 
     const analyzeBtn = h("button", {
@@ -527,9 +555,19 @@
       analyzeAgainBtn,
     ]);
 
-    const logEl = h("pre", { id: "jf-log", class: "jf-log" });
+    const copyLogsBtn = h("button", { type: "button", id: "jf-copy-logs-btn", class: "jf-btn" });
+    copyLogsBtn.textContent = "Copy logs";
+    const downloadLogsBtn = h("button", { type: "button", id: "jf-download-logs-btn", class: "jf-btn" });
+    downloadLogsBtn.textContent = "Download .txt";
+    const logsActions = h("div", { class: "jf-row" }, [copyLogsBtn, downloadLogsBtn]);
+    const logEl = h("pre", { id: "jf-log", class: "jf-log jf-log-full" });
 
-    const body = h("div", { class: "jf-body" }, [row, status, tabs, panelScan, panelAnalyze, logEl]);
+    const panelLogs = h("div", { id: "jf-panel-logs", class: "jf-tab-panel", role: "tabpanel", hidden: "" }, [
+      logsActions,
+      logEl,
+    ]);
+
+    const body = h("div", { class: "jf-body" }, [row, status, tabs, panelScan, panelAnalyze, panelLogs]);
 
     const panel = h("div", { id: "jf-panel", class: "jf-panel", hidden: "" }, [header, body]);
 
@@ -554,6 +592,13 @@
     top: "0",
     left: "0",
     "z-index": "2147483647",
+    "line-height": "normal",
+    "letter-spacing": "normal",
+    "word-spacing": "normal",
+    "text-transform": "none",
+    "text-indent": "0",
+    "white-space": "normal",
+    direction: "ltr",
   })) {
     host.style.setProperty(prop, value, "important");
   }
@@ -569,10 +614,16 @@
     for (const node of buildPanel()) shadow.appendChild(node);
     wireUp();
     log(`BOOT version=${JF_VERSION} url=${window.location.href}`);
-    loadCvs().catch((err) => {
-      setStatus("Could not reach core API.");
-      log(String(err));
-    });
+    loadCvs()
+      .then(() => {
+        if ($("jf-scan-btn").dataset.mode === "scan") {
+          $("jf-scan-btn").disabled = !$("jf-cv-select").value;
+        }
+      })
+      .catch((err) => {
+        setStatus("Could not reach core API.");
+        log(String(err));
+      });
     restoreScanState();
   }
 
@@ -581,10 +632,17 @@
     return `${d.toTimeString().slice(0, 8)}.${String(d.getMilliseconds()).padStart(3, "0")}`;
   }
 
-  function log(message) {
+  function log(message, mirrorId) {
+    const line = `[${timestamp()}] ${message}\n`;
     const el = $("jf-log");
-    el.textContent += `[${timestamp()}] ${message}\n`;
+    el.textContent += line;
     el.scrollTop = el.scrollHeight;
+    if (mirrorId) {
+      const mirrorEl = $(mirrorId);
+      mirrorEl.hidden = false;
+      mirrorEl.textContent += line;
+      mirrorEl.scrollTop = mirrorEl.scrollHeight;
+    }
   }
 
   function logEvent(action, details) {
@@ -643,15 +701,18 @@
   }
 
   function setActiveTab(tab) {
-    const isScan = tab !== "analyze";
-    $("jf-tab-scan").setAttribute("aria-selected", String(isScan));
-    $("jf-tab-analyze").setAttribute("aria-selected", String(!isScan));
-    $("jf-panel-scan").hidden = !isScan;
-    $("jf-panel-analyze").hidden = isScan;
+    const target = ["scan", "analyze", "logs"].includes(tab) ? tab : "scan";
+    for (const name of ["scan", "analyze", "logs"]) {
+      $(`jf-tab-${name}`).setAttribute("aria-selected", String(name === target));
+      $(`jf-panel-${name}`).hidden = name !== target;
+    }
   }
 
   function getActiveTab() {
-    return $("jf-tab-analyze").getAttribute("aria-selected") === "true" ? "analyze" : "scan";
+    for (const name of ["scan", "analyze", "logs"]) {
+      if ($(`jf-tab-${name}`).getAttribute("aria-selected") === "true") return name;
+    }
+    return "scan";
   }
 
   async function saveScanState() {
@@ -694,6 +755,7 @@
     if (lastFieldMapping) {
       scanBtn.dataset.mode = "fill";
       scanBtn.textContent = "Fill application";
+      scanBtn.disabled = false;
       finishProgress(scanBtn);
       $("jf-rescan-btn").hidden = false;
     }
@@ -857,20 +919,50 @@
 
     $("jf-cv-select").addEventListener("change", (e) => {
       logEvent("CHANGE", { id: "cv-select", value: e.target.value });
+      if ($("jf-scan-btn").dataset.mode === "scan") {
+        $("jf-scan-btn").disabled = !e.target.value;
+      }
     });
 
-    $("jf-tab-scan").addEventListener("click", () => {
-      logEvent("CLICK", { id: "tab-scan" });
-      setActiveTab("scan");
+    function switchTab(tab, sourceId) {
+      logEvent("CLICK", { id: sourceId });
+      setActiveTab(tab);
       saveScanState();
+    }
+
+    $("jf-tab-scan").addEventListener("click", () => switchTab("scan", "tab-scan"));
+    $("jf-tab-analyze").addEventListener("click", () => switchTab("analyze", "tab-analyze"));
+    $("jf-tab-logs").addEventListener("click", () => switchTab("logs", "tab-logs"));
+
+    $("jf-copy-logs-btn").addEventListener("click", async () => {
+      logEvent("CLICK", { id: "copy-logs-btn" });
+      const text = $("jf-log").textContent;
+      try {
+        await navigator.clipboard.writeText(text);
+        setStatus("Logs copied to clipboard.");
+      } catch (err) {
+        setStatus("Could not copy logs.");
+        log(String(err));
+      }
     });
-    $("jf-tab-analyze").addEventListener("click", () => {
-      logEvent("CLICK", { id: "tab-analyze" });
-      setActiveTab("analyze");
-      saveScanState();
+
+    $("jf-download-logs-btn").addEventListener("click", () => {
+      logEvent("CLICK", { id: "download-logs-btn" });
+      const text = $("jf-log").textContent;
+      const blob = new Blob([text], { type: "text/plain" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `jobfiller-log-${Date.now()}.txt`;
+      link.click();
+      URL.revokeObjectURL(url);
     });
 
     async function runScan() {
+      if (!$("jf-cv-select").value) {
+        setStatus("Select a CV first.");
+        return;
+      }
       const scanBtn = $("jf-scan-btn");
       scanBtn.disabled = true;
       scanBtn.textContent = "Scanning...";
@@ -890,6 +982,8 @@
       lastPageText = "";
       lastAboutText = "";
       refFrameMap = {};
+      $("jf-scan-log").textContent = "";
+      $("jf-scan-log").hidden = true;
 
       // Scan has no incremental progress to report, so this approaches (never
       // reaches) 92% on an easing curve — a real finish always jumps the rest
@@ -911,7 +1005,7 @@
         refFrameMap = result.refFrameMap;
         lastPageText = result.pageText;
         lastAboutText = result.aboutText;
-        result.logLines.forEach(log);
+        result.logLines.forEach((line) => log(line, "jf-scan-log"));
         setStatus("Scanned — review, then Fill.");
         finishProgress(scanBtn);
         scanBtn.dataset.mode = "fill";
@@ -925,11 +1019,11 @@
         resetProgress(scanBtn);
         scanBtn.textContent = "Scan & Fill";
         setStatus("Scan failed.");
-        log(String(err));
+        log(String(err), "jf-scan-log");
       } finally {
         clearInterval(labelTicker);
         stop();
-        scanBtn.disabled = false;
+        scanBtn.disabled = scanBtn.dataset.mode === "scan" ? !$("jf-cv-select").value : false;
       }
     }
 
@@ -943,13 +1037,21 @@
       setStatus("Filling...");
 
       try {
-        const result = await send("fill", { fieldMapping: lastFieldMapping, refFrameMap });
+        const result = await send("fill", {
+          fieldMapping: lastFieldMapping,
+          refFrameMap,
+          applicationId: lastApplicationId,
+        });
         if (!result.ok) throw new Error(result.error);
-        result.logLines.forEach(log);
+        result.logLines.forEach((line) => log(line, "jf-scan-log"));
+        if (result.entries?.length) {
+          const entriesByRef = Object.fromEntries(result.entries.map((e) => [e.ref, e]));
+          lastFieldMapping = lastFieldMapping.map((item) => entriesByRef[item.ref] || item);
+        }
         setStatus("Done — review before submitting.");
       } catch (err) {
         setStatus("Fill failed.");
-        log(String(err));
+        log(String(err), "jf-scan-log");
       } finally {
         scanBtn.textContent = doneText;
         scanBtn.disabled = false;
@@ -990,7 +1092,7 @@
           lastFieldMapping = lastFieldMapping.map((item) => entriesByRef[item.ref] || item);
           log(`Cover letter regenerated — applied to ${result.entries.length} field(s), Fill will use it.`);
         } else {
-          log("Cover letter generated — no cover-letter field detected on this page; copy it above.");
+          log("Cover letter generated — no cover-letter field detected on this page; it's in the preview box.");
         }
         setStatus("Cover letter ready.");
         await saveScanState();

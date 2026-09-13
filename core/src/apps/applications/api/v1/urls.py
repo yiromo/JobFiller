@@ -5,6 +5,7 @@ from .views import (
     ApplicationScanView,
     GenerateAnswerView,
     GenerateCoverLetterView,
+    ResolveOptionsView,
 )
 
 urlpatterns = [
@@ -16,4 +17,5 @@ urlpatterns = [
     ),
     path("analyze/", AnalyzeApplicationView.as_view(), name="application-analyze"),
     path("generate-answer/", GenerateAnswerView.as_view(), name="application-generate-answer"),
+    path("resolve-options/", ResolveOptionsView.as_view(), name="application-resolve-options"),
 ]

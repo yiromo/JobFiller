@@ -4,6 +4,165 @@ Newest first. One entry per feature commit — added when the feature actually l
 
 ## Done
 
+- **Panel text no longer collapses on pages with aggressive typography** — the log `<pre>` had no
+  `line-height` of its own, so it inherited one from the host page: `:host { all: initial }` is
+  outranked by any page rule that targets the host element itself, and a site setting a near-zero
+  line-height made every log line render on the same baseline, stacked on top of each other. Fixed
+  on both sides — the inherited text properties (`line-height`, `letter-spacing`, `word-spacing`,
+  `text-transform`, `text-indent`, `white-space`, `direction`) are now pinned inline with
+  `!important` on the host element, the same technique already used for `position`/`z-index`, and
+  `.jf-log` sets its own `line-height`/`font-family` explicitly. `JF_BUILD` bumped to `"11"`.
+
+- **Fills are now a try-verify-escalate cascade instead of one fixed path** — every action type
+  tries several techniques in order and checks the result after each, rather than firing one
+  sequence of events and assuming it worked. Text/textarea: native-setter + key-event sandwich →
+  `execCommand("insertText")` → direct assignment, verified against `el.value` each time, plus
+  `contentEditable` support (`setValue` no longer throws on a non-input element). Checkbox/radio:
+  skip if already in the wanted state → native `.click()` → synthetic pointer sequence → native
+  `checked` setter + input/change, verified against `el.checked`. Upload: `input`(composed) +
+  `change` + jQuery `.trigger()` for older ATSs, verified via `el.files.length`. Native
+  `<select>`: assignment → prototype setter if it didn't take. Custom combobox: open-tactics
+  (click the element → click its nearest ≥10×10 ancestor → ArrowDown → Alt+ArrowDown → Space →
+  type the first 4 characters), then commit-tactics (pointer sequence on the option → native
+  `.click()` → Enter → type the full text + Enter), with a virtualized-list pass (scroll the
+  option container by one page, up to 16 rounds, bail when `scrollTop` stops moving) when no
+  visible option matches. Commit is confirmed by the option list disappearing *and* the control's
+  rendered text containing the chosen option; an unconfirmed commit is now its own honest status
+  (`selection-not-confirmed`) rather than a silent success. The `via=` tag in the log names the
+  winning open+commit pair, so a live run says which technique worked per field.
+  Two supporting fixes: option lookup can now scope to a widget's own instance (deriving the id
+  stem from the element's own `id`/`aria-describedby`/`aria-activedescendant`, e.g.
+  `react-select-gender-*`), which is
+  exact per-field even when `aria-controls` is empty while the menu is closed; and the matcher is
+  now tiered — exact → normalized (case, curly apostrophes, whitespace) → prefix with a
+  word-boundary check → substring for targets of 4+ chars. The word-boundary tier is what lets a
+  short answer like "No" correctly match "No, I don't have a disability" without also matching
+  "Norway+47". The open cascade also checks `aria-expanded` between tactics: many widgets open on
+  a mousedown that bubbles from the input to the control box, so once the widget reports itself
+  open the cascade stops escalating and just waits longer — otherwise the next tactic's click on
+  the box would toggle the menu back closed. A widget that says it is open but exposes no options
+  now reports `options-unreachable` instead of the misleading `dropdown-never-opened`.
+  `JF_BUILD` bumped to `"10"`. `node --check` + `web-ext lint` clean, not yet run
+  live.
+
+- **Combobox option lookup now ignores listboxes that were already on the page** — a live run
+  showed every combobox on a Greenhouse board reporting the *same* option list (a phone
+  country-code picker's), because that widget keeps its `[role="option"]` nodes in the DOM at all
+  times and the failing fields (`input[role="combobox"]` with an **empty** `aria-controls`) always
+  fall through to `findOptions`' document-wide sweep. `findOptions` now filters to options that
+  are actually rendered (`getClientRects().length > 0`) and, when there's no `aria-controls`/
+  `aria-owns` scope to trust, prefers those that appeared *after* the field was opened
+  (`optionSnapshot()` taken before any interaction). This also explains an earlier run's inflated
+  fill count: the unbounded substring match was quietly clicking country entries into unrelated
+  fields ("No" matching "Monaco+377"), which the 4-char bound in build `"08"` turned into honest
+  failures. `selectValue` also now escalates through the ways a person would open the widget —
+  click, then `ArrowDown` (the WAI-ARIA combobox open key), then typing — each labelled in the
+  log's `via=` tag, with the per-attempt wait cut to 1.2s so three attempts cost less than the
+  old two. Round-trip failures are no longer indistinguishable from "core said skip": the log now
+  reads `Could not resolve N dropdown(s) via core: <reason>` when the request itself failed.
+  `JF_BUILD` bumped to `"09"`. `node --check` + `web-ext lint` clean, not yet re-run live.
+
+- **Combobox fills: fixed a wrong-widget bug, and added a core round trip for genuinely
+  unmatched options** — a live test surfaced two real bugs the earlier instrumentation made
+  visible instead of silent: (1) `findToggleControl`/`findOptions` in `background.js` located a
+  field's open-toggle and its option list via `el.closest('[class*="control" i]')`; on one real
+  ATS this walked past the field's own wrapper to a shared page-level container, so every
+  combobox on the page ended up opening and reading a single unrelated field's menu (a country
+  phone-code list). Fixed by dropping that heuristic entirely: `selectValue` now opens a
+  combobox by clicking the exact element `data-jf-ref` was stamped on (guaranteed correctly
+  scoped, since it's the real control), and `findOptions` falls back to a document-wide
+  `[role="option"]` query — safe only because a combobox is always closed again before the next
+  one opens (see next point), so at most one menu's options ever exist in the DOM at a time. (2)
+  A "no match" no longer leaves core's guessed text sitting in the field — `selectValue` clears
+  it and now also closes the widget (`Escape` + blur), since clearing alone re-triggers some
+  widgets' filter-as-you-type reopening; `selectValue` also checks for a stale still-open menu
+  before opening its own, closing it first if found. (3) `bestMatch`'s substring fallback tier is
+  now bounded to targets of 4+ characters, so a short value like "US" can no longer
+  substring-match an unrelated option like "Australia".
+  On top of that fix, a **`resolve-options` round trip** now runs when a combobox opens but
+  matches none of core's guessed options: `applyFillPlan` returns those as `unresolved`
+  (`{ref, wanted, options}`, options being the field's real, only-visible-at-fill-time text),
+  `handleFill` POSTs them to a new `POST /api/v1/applications/resolve-options/` endpoint, then
+  re-runs a small `applyFillPlan` pass to click whatever option core picks. Core's side
+  (`agent/option_resolver.py`) makes one batched MiMo call (same shape as `eeo_mapper.py`: system
+  prompt + JSON payload + `response_format` + 45s timeout, degrades to all-`skip` with no
+  `MIMO_API_KEY` or on any exception — confirmed by calling it directly with the key unset) given
+  only each field's `label`, `wanted` guess, and real `options` — no CV text, no page text — and
+  reuses `llm_mapper.validate_override` to snap the result to the closed option set or force
+  `skip`. Resolved entries persist into `Application.field_mapping` (`ApplicationService.
+  resolve_options`) and are returned to `panel.js`, which splices them into `lastFieldMapping` the
+  same way cover-letter regeneration already does, so a second Fill click doesn't repeat the
+  round trip. Curl-tested directly against the running core container on the real failing
+  application row: a `wanted="Male"` guess against real page options resolved to `"Male"`, and a
+  clearly mismatched guess (a GitHub URL against a Yes/No question) correctly resolved to `skip`
+  instead of a forced wrong click. `JF_BUILD` bumped to `"08"`. `node --check` + `web-ext lint`
+  clean on the extension, `ruff check` + `manage.py check` clean on core; the DOM-side fix and
+  round trip are not yet re-tested live end-to-end in a browser.
+
+- **`no-matching-option`/`dropdown-never-opened` log lines now show wanted vs. seen** —
+  `selectValue` in `background.js` used to return a bare outcome string, so a failed combobox
+  fill only ever logged a generic tag with no way to tell, from the log alone, whether core's
+  guessed value was wrong or the widget's real option list was. It now returns
+  `{status, wanted, seen, via}` (`seen` bounded to the first 10 options, each truncated to 40
+  chars; `via` notes whether the option list came from clicking a toggle or from typing into the
+  field first), and `outcomeResult` folds that into the reason string, e.g. `no-matching-option
+  wanted="Not a veteran" saw="I am not a protected veteran" | "I identify as one or more
+  classifications of protected veteran" via=toggle`. Root cause of a live failure this surfaced:
+  on a custom (non-native-`<select>`) combobox, the scan-time DOM snapshot has no way to see the
+  widget's options (they don't exist in the DOM until it's opened), so core's field/EEO mapping
+  has no option list to match against and returns its best free-text guess — which then fails to
+  match the widget's real, differently-worded option labels at fill time. That's a mapping-input
+  gap, not a DOM-interaction bug, and isn't fixed here — this change only makes the failure mode
+  visible in the panel's own log instead of requiring a devtools trip. `JF_BUILD` bumped to
+  `"07"`. `node --check` + `web-ext lint` clean, not yet re-run against a live page.
+
+- **`applyFillPlan` fill-robustness pass** — four small fixes in `background.js`, all in
+  `applyFillPlan`/`isDropdownLike`/`findOptions`: (1) `setValue` now also does
+  `el.setAttribute("value", v)` on `INPUT` after the native property setter, since some
+  ATS-side validation/CSS reads the DOM attribute rather than the live property, which the
+  setter alone doesn't touch; (2) `isDropdownLike` and `findOptions` now also check
+  `el.closest('[role="combobox"], [aria-haspopup="listbox"]')`, not just the focused element's
+  own attributes — the WAI-ARIA 1.1 combobox pattern allows those roles (and
+  `aria-controls`/`aria-owns`) to live on a wrapper around the input instead of on the input
+  itself, which the old own-attribute-only check missed; (3) the `"check"` action no longer sets
+  `el.checked` directly — it now compares against the wanted state and calls `el.click()` when
+  they differ, because React's `ChangeEventPlugin` listens for a native `click` on
+  checkboxes/radios (not `change`), and assigning `.checked` directly trips the same
+  value-tracker trap `.value` does on text inputs. `JF_BUILD` bumped to `"06"`. `node --check` +
+  `web-ext lint` clean, not yet exercised against a real dropdown/checkbox in a live browser.
+
+- **Manage CVs tab opens zoomed to 30%** — `openManage`'s handler in `background.js` now calls
+  `browser.tabs.setZoom(tab.id, 0.3)` right after `browser.tabs.create` for `manage.html`; `0.3` is
+  the minimum value the Tabs API's `setZoom` accepts (range `0.3`–`5`), and needs no manifest
+  permission. `JF_BUILD` bumped to `"05"`.
+
+- **Dedicated Logs tab, Scan & Fill mirrors its own response, and a CV-required gate** — the
+  shared `#jf-log` element used to sit below both tab panels at all times, competing for vertical
+  space with the Scanner/Filler and Analyze content. Added a third tab (`jf-tab-logs` /
+  `jf-panel-logs`) holding the relocated log element (now `jf-log jf-log-full`, `max-height: 420px`
+  instead of `200px` since it has the whole panel to itself) plus a `Copy logs` button
+  (`navigator.clipboard.writeText`, no extra manifest permission needed since it runs from a user
+  click in a content script) and a `Download .txt` button (`Blob` + `URL.createObjectURL` + a
+  temporary `<a download>` click, revoked immediately after). `setActiveTab`/`getActiveTab` were
+  generalized from a scan/analyze boolean toggle to loop over `["scan", "analyze", "logs"]`, and
+  all three tab buttons go through one `switchTab(tab, sourceId)` helper that logs the click and
+  persists `activeTab` via the existing `saveScanState`. A separate "View logs" link on the
+  Scanner/Filler and Analyze tabs was tried and then dropped — the tab alone is enough to reach the
+  Logs tab. Instead, `log()` grew an optional second `mirrorId` argument: `runScan`/`runFill` now
+  call `log(line, "jf-scan-log")` for every line in `result.logLines` (and for their catch-block
+  errors), writing to both the full `#jf-log` and a small `<pre id="jf-scan-log" class="jf-log
+  jf-log-mini" hidden>` sitting right in the Scanner/Filler tab, so the outcome of clicking Scan &
+  Fill (or Re-scan, or Fill) is visible without leaving that tab — it starts and resets `hidden`
+  between scans so an empty bordered box doesn't show before the first scan or after a page-reload
+  restore (this mirror isn't persisted; only the full log survives a reload). Also added the
+  validation this surfaced a need for: `#jf-scan-btn` now starts `disabled` and is re-enabled only
+  once a CV is selected (`jf-cv-select`'s `change` handler, `loadCvs()`'s `.then()` in `mount()`,
+  and `restoreScanState` when a prior scan is restored, all keep it in sync with the current
+  selection); a guard at the top of `runScan` also blocks Re-scan without a CV, since a `.jf-link-btn`
+  can't be `disabled`-styled the same way and the user asked for no scan to be possible without one
+  chosen. `JF_BUILD` bumped to `"04"`. `node --check` and `web-ext lint` clean (0 errors, same 2
+  pre-existing warnings); not yet clicked through in a real browser.
+
 - **Extension versioning + structured logging, and a real scan bug this surfaced** — after the
   tab redesign below, a live scan on a real Ashby page failed with "Could not establish
   connection. Receiving end does not exist." even after reloading the add-on and the page, with

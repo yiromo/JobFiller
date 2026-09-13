@@ -2,6 +2,15 @@
 
 Guidance for Claude Code (or any agent) working in this repo.
 
+## Never write comments in code
+
+No comments. Not in new code, not in edited code, not in generated config, not "just this one
+line because the intent is subtle", not JSDoc/docstring blocks, not `# noqa`-style explanations
+of a workaround. If something needs explaining, name it better or put it in `tasks/PROGRESS.md`.
+Leave comments that already exist alone unless the code under them changes; if it does, delete
+the comment rather than update it. This rule outranks any instinct to document a non-obvious
+fix — that context belongs in the PROGRESS entry, not the source.
+
 ## What this repo is
 
 `job-filler` — an agent that fills job applications from a user's CVs. Monorepo:
@@ -110,6 +119,29 @@ for auto-fill guessing, by either mapper. Demographic/EEO questions are never gu
 or job posting either, but they are routed through a dedicated AI pass grounded strictly in the
 user's own `eeo_answers` rows — see the "EEO/demographic" bullets below.
 
+### Combobox option resolution (fill-time round trip)
+
+A custom combobox's real options don't exist in the DOM until it's opened, so `form_snapshot`'s
+`options` is `[]` for these at scan time and both mappers can only guess a value blind. When
+`background.js`'s `applyFillPlan` opens the widget at fill time and that guess matches none of
+the real options, it's collected as `{ref, wanted, options}` (the real option text, now known)
+and `handleFill` POSTs the batch to `POST /api/v1/applications/resolve-options/`:
+
+```json
+{"application_id": 1, "fields": [{"ref": "...", "wanted": "...", "options": ["...", "..."]}]}
+```
+
+Core (`agent/option_resolver.py`, one MiMo call for the whole batch, same shape as
+`eeo_mapper.py`) returns one entry per field, snapped to the given `options` (or `skip`) by
+`llm_mapper.validate_override`:
+
+```json
+{"fields": [{"ref": "...", "value": "...", "action": "select|skip", "confidence": 0.0}]}
+```
+
+Resolved entries persist into `Application.field_mapping` and are also returned to `panel.js`,
+which splices them into the in-memory plan so a second Fill click doesn't repeat the round trip.
+
 ## Non-obvious things (these will bite you)
 
 - **UI lives in a content script, not a toolbar popup.** `extension/src/content/panel.js` injects
@@ -170,6 +202,22 @@ user's own `eeo_answers` rows — see the "EEO/demographic" bullets below.
   real ATS first.
 - **Refs don't survive a full re-render.** If the SPA re-renders the form between Scan and
   Fill, the stamped `data-jf-ref` attributes are gone — the fix is re-scanning, not retrying.
+- **`agent/option_resolver.py`'s EEO-safety is entirely because it never sees CV or page text** —
+  it can resolve a `gender`/`veteran_status`/etc. field same as any other, since it's only
+  reconciling an already-decided value (sourced upstream from the user's own CV/Settings answers)
+  against the page's real option wording, never inventing one. Adding page text "for context" —
+  e.g. to help it resolve an ambiguous label — would silently break that guarantee for EEO fields
+  routed through it; if that's ever needed, EEO refs must be excluded from this endpoint's input,
+  not just trusted to behave.
+- **A combobox's real options don't exist in the DOM until it's opened** — `form_snapshot`'s
+  `options` is `[]` for these at scan time, so both mappers guess blind. `background.js`'s
+  `applyFillPlan` finds the actual options at fill time and, on a mismatch, opens the round trip
+  described above instead of leaving a wrong guess typed in. Also: never locate a field's own
+  toggle/menu by walking up to the nearest ancestor matching a loose class-name pattern (e.g.
+  `[class*="control" i]`) — on a real ATS this walked past the field's own wrapper to a shared
+  page-level container, so every combobox on the page ended up clicking and reading one single
+  unrelated field's menu. Click the exact `data-jf-ref`-stamped element itself instead; it's
+  guaranteed correctly scoped.
 - Only `core/.env` (git-ignored) holds secrets — `MIMO_API_KEY` included. Never put a key in a
   commit or `docker-compose.yml`. An empty `MIMO_API_KEY` is a valid, supported state:
   `llm_mapper.augment_skipped_fields` no-ops and the heuristic-only plan is returned as-is.
