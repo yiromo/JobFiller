@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Job Filler",
+  "name": "JobFiller",
   "version": "0.2.0",
-  "description": "Scans a job application form and fills it from your CV via the local job-filler core API.",
+  "description": "Scans a job application form and fills it from your CV via the local JobFiller core API.",
   "browser_specific_settings": {
     "gecko": {
       "id": "job-filler@yiromo.dev",

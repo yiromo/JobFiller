@@ -305,7 +305,7 @@
   function buildPanel() {
     const cornerTab = h(
       "div",
-      { id: "jf-corner-tab", class: "jf-corner-tab", role: "button", tabindex: "0", "aria-label": "Open Job Filler", title: "Job Filler" },
+      { id: "jf-corner-tab", class: "jf-corner-tab", role: "button", tabindex: "0", "aria-label": "Open JobFiller", title: "JobFiller" },
       [svgIcon("M4 4h16v3.2H4zM4 10.4h11.2v3.2H4zM4 16.8h16V20H4z", 16)],
     );
 
@@ -313,7 +313,7 @@
     closeBtn.textContent = "×";
 
     const logo = h("span", { class: "jf-logo" });
-    logo.textContent = "JOB FILLER";
+    logo.textContent = "JOBFILLER";
 
     const header = h("div", { class: "jf-header" }, [logo, closeBtn]);
 
