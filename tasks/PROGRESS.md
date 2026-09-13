@@ -169,6 +169,14 @@ Newest first. One entry per feature commit — added when the feature actually l
   and the storage-session persistence round trip are reviewed but unverified in an actual
   Firefox/Zen popup.
 
+- **"Analyzing..." status shows a live elapsed-time counter instead of a static message** — a
+  real analyze run took ~7 minutes (4 sequential external calls: MiMo query-extraction, 2 Tavily
+  searches, MiMo synthesis), and the panel just sat on a static "Analyzing application..." the
+  whole time with no sign it was still working. Tried a hardcoded "usually 1-3 min" estimate
+  first; the user asked for a live one instead. `panel.js`'s analyze click handler now starts a
+  1s `setInterval` ticking real elapsed seconds into the status text and shows the actual total
+  on completion — an honest number instead of a guessed range copy.
+
 - **Delete a stored CV** — `DELETE /api/v1/cvs/{id}/` (new `CvDetailView`), 204 on success, 404 if
   already gone/unknown. `CvRepository.delete` removes the file from disk (`FieldFile.delete(save=
   False)`, confirmed via `find` inside the running container that the file is actually gone, not

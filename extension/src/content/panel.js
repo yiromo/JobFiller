@@ -670,8 +670,15 @@
 
     $("jf-analyze-btn").addEventListener("click", async () => {
       if (!lastApplicationId) return;
-      setStatus("Analyzing application...");
       $("jf-analyze-btn").disabled = true;
+
+      const startedAt = Date.now();
+      const tick = () => {
+        const elapsed = Math.round((Date.now() - startedAt) / 1000);
+        setStatus(`Analyzing application... ${elapsed}s elapsed (searches the web, then writes the report)`);
+      };
+      tick();
+      const ticker = setInterval(tick, 1000);
 
       try {
         const result = await send("analyze", {
@@ -684,12 +691,13 @@
         lastAnalysis = result.analysis;
         renderAnalysis(lastAnalysis);
         log("Analysis ready.");
-        setStatus("Analysis ready.");
+        setStatus(`Analysis ready (took ${Math.round((Date.now() - startedAt) / 1000)}s).`);
         await saveScanState();
       } catch (err) {
         setStatus("Analysis failed.");
         log(String(err));
       } finally {
+        clearInterval(ticker);
         $("jf-analyze-btn").disabled = false;
       }
     });
