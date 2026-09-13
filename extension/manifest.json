@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "JobFiller",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Scans a job application form and fills it from your CV via the local JobFiller core API.",
   "browser_specific_settings": {
     "gecko": {
@@ -19,12 +19,12 @@
     "http://127.0.0.1:8000/*"
   ],
   "background": {
-    "scripts": ["src/background.js"]
+    "scripts": ["src/version.js", "src/background.js"]
   },
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["src/content/panel.js"],
+      "js": ["src/version.js", "src/content/panel.js"],
       "run_at": "document_idle"
     }
   ]

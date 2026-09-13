@@ -1,5 +1,7 @@
 const CORE_URL = "http://localhost:8000";
 
+document.getElementById("jf-version").textContent = `v${browser.runtime.getManifest().version}-${JF_BUILD}`;
+
 const statusEl = document.getElementById("status");
 const cvListEl = document.getElementById("cv-list");
 const cvFileInput = document.getElementById("cv-file-input");

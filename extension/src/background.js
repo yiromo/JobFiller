@@ -1,5 +1,18 @@
 const CORE_URL = "http://localhost:8000";
 
+const JF_VERSION = `${browser.runtime.getManifest().version}-${JF_BUILD}`;
+
+function logBg(action, details) {
+  const parts = details
+    ? Object.entries(details)
+        .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+        .join(" ")
+    : "";
+  console.info(`[JobFiller ${JF_VERSION}] ${action}${parts ? ` ${parts}` : ""}`);
+}
+
+logBg("BACKGROUND_LOADED");
+
 // Runs inside the page, injected via scripting.executeScript — cannot
 // reference anything from this file's scope.
 function scanPage() {
@@ -510,10 +523,21 @@ async function handleScan(message, tabId) {
   // allFrames catches ATS forms embedded in a cross-origin iframe (e.g.
   // Newton/gnewton career pages) — <all_urls> is a required permission now,
   // so this always has access.
-  const injectionResults = await browser.scripting.executeScript({
-    target: { tabId, allFrames: true },
-    func: scanPage,
-  });
+  let injectionResults;
+  try {
+    injectionResults = await browser.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: scanPage,
+    });
+  } catch (err) {
+    logBg("SCAN_ALLFRAMES_FAILED", { tabId, error: String(err) });
+    console.error("[JobFiller] allFrames scan failed, retrying top frame only", err);
+    logLines.push(`Could not scan every frame (${err.message || err}) — scanned the top frame only.`);
+    injectionResults = await browser.scripting.executeScript({
+      target: { tabId },
+      func: scanPage,
+    });
+  }
 
   const framesWithFields = injectionResults.filter(
     (r) => r.result && r.result.form_snapshot.length > 0,
@@ -683,37 +707,63 @@ function scanStorageKey(tabId) {
   return `scan:${tabId}`;
 }
 
+function reportError(type, err) {
+  console.error(`[JobFiller ${JF_VERSION}] ${type} failed:`, err);
+  return { ok: false, error: String(err) };
+}
+
+function startKeepalive() {
+  const interval = setInterval(() => {
+    browser.storage.session.get("jf-keepalive-ping").catch(() => {});
+  }, 20000);
+  return () => clearInterval(interval);
+}
+
 browser.runtime.onMessage.addListener((message, sender) => {
   const tabId = sender.tab?.id;
+  logBg("RECEIVE", { type: message.type, tabId, frameId: sender.frameId });
+
+  const respond = (promise) => {
+    const stopKeepalive = startKeepalive();
+    return promise
+      .then((result) => {
+        logBg("RESPOND", { type: message.type, tabId, ok: result ? result.ok !== false : true });
+        return result;
+      })
+      .finally(stopKeepalive);
+  };
 
   switch (message.type) {
     case "whoami":
-      return Promise.resolve({ tabId });
+      return respond(Promise.resolve({ tabId }));
     case "saveState":
-      return browser.storage.session
-        .set({ [scanStorageKey(tabId)]: message.state })
-        .then(() => ({ ok: true }));
+      return respond(
+        browser.storage.session.set({ [scanStorageKey(tabId)]: message.state }).then(() => ({ ok: true })),
+      );
     case "getState":
-      return browser.storage.session
-        .get(scanStorageKey(tabId))
-        .then((stored) => ({ entry: stored[scanStorageKey(tabId)] || null }));
+      return respond(
+        browser.storage.session
+          .get(scanStorageKey(tabId))
+          .then((stored) => ({ entry: stored[scanStorageKey(tabId)] || null })),
+      );
     case "loadCvs":
-      return fetchCvs().then((cvs) => ({ ok: true, cvs }));
+      return respond(fetchCvs().then((cvs) => ({ ok: true, cvs })));
     case "scan":
-      return handleScan(message, tabId).catch((err) => ({ ok: false, error: String(err) }));
+      return respond(handleScan(message, tabId).catch((err) => reportError("scan", err)));
     case "fill":
-      return handleFill(message, tabId).catch((err) => ({ ok: false, error: String(err) }));
+      return respond(handleFill(message, tabId).catch((err) => reportError("fill", err)));
     case "generateCoverLetter":
-      return handleGenerateCoverLetter(message).catch((err) => ({ ok: false, error: String(err) }));
+      return respond(handleGenerateCoverLetter(message).catch((err) => reportError("generateCoverLetter", err)));
     case "analyze":
-      return handleAnalyze(message).catch((err) => ({ ok: false, error: String(err) }));
+      return respond(handleAnalyze(message).catch((err) => reportError("analyze", err)));
     case "generateAnswer":
-      return handleGenerateAnswer(message).catch((err) => ({ ok: false, error: String(err) }));
+      return respond(handleGenerateAnswer(message).catch((err) => reportError("generateAnswer", err)));
     case "openManage":
-      return browser.tabs
-        .create({ url: browser.runtime.getURL("src/manage/manage.html") })
-        .then(() => ({ ok: true }));
+      return respond(
+        browser.tabs.create({ url: browser.runtime.getURL("src/manage/manage.html") }).then(() => ({ ok: true })),
+      );
     default:
+      logBg("UNKNOWN_MESSAGE_TYPE", { type: message.type, tabId });
       return undefined;
   }
 });

@@ -71,11 +71,22 @@
   flex: none;
 }
 
+.jf-logo-wrap {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
 .jf-logo {
   font-weight: 600;
   letter-spacing: 0.08em;
   font-size: 12px;
   color: #4ade80;
+}
+
+.jf-version {
+  font-size: 10px;
+  color: #6b6b6b;
 }
 
 .jf-close {
@@ -99,10 +110,87 @@
   gap: 10px;
 }
 
-.jf-row,
-.jf-actions {
+.jf-row {
   display: flex;
   gap: 8px;
+}
+
+.jf-tabs {
+  display: flex;
+  border-bottom: 1px solid #2a2a2a;
+  margin: 0 -16px;
+  padding: 0 16px;
+}
+
+.jf-tab {
+  flex: 1;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: #a0a0a0;
+  padding: 10px 4px;
+  font-family: inherit;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+
+.jf-tab:hover {
+  color: #e5e5e5;
+}
+
+.jf-tab[aria-selected="true"] {
+  color: #4ade80;
+  border-bottom-color: #4ade80;
+}
+
+.jf-tab-panel[hidden] {
+  display: none;
+}
+
+.jf-tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.jf-big-btn {
+  flex: none;
+  width: 100%;
+  padding: 14px 16px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.jf-link-btn {
+  align-self: flex-start;
+  background: none;
+  border: none;
+  color: #6b6b6b;
+  font-size: 11px;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 0;
+  font-family: inherit;
+}
+
+.jf-link-btn:hover {
+  color: #e5e5e5;
+}
+
+.jf-link-btn[hidden] {
+  display: none;
+}
+
+.jf-hint {
+  margin: 0;
+  color: #6b6b6b;
+  font-size: 11px;
+}
+
+.jf-hint[hidden] {
+  display: none;
 }
 
 .jf-select {
@@ -122,7 +210,6 @@
 }
 
 .jf-btn {
-  flex: 1;
   cursor: pointer;
   text-align: center;
 }
@@ -142,15 +229,28 @@
   color: #4ade80;
 }
 
-#jf-scan-btn {
+.jf-progress-btn {
   --jf-progress: 0%;
-  background: linear-gradient(to right, #4ade80 var(--jf-progress), #111111 var(--jf-progress));
+  background: linear-gradient(
+    to right,
+    rgba(74, 222, 128, 0.22) var(--jf-progress),
+    #111111 var(--jf-progress)
+  );
 }
 
-#jf-scan-btn.jf-scan-done {
+.jf-progress-btn.jf-progress-done {
   background: #4ade80;
   border-color: #4ade80;
   color: #000000;
+}
+
+.jf-progress-btn.jf-progress-done:hover:not(:disabled) {
+  color: #000000;
+}
+
+.jf-btn.jf-busy:disabled {
+  opacity: 1;
+  cursor: progress;
 }
 
 .jf-icon-btn {
@@ -226,8 +326,12 @@
     right bottom, right bottom;
 }
 
+.jf-article {
+  padding: 18px;
+}
+
 .jf-score {
-  font-size: 22px;
+  font-size: 26px;
   font-weight: 600;
   color: #4ade80;
   margin-bottom: 6px;
@@ -236,7 +340,7 @@
 .jf-summary {
   margin: 0 0 8px;
   color: #e5e5e5;
-  line-height: 1.5;
+  line-height: 1.6;
 }
 
 .jf-section {
@@ -289,6 +393,7 @@
 `;
 
   const SVG_NS = "http://www.w3.org/2000/svg";
+  const JF_VERSION = `${browser.runtime.getManifest().version}-${JF_BUILD}`;
 
   // Builds DOM nodes directly (no innerHTML/HTML-string parsing) so the
   // panel skeleton is constructed the same safe way as everything else this
@@ -326,7 +431,12 @@
     const logo = h("span", { class: "jf-logo" });
     logo.textContent = "JOBFILLER";
 
-    const header = h("div", { class: "jf-header" }, [logo, closeBtn]);
+    const version = h("span", { id: "jf-version", class: "jf-version" });
+    version.textContent = `v${JF_VERSION}`;
+
+    const logoWrap = h("div", { class: "jf-logo-wrap" }, [logo, version]);
+
+    const header = h("div", { class: "jf-header" }, [logoWrap, closeBtn]);
 
     const cvSelect = h("select", { id: "jf-cv-select", class: "jf-select" });
     const noCvOption = document.createElement("option");
@@ -352,35 +462,74 @@
     const status = h("p", { id: "jf-status", class: "jf-status" });
     status.textContent = "Ready.";
 
-    const scanBtn = h("button", { type: "button", id: "jf-scan-btn", class: "jf-btn jf-btn-primary" });
-    scanBtn.textContent = "Scan this page";
-    const fillBtn = h("button", { type: "button", id: "jf-fill-btn", class: "jf-btn", disabled: "" });
-    fillBtn.textContent = "Fill application";
-    const scanActions = h("div", { class: "jf-actions" }, [scanBtn, fillBtn]);
+    const tabScan = h("button", {
+      type: "button",
+      id: "jf-tab-scan",
+      class: "jf-tab",
+      role: "tab",
+      "aria-selected": "true",
+    });
+    tabScan.textContent = "Scanner/Filler";
+    const tabAnalyze = h("button", {
+      type: "button",
+      id: "jf-tab-analyze",
+      class: "jf-tab",
+      role: "tab",
+      "aria-selected": "false",
+    });
+    tabAnalyze.textContent = "Analyze application";
+    const tabs = h("div", { class: "jf-tabs", role: "tablist" }, [tabScan, tabAnalyze]);
 
-    const generateClBtn = h("button", { type: "button", id: "jf-generate-cl-btn", class: "jf-btn", disabled: "" });
+    const scanBtn = h("button", {
+      type: "button",
+      id: "jf-scan-btn",
+      class: "jf-btn jf-btn-primary jf-big-btn jf-progress-btn",
+      "data-mode": "scan",
+    });
+    scanBtn.textContent = "Scan & Fill";
+    const rescanBtn = h("button", { type: "button", id: "jf-rescan-btn", class: "jf-link-btn", hidden: "" });
+    rescanBtn.textContent = "Re-scan";
+
+    const generateClBtn = h("button", {
+      type: "button",
+      id: "jf-generate-cl-btn",
+      class: "jf-btn jf-big-btn",
+      disabled: "",
+    });
     generateClBtn.textContent = "Generate cover letter";
-    const clActions = h("div", { class: "jf-actions" }, [generateClBtn]);
 
     const coverLetterPreview = h("textarea", { id: "jf-cover-letter-preview", class: "jf-textarea", readonly: "", hidden: "" });
 
-    const analyzeBtn = h("button", { type: "button", id: "jf-analyze-btn", class: "jf-btn", disabled: "" });
-    analyzeBtn.textContent = "Analyze application";
-    const analyzeActions = h("div", { class: "jf-actions" }, [analyzeBtn]);
+    const panelScan = h("div", { id: "jf-panel-scan", class: "jf-tab-panel", role: "tabpanel" }, [
+      scanBtn,
+      rescanBtn,
+      generateClBtn,
+      coverLetterPreview,
+    ]);
 
-    const analysisResult = h("div", { id: "jf-analysis-result", class: "jf-card jf-corner-frame", hidden: "" });
+    const analyzeBtn = h("button", {
+      type: "button",
+      id: "jf-analyze-btn",
+      class: "jf-btn jf-btn-primary jf-big-btn jf-progress-btn",
+      disabled: "",
+    });
+    analyzeBtn.textContent = "Analyze application";
+    const analyzeHint = h("p", { id: "jf-analyze-hint", class: "jf-hint" });
+    analyzeHint.textContent = "Scan the page in Scanner/Filler first.";
+    const analysisResult = h("div", { id: "jf-analysis-result", class: "jf-card jf-corner-frame jf-article", hidden: "" });
+    const analyzeAgainBtn = h("button", { type: "button", id: "jf-analyze-again-btn", class: "jf-link-btn", hidden: "" });
+    analyzeAgainBtn.textContent = "Analyze again";
+
+    const panelAnalyze = h("div", { id: "jf-panel-analyze", class: "jf-tab-panel", role: "tabpanel", hidden: "" }, [
+      analyzeBtn,
+      analyzeHint,
+      analysisResult,
+      analyzeAgainBtn,
+    ]);
+
     const logEl = h("pre", { id: "jf-log", class: "jf-log" });
 
-    const body = h("div", { class: "jf-body" }, [
-      row,
-      status,
-      scanActions,
-      clActions,
-      coverLetterPreview,
-      analyzeActions,
-      analysisResult,
-      logEl,
-    ]);
+    const body = h("div", { class: "jf-body" }, [row, status, tabs, panelScan, panelAnalyze, logEl]);
 
     const panel = h("div", { id: "jf-panel", class: "jf-panel", hidden: "" }, [header, body]);
 
@@ -419,6 +568,7 @@
     shadow.appendChild(style);
     for (const node of buildPanel()) shadow.appendChild(node);
     wireUp();
+    log(`BOOT version=${JF_VERSION} url=${window.location.href}`);
     loadCvs().catch((err) => {
       setStatus("Could not reach core API.");
       log(String(err));
@@ -426,16 +576,82 @@
     restoreScanState();
   }
 
+  function timestamp() {
+    const d = new Date();
+    return `${d.toTimeString().slice(0, 8)}.${String(d.getMilliseconds()).padStart(3, "0")}`;
+  }
+
   function log(message) {
-    $("jf-log").textContent += `${message}\n`;
+    const el = $("jf-log");
+    el.textContent += `[${timestamp()}] ${message}\n`;
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function logEvent(action, details) {
+    const parts = details
+      ? Object.entries(details)
+          .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+          .join(" ")
+      : "";
+    log(`${action}${parts ? ` ${parts}` : ""}`);
   }
 
   function setStatus(message) {
     $("jf-status").textContent = message;
   }
 
-  function send(type, payload) {
-    return browser.runtime.sendMessage({ type, ...payload });
+  async function send(type, payload) {
+    logEvent("SEND", { type });
+    try {
+      const result = await browser.runtime.sendMessage({ type, ...payload });
+      logEvent("RECV", { type, ok: result ? result.ok !== false : true });
+      return result;
+    } catch (err) {
+      logEvent("RECV_ERROR", { type, error: String(err && err.message ? err.message : err) });
+      throw err;
+    }
+  }
+
+  function runProgress(btn, tau) {
+    btn.classList.remove("jf-progress-done");
+    btn.classList.add("jf-busy");
+    const startedAt = Date.now();
+    const tick = () => {
+      const elapsed = (Date.now() - startedAt) / 1000;
+      const pct = 92 * (1 - Math.exp(-elapsed / tau));
+      btn.style.setProperty("--jf-progress", `${pct.toFixed(1)}%`);
+    };
+    tick();
+    const interval = setInterval(tick, 100);
+    return {
+      stop: () => {
+        clearInterval(interval);
+        btn.classList.remove("jf-busy");
+      },
+      startedAt,
+    };
+  }
+
+  function finishProgress(btn) {
+    btn.style.setProperty("--jf-progress", "100%");
+    btn.classList.add("jf-progress-done");
+  }
+
+  function resetProgress(btn) {
+    btn.style.setProperty("--jf-progress", "0%");
+    btn.classList.remove("jf-progress-done");
+  }
+
+  function setActiveTab(tab) {
+    const isScan = tab !== "analyze";
+    $("jf-tab-scan").setAttribute("aria-selected", String(isScan));
+    $("jf-tab-analyze").setAttribute("aria-selected", String(!isScan));
+    $("jf-panel-scan").hidden = !isScan;
+    $("jf-panel-analyze").hidden = isScan;
+  }
+
+  function getActiveTab() {
+    return $("jf-tab-analyze").getAttribute("aria-selected") === "true" ? "analyze" : "scan";
   }
 
   async function saveScanState() {
@@ -453,6 +669,7 @@
           ? ""
           : $("jf-cover-letter-preview").value,
         analysis: lastAnalysis,
+        activeTab: getActiveTab(),
         panelOpen: !$("jf-panel").hidden,
       },
     });
@@ -468,20 +685,36 @@
 
     lastFieldMapping = entry.fieldMapping;
     refFrameMap = entry.refFrameMap || {};
-    $("jf-log").textContent = entry.logText || "";
+    $("jf-log").textContent = (entry.logText || "") + $("jf-log").textContent;
     lastApplicationId = entry.applicationId || null;
     lastPageText = entry.pageText || "";
     lastAboutText = entry.aboutText || "";
-    $("jf-fill-btn").disabled = !lastFieldMapping;
+
+    const scanBtn = $("jf-scan-btn");
+    if (lastFieldMapping) {
+      scanBtn.dataset.mode = "fill";
+      scanBtn.textContent = "Fill application";
+      finishProgress(scanBtn);
+      $("jf-rescan-btn").hidden = false;
+    }
     $("jf-generate-cl-btn").disabled = !lastApplicationId;
     $("jf-analyze-btn").disabled = !lastApplicationId;
+    $("jf-analyze-hint").hidden = Boolean(lastApplicationId);
+
     if (entry.coverLetterText) {
       $("jf-cover-letter-preview").value = entry.coverLetterText;
       $("jf-cover-letter-preview").hidden = false;
     }
+
     lastAnalysis = entry.analysis || null;
-    if (lastAnalysis) renderAnalysis(lastAnalysis);
+    if (lastAnalysis) {
+      renderAnalysis(lastAnalysis);
+      $("jf-analyze-btn").hidden = true;
+      $("jf-analyze-again-btn").hidden = false;
+    }
+
     if (lastFieldMapping) setStatus("Restored previous scan — review, then Fill.");
+    setActiveTab(entry.activeTab || "scan");
     if (entry.panelOpen) openPanel();
   }
 
@@ -602,22 +835,53 @@
   }
 
   function wireUp() {
-    $("jf-corner-tab").addEventListener("click", openPanel);
-    $("jf-corner-tab").addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") openPanel();
+    $("jf-corner-tab").addEventListener("click", () => {
+      logEvent("CLICK", { id: "corner-tab" });
+      openPanel();
     });
-    $("jf-close-btn").addEventListener("click", closePanel);
+    $("jf-corner-tab").addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        logEvent("CLICK", { id: "corner-tab", via: "keydown" });
+        openPanel();
+      }
+    });
+    $("jf-close-btn").addEventListener("click", () => {
+      logEvent("CLICK", { id: "close-btn" });
+      closePanel();
+    });
 
-    $("jf-manage-btn").addEventListener("click", () => send("openManage", {}));
+    $("jf-manage-btn").addEventListener("click", () => {
+      logEvent("CLICK", { id: "manage-btn" });
+      send("openManage", {});
+    });
 
-    $("jf-scan-btn").addEventListener("click", async () => {
+    $("jf-cv-select").addEventListener("change", (e) => {
+      logEvent("CHANGE", { id: "cv-select", value: e.target.value });
+    });
+
+    $("jf-tab-scan").addEventListener("click", () => {
+      logEvent("CLICK", { id: "tab-scan" });
+      setActiveTab("scan");
+      saveScanState();
+    });
+    $("jf-tab-analyze").addEventListener("click", () => {
+      logEvent("CLICK", { id: "tab-analyze" });
+      setActiveTab("analyze");
+      saveScanState();
+    });
+
+    async function runScan() {
       const scanBtn = $("jf-scan-btn");
-      scanBtn.classList.remove("jf-scan-done");
       scanBtn.disabled = true;
+      scanBtn.textContent = "Scanning...";
+      scanBtn.dataset.mode = "scan";
       setStatus("Scanning...");
-      $("jf-fill-btn").disabled = true;
+      $("jf-rescan-btn").hidden = true;
       $("jf-generate-cl-btn").disabled = true;
       $("jf-analyze-btn").disabled = true;
+      $("jf-analyze-btn").hidden = false;
+      $("jf-analyze-again-btn").hidden = true;
+      $("jf-analyze-hint").hidden = false;
       $("jf-cover-letter-preview").hidden = true;
       $("jf-analysis-result").hidden = true;
       lastAnalysis = null;
@@ -630,12 +894,12 @@
       // Scan has no incremental progress to report, so this approaches (never
       // reaches) 92% on an easing curve — a real finish always jumps the rest
       // of the way to 100%, so the bar never looks "done" before it is.
-      const startedAt = Date.now();
-      const ticker = setInterval(() => {
-        const elapsed = (Date.now() - startedAt) / 1000;
-        const pct = 92 * (1 - Math.exp(-elapsed / 1.2));
-        scanBtn.style.setProperty("--jf-progress", `${pct.toFixed(1)}%`);
-      }, 100);
+      const { stop, startedAt } = runProgress(scanBtn, 12);
+      const labelTick = () => {
+        const elapsed = Math.round((Date.now() - startedAt) / 1000);
+        scanBtn.textContent = elapsed > 2 ? `Scanning... ${elapsed}s` : "Scanning...";
+      };
+      const labelTicker = setInterval(labelTick, 1000);
 
       try {
         const cvId = $("jf-cv-select").value ? Number($("jf-cv-select").value) : null;
@@ -649,23 +913,63 @@
         lastAboutText = result.aboutText;
         result.logLines.forEach(log);
         setStatus("Scanned — review, then Fill.");
-        scanBtn.style.setProperty("--jf-progress", "100%");
-        scanBtn.classList.add("jf-scan-done");
-        $("jf-fill-btn").disabled = false;
+        finishProgress(scanBtn);
+        scanBtn.dataset.mode = "fill";
+        scanBtn.textContent = "Fill application";
+        $("jf-rescan-btn").hidden = false;
         $("jf-generate-cl-btn").disabled = false;
         $("jf-analyze-btn").disabled = false;
+        $("jf-analyze-hint").hidden = true;
         await saveScanState();
       } catch (err) {
-        scanBtn.style.setProperty("--jf-progress", "0%");
+        resetProgress(scanBtn);
+        scanBtn.textContent = "Scan & Fill";
         setStatus("Scan failed.");
         log(String(err));
       } finally {
-        clearInterval(ticker);
+        clearInterval(labelTicker);
+        stop();
         scanBtn.disabled = false;
       }
+    }
+
+    async function runFill() {
+      if (!lastFieldMapping) return;
+      const scanBtn = $("jf-scan-btn");
+      scanBtn.disabled = true;
+      $("jf-rescan-btn").hidden = true;
+      const doneText = scanBtn.textContent;
+      scanBtn.textContent = "Filling...";
+      setStatus("Filling...");
+
+      try {
+        const result = await send("fill", { fieldMapping: lastFieldMapping, refFrameMap });
+        if (!result.ok) throw new Error(result.error);
+        result.logLines.forEach(log);
+        setStatus("Done — review before submitting.");
+      } catch (err) {
+        setStatus("Fill failed.");
+        log(String(err));
+      } finally {
+        scanBtn.textContent = doneText;
+        scanBtn.disabled = false;
+        if (scanBtn.dataset.mode === "fill") $("jf-rescan-btn").hidden = false;
+      }
+    }
+
+    $("jf-scan-btn").addEventListener("click", () => {
+      const mode = $("jf-scan-btn").dataset.mode;
+      logEvent("CLICK", { id: "scan-btn", mode });
+      if (mode === "fill") runFill();
+      else runScan();
+    });
+    $("jf-rescan-btn").addEventListener("click", () => {
+      logEvent("CLICK", { id: "rescan-btn" });
+      runScan();
     });
 
     $("jf-generate-cl-btn").addEventListener("click", async () => {
+      logEvent("CLICK", { id: "generate-cl-btn" });
       if (!lastApplicationId) return;
       setStatus("Generating cover letter...");
       $("jf-generate-cl-btn").disabled = true;
@@ -698,17 +1002,22 @@
       }
     });
 
-    $("jf-analyze-btn").addEventListener("click", async () => {
+    async function runAnalyze() {
       if (!lastApplicationId) return;
-      $("jf-analyze-btn").disabled = true;
+      const analyzeBtn = $("jf-analyze-btn");
+      analyzeBtn.disabled = true;
+      analyzeBtn.hidden = false;
+      $("jf-analysis-result").hidden = true;
+      $("jf-analyze-again-btn").hidden = true;
 
-      const startedAt = Date.now();
-      const tick = () => {
+      const { stop, startedAt } = runProgress(analyzeBtn, 18);
+      const labelTick = () => {
         const elapsed = Math.round((Date.now() - startedAt) / 1000);
-        setStatus(`Analyzing application... ${elapsed}s elapsed (searches the web, then writes the report)`);
+        analyzeBtn.textContent = `Analyzing... ${elapsed}s`;
       };
-      tick();
-      const ticker = setInterval(tick, 1000);
+      labelTick();
+      const labelTicker = setInterval(labelTick, 1000);
+      setStatus("Analyzing application (searches the web, then writes the report)...");
 
       try {
         const result = await send("analyze", {
@@ -719,32 +1028,32 @@
         if (!result.ok) throw new Error(result.error);
 
         lastAnalysis = result.analysis;
+        finishProgress(analyzeBtn);
         renderAnalysis(lastAnalysis);
+        analyzeBtn.hidden = true;
+        $("jf-analyze-again-btn").hidden = false;
         log("Analysis ready.");
         setStatus(`Analysis ready (took ${Math.round((Date.now() - startedAt) / 1000)}s).`);
         await saveScanState();
       } catch (err) {
+        resetProgress(analyzeBtn);
+        analyzeBtn.textContent = "Analyze application";
         setStatus("Analysis failed.");
         log(String(err));
       } finally {
-        clearInterval(ticker);
-        $("jf-analyze-btn").disabled = false;
+        clearInterval(labelTicker);
+        stop();
+        analyzeBtn.disabled = false;
       }
+    }
+
+    $("jf-analyze-btn").addEventListener("click", () => {
+      logEvent("CLICK", { id: "analyze-btn" });
+      runAnalyze();
     });
-
-    $("jf-fill-btn").addEventListener("click", async () => {
-      if (!lastFieldMapping) return;
-      setStatus("Filling...");
-
-      try {
-        const result = await send("fill", { fieldMapping: lastFieldMapping, refFrameMap });
-        if (!result.ok) throw new Error(result.error);
-        result.logLines.forEach(log);
-        setStatus("Done — review before submitting.");
-      } catch (err) {
-        setStatus("Fill failed.");
-        log(String(err));
-      }
+    $("jf-analyze-again-btn").addEventListener("click", () => {
+      logEvent("CLICK", { id: "analyze-again-btn" });
+      runAnalyze();
     });
   }
 

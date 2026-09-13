@@ -4,6 +4,114 @@ Newest first. One entry per feature commit — added when the feature actually l
 
 ## Done
 
+- **Extension versioning + structured logging, and a real scan bug this surfaced** — after the
+  tab redesign below, a live scan on a real Ashby page failed with "Could not establish
+  connection. Receiving end does not exist." even after reloading the add-on and the page, with
+  no way to tell whether the content script, the background script, or something inside core was
+  at fault. Added transparency infrastructure so this class of report is diagnosable without
+  guessing: `manifest.json` keeps `version` as strict semver (`0.3.0` — Firefox's manifest
+  validator rejects a hyphenated version string). First tried a `version_name` field for the
+  human-facing `X.Y.Z-NN` display string — Firefox rejected it outright ("An unexpected property
+  was found in the WebExtension manifest", `version_name` is Chrome-only, unlike Chrome/Safari
+  which accept it silently) — replaced with a new `src/version.js` (just `const JF_BUILD = "01"`)
+  loaded as an extra script alongside both `background.js` (in `background.scripts`) and
+  `panel.js` (in `content_scripts[0].js`), plus a `<script>` tag in `manage.html` before
+  `manage.js`, so the one build-number constant is shared across all three JS contexts without a
+  bundler. Bump `JF_BUILD` on every further extension change so a bug report can be pinned to an
+  exact build. `panel.js` (header, next to the JOBFILLER logo), `background.js` (its console
+  prefix), and `manage.js`/`manage.html` (next to the "Manage CVs" heading) all compute
+  `` `${browser.runtime.getManifest().version}-${JF_BUILD}` `` and show/log it as `v0.3.0-01`.
+  `panel.js`'s `log()` now timestamps every line (`[HH:MM:SS.mmm] ...`) and a new `logEvent(action,
+  details)` helper formats structured `key=value` entries; every button click, the CV-select
+  change, and every `send()` call (now logging `SEND`/`RECV`/`RECV_ERROR` with the message type
+  and `ok` status) writes a line, so the log panel reads as a chronological trace of exactly what
+  was clicked and what the background script answered — not just the final per-field fill results
+  it showed before. Fixed a bug this introduced before it shipped: `restoreScanState` used to
+  unconditionally overwrite `#jf-log` with the persisted `logText`, which would have silently
+  discarded the fresh `BOOT`/`whoami`/`getState` lines logged earlier in the same `mount()` call —
+  changed to prepend the restored history instead of replacing. `background.js` mirrors this with
+  a `logBg(action, details)` writing to `console.info` (visible via `about:debugging` → *This
+  Firefox* → JobFiller → **Inspect** → its own Console, not the page console or the panel) logging
+  a `BACKGROUND_LOADED` line at script load and `RECEIVE`/`RESPOND` for every message; a new
+  `reportError(type, err)` also `console.error`s the real error object (not just `String(err)`,
+  which throws away the stack) in every message-handler `.catch`.
+  First guess at the cause — `handleScan`'s `browser.scripting.executeScript({ target: { tabId,
+  allFrames: true }, func: scanPage })` rejecting on an unreachable third-party iframe — turned
+  out wrong: the structured log from a real failing run showed the *same tab, same frames, no page
+  reload* succeed in 107ms with no CV selected and then fail 6 seconds later, 31.67s after the
+  retry click, with a CV selected. Frame structure hadn't changed; only `cv_id` had. (Kept the
+  allFrames→top-frame fallback anyway since it's harmless and a real gap, but it isn't this bug.)
+  Real cause, confirmed by curling core directly with a realistic payload: a scan with a CV
+  attached runs `agent/llm_mapper.py`'s batched MiMo pass over every open-ended/skipped field,
+  which took 26.4s for 25 fields against the real running container — squarely in the range that
+  killed the connection at 31.67s live. Firefox can unload a non-persistent MV3 background script
+  after ~30s idle, including (on some Firefox versions) while a `fetch()`-backed `onMessage`
+  promise is still pending, which severs the content script's connection mid-response with exactly
+  this error text. Added `startKeepalive()` in `background.js`: a `setInterval` polling
+  `browser.storage.session.get(...)` (a trivial extension-API call, which resets Firefox's idle
+  timer) every 20s for the duration of every message handler, wrapped once around all of them via
+  the shared `respond()` helper rather than in each `handleX` function individually. Also fixed
+  the scan button's progress bar/label in `panel.js`, tuned when scan was assumed sub-second: `tau`
+  raised from 1.2 to 12 and the button label now ticks elapsed seconds ("Scanning... 23s") past 2s,
+  matching Analyze's treatment, since a CV-attached scan legitimately takes 20-30+ seconds and the
+  bar was sitting frozen at 92% the whole time. Not yet confirmed against a real failing page —
+  needs the user to retry Scan & Fill with a CV selected and report back: whether it now succeeds,
+  and if not, whether the background console (`about:debugging` → *This Firefox* → JobFiller →
+  Inspect → Console) shows a second `BACKGROUND_LOADED` line (background actually restarted mid-
+  request, confirming the eviction theory) or a `reportError` line (a different failure entirely).
+  `node --check` and `web-ext lint` clean (same 2 pre-existing manifest warnings, 0 errors) on all
+  touched files (`version.js`, `panel.js`, `background.js`, `manage.js`).
+
+- **Panel reorganized into two tabs, each with one big action button** — the flat stack of
+  small side-by-side buttons (Scan / Fill / Generate cover letter / Analyze) is now two tabs,
+  "Scanner/Filler" and "Analyze application", switched via a `role="tablist"` pair persisted as
+  `activeTab` in the existing `saveScanState`/`restoreScanState` round trip (same `scan:<tabId>`
+  session-storage entry everything else already rides on) so the active tab survives a popup
+  reopen/tab switch like the rest of the scan state. CV select + Manage button and the status
+  line/log stay shared above/below the tabs — Analyze still depends on the `applicationId` a scan
+  produces, so splitting that state per-tab would have been wrong.
+  Scanner/Filler: `#jf-scan-btn` is now one big full-width button that does both steps —
+  `data-mode` toggles `"scan"`/`"fill"` and one click handler dispatches on it, replacing the old
+  separate `#jf-fill-btn` (disabled dead-string bug: `finishProgress`/etc. reused the same button
+  reference across both modes rather than two elements needing separate sync). On scan success the
+  button relabels to "Fill application" and a small "Re-scan" text link appears next to it (refs
+  die on any SPA re-render per this file's own notes above, so re-scan has to stay one click away
+  even after a fill); clicking Fill again after a successful fill is left legitimate (re-filling a
+  partially-completed form is a real use case), not reset back to scan mode automatically.
+  "Generate cover letter" is now a second big full-width button directly under it instead of its
+  own row.
+  Analyze application: same big-button treatment, and a genuine functional gap in the old design
+  is now closed — after one Analyze run there was no way to run it again without a page reload
+  (`renderAnalysis` just unhid a static result card forever). Now the button hides once a report
+  renders and a small "Analyze again" link takes over, both wired to the same `runAnalyze` function.
+  Added a "Scan the page in Scanner/Filler first" hint under the button, visible whenever
+  `lastApplicationId` is null, since a silently-disabled button on its own tab (no sibling button to
+  compare against for context, unlike before) was confusing.
+  Progress-fill mechanics: extracted the existing scan-button gradient/ticker into a shared
+  `runProgress(btn, tau)`/`finishProgress`/`resetProgress` used by both buttons — analyze runs
+  30–90s (four sequential external calls) versus scan's single round trip, so it gets a much larger
+  `tau` (18 vs 1.2) instead of visually saturating in ~4s and sitting frozen at 92% for the rest of
+  the wait; the elapsed-seconds counter the previous commit added to the status line now lives in
+  the analyze button's own label ("Analyzing... 23s") since the button is the focal element now.
+  Also fixed two contrast/specificity bugs the redesign would otherwise have shipped with, both
+  caught by review before commit: (1) the done-state fill was originally the same solid `#4ade80`
+  as the button's own hover/primary text color, which made the "Fill application" label vanish on
+  hover at the exact moment it's about to be clicked — added an explicit `:hover` override. (2) the
+  in-progress gradient was rendering at the existing `.jf-btn:disabled { opacity: 0.4 }` dimming the
+  whole 30–90s analyze wait; added a `.jf-busy` class (set/cleared by `runProgress`/`stop()`) that
+  exempts only an actively-running button from that opacity rule, not a disabled-because-no-scan-yet
+  one. Separately caught and fixed a bug from an even earlier pass in this same edit: the old
+  `.jf-btn { flex: 1 }` (meant for the now-deleted side-by-side button rows, `.jf-actions`, which no
+  longer has any element using it) was declared *after* the new `.jf-big-btn { flex: none; width:
+  100% }` in the stylesheet, so at equal specificity it silently won and every big button would
+  have stretched to fill the tab panel's remaining vertical space — removed `flex: 1` from `.jf-btn`
+  and the dead `.jf-actions` selector instead of fighting it with specificity or reordering.
+  `node --check`/`web-ext lint` clean (same 2 pre-existing manifest warnings, 0 errors). **Not
+  driven in a real browser** — the tab switch, the two-step button's mode toggle, the progress fill
+  timing/opacity, and the restore-on-reload path (in particular: does `restoreScanState` correctly
+  put the button in fill-mode-with-the-done-look, not just fill-mode-with-no-visual-state) are
+  reviewed but unverified live.
+
 - **"Scan this page" button fills as a live progress bar** — the button's own background is a
   hard-stop `linear-gradient` driven by a `--jf-progress` CSS custom property, ticked every 100ms
   on an easing curve (`92 * (1 - e^(-t/1.2))`) that approaches but never reaches 92% on its own —

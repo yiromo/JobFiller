@@ -20,6 +20,13 @@ h1:first-child {
   margin-top: 0;
 }
 
+.version {
+  font-size: 10px;
+  letter-spacing: normal;
+  text-transform: none;
+  color: #6b6b6b;
+}
+
 #status,
 #eeo-status {
   margin: 0 0 12px;
