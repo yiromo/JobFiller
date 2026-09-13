@@ -241,6 +241,27 @@ Newest first. One entry per feature commit — added when the feature actually l
 
 ## Fixes
 
+- **`isHoneypot` skipped Ashby's real resume file input, so it was never scanned at all** — got
+  the real outerHTML of a live Ashby "Resume" field after the user reported nothing was uploaded:
+  a `type="file"` input with `tabindex="-1"`, visually clipped (`clip: rect(0,0,0,0)`) behind a
+  styled "Upload File" button/dropzone. `isHoneypot` treated any `tabIndex === -1` as a bot-catcher
+  trap, same false-positive shape as the visibility check already carved an exception for on file
+  inputs (`scanPage`'s existing `type !== "file"` guard on `isVisible`) — Ashby removes the real
+  input from tab order on purpose since the styled button is the actual interactive element, not
+  because it's a trap. Fixed by exempting `type="file"` from the `tabIndex` half of the check only
+  (an `aria-hidden="true"` file input is still treated as a honeypot — that signal isn't
+  file-input-specific). Verified two of the three links in the chain: a synthetic three-value
+  logic test confirms the real Ashby input now passes, a plain honeypot text input with
+  `tabindex="-1"` still gets caught, and an `aria-hidden="true"` file input still gets caught;
+  separately curled `/scan/` with the real field's exact attributes and confirmed core maps it to
+  `action: "upload"` with the CV's id. **Not verified**: whether Ashby's own file-drop handler
+  actually accepts the programmatic `el.files = ...` + `change` event `applyFillPlan` sends — this
+  is the first Ashby (react-dropzone-style) file input tested; every prior upload confirmation was
+  Greenhouse. Needs a real Fill: no log line for this ref at all means the fix didn't take effect
+  (reload the add-on); `no-file-data` means core/CV lookup failed; `ok` with no file actually
+  showing in Ashby's dropzone UI means their handler didn't accept the synthetic event, which is a
+  different, currently-unknown fix.
+
 - **`findToggleControl` could click "Clear selections" instead of the dropdown toggle, wiping a
   pre-filled combobox** — got the real outerHTML of a live Greenhouse "My pronouns are:" widget
   (react-select-style, `role="combobox"` on the input, already showing a valid default of

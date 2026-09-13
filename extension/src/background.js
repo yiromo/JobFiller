@@ -10,10 +10,11 @@ function scanPage() {
     return style.display !== "none" && style.visibility !== "hidden" && el.offsetParent !== null;
   }
 
-  // Honeypot traps (e.g. Greenhouse's bot-catcher inputs) are hidden from
-  // real users but present in the DOM — never fill these.
+  // Honeypot traps are hidden from users but in the DOM; file inputs legitimately use
+  // tabindex=-1 behind a styled upload button.
   function isHoneypot(el) {
-    return el.getAttribute("aria-hidden") === "true" || el.tabIndex === -1;
+    if (el.getAttribute("aria-hidden") === "true") return true;
+    return el.type !== "file" && el.tabIndex === -1;
   }
 
   function resolveLabel(el) {
