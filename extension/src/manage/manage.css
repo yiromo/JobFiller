@@ -1,19 +1,26 @@
+html {
+  background: #161616;
+}
+
 body {
-  width: 560px;
+  width: 100%;
+  max-width: 960px;
   margin: 0 auto;
-  padding: 24px;
-  font-family: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
-  font-size: 13px;
-  background: #0a0a0a;
-  color: #e5e5e5;
+  padding: 40px 32px 64px;
+  font-family: Arial, Helvetica, "Helvetica Neue", sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+  background: #161616;
+  color: #ffffff;
 }
 
 h1 {
-  font-size: 14px;
-  letter-spacing: 0.06em;
+  font-size: 22px;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #4ade80;
-  margin: 20px 0 8px;
+  font-weight: 700;
+  color: #ffffff;
+  margin: 40px 0 12px;
 }
 
 h1:first-child {
@@ -21,45 +28,53 @@ h1:first-child {
 }
 
 .version {
-  font-size: 10px;
+  font-size: 13px;
   letter-spacing: normal;
   text-transform: none;
-  color: #6b6b6b;
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.6);
 }
 
 #status,
 #eeo-status {
-  margin: 0 0 12px;
-  color: #a0a0a0;
+  margin: 0 0 18px;
+  font-size: 15px;
+  color: rgba(255, 255, 255, 0.6);
 }
 
 hr {
   border: none;
-  border-top: 1px solid #2a2a2a;
-  margin: 20px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  margin: 36px 0;
 }
 
 .actions {
-  margin-bottom: 12px;
+  margin-bottom: 20px;
 }
 
 button,
 input {
   font-family: inherit;
-  font-size: 12px;
-  background: #111111;
-  color: #e5e5e5;
-  border: 1px solid #2a2a2a;
-  padding: 7px 10px;
+  font-size: 15px;
+  background: #000000;
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  padding: 12px 16px;
 }
 
 button {
   cursor: pointer;
+  font-weight: 700;
 }
 
 button:hover {
-  border-color: #4ade80;
-  color: #4ade80;
+  border-color: #ffffff;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+input:focus {
+  outline: none;
+  border-color: #ffffff;
 }
 
 #cv-list {
@@ -71,9 +86,9 @@ button:hover {
 #cv-list li {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 0;
-  border-bottom: 1px solid #2a2a2a;
+  gap: 14px;
+  padding: 16px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 #cv-list li:last-child {
@@ -81,11 +96,11 @@ button:hover {
 }
 
 .cv-name {
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .cv-filename {
-  color: #6b6b6b;
+  color: rgba(255, 255, 255, 0.6);
 }
 
 .cv-delete-btn {
@@ -94,20 +109,22 @@ button:hover {
 
 .cv-delete-btn:hover {
   border-color: #f87171;
+  background: rgba(248, 113, 113, 0.12);
   color: #f87171;
 }
 
 .hint {
-  color: #a0a0a0;
-  font-size: 12px;
-  line-height: 1.5;
-  margin: 4px 0 12px;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 15px;
+  line-height: 1.7;
+  max-width: 72ch;
+  margin: 8px 0 20px;
 }
 
 .eeo-row {
   display: flex;
-  gap: 8px;
-  margin-bottom: 6px;
+  gap: 12px;
+  margin-bottom: 12px;
 }
 
 .eeo-row .eeo-match {

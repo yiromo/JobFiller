@@ -4,6 +4,25 @@ Newest first. One entry per feature commit — added when the feature actually l
 
 ## Done
 
+- **UI rewritten black-and-white and scaled up** — the green-on-near-black monospace terminal look
+  is gone, replaced with the palette a real ATS board renders under (charcoal `#161616` ground,
+  pure-black `#000000` surfaces for inputs/cards/logs, white text, white borders at 10% alpha for
+  dividers and 30% for interactive edges, Arial/system-sans type). Everything that was `#4ade80`
+  is now white: tab underline, primary-button edge, analysis fit score, corner brackets, the
+  injected "Generate with AI" button in `background.js` (now a solid white/black pill). One
+  deliberate divergence — a board's primary button is solid white, but the Scan/Analyze buttons
+  double as progress bars, so their idle state is outlined and only the *done* state fills solid
+  white, leaving the 18%-white growing fill readable in between. The log `<pre>` keeps an explicit
+  monospace stack rather than `font-family: inherit`, which would now resolve to Arial and lose
+  column alignment. Sizes up across the board: panel 340→440px wide, base 13→15px, big buttons
+  14→16px, tabs 11→13px, cover-letter textarea 130→180px, corner tab 36×64→44×76px; the manage /
+  settings page was the worst offender at a fixed `width: 560px` in a full browser tab and is now
+  `max-width: 960px; width: 100%` with 15px base type and 12/16px control padding. `font-family`,
+  `font-size`, `font-weight`, `font-style` and `color` joined the inline `!important` pins on the
+  shadow host for the same reason the text-rendering properties did — `:host {}` loses to a page
+  rule that targets the host element, and every control inside inherits its font from it.
+  `JF_BUILD` bumped to `"02"`.
+
 - **Panel text no longer collapses on pages with aggressive typography** — the log `<pre>` had no
   `line-height` of its own, so it inherited one from the host page: `:host { all: initial }` is
   outranked by any page rule that targets the host element itself, and a site setting a near-zero

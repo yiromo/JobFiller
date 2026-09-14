@@ -142,14 +142,14 @@ function attachGenerateButtons(fields, applicationId, pageText) {
     button.textContent = "Generate with AI";
     Object.assign(button.style, {
       display: "block",
-      marginTop: "6px",
-      padding: "4px 10px",
-      fontFamily:
-        '"JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace',
-      fontSize: "12px",
-      color: "#4ade80",
-      background: "#111111",
-      border: "1px solid #2a2a2a",
+      marginTop: "8px",
+      padding: "8px 14px",
+      fontFamily: 'Arial, Helvetica, "Helvetica Neue", sans-serif',
+      fontSize: "14px",
+      fontWeight: "700",
+      color: "#000000",
+      background: "#ffffff",
+      border: "1px solid #ffffff",
       borderRadius: "0",
       cursor: "pointer",
     });
