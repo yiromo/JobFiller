@@ -24,7 +24,8 @@ Newest first. One entry per feature commit — added when the feature actually l
   dropped entirely when a dialog is open and the target sits outside it. The scoping is
   deliberately conditional on an open dialog: on Greenhouse/Ashby the keys still bubble normally,
   because plenty of comboboxes there listen at the document.
-  Still open after this, from the same run: `«r23»` came back `not-found` and `«r1m»`
+  Confirmed in Zen against a real Easy Apply dialog: the modal survives Fill.
+  Still open after this, from the earlier run: `«r23»` came back `not-found` and `«r1m»`
   (wanted "Sanzhar Amanzholov") `dropdown-never-opened` with every tactic tried, so LinkedIn's
   contact-info widgets are a shape the fill engine doesn't recognise yet. That needs the real
   markup, not a guess.
