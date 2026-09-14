@@ -4,6 +4,16 @@ Newest first. One entry per feature commit — added when the feature actually l
 
 ## Done
 
+- **Panel slides instead of snapping** — closing with × and opening from the corner tab were
+  instant `display: none` flips. Both now animate: the panel slides out to the right and fades,
+  the corner tab slides back in behind it (its own transform keeps the `-50%` vertical centring).
+  Done purely in the shadow stylesheet with no change to the open/close JS — `[hidden]` stays the
+  single source of truth for panel state (`saveScanState` still reads it), but the `[hidden]` rules
+  now render the element with `visibility: hidden` + `pointer-events: none` instead of
+  `display: none`, and transition `visibility` with a delay equal to the slide so the element stays
+  painted for the duration and goes non-interactive the instant it's dismissed. Honours
+  `prefers-reduced-motion`.
+
 - **Panel was dead on LinkedIn Easy Apply** — the corner tab rendered but no click reached it once
   the Easy Apply dialog was open. Not a z-index problem: LinkedIn opens that form with native
   `<dialog>.showModal()`, confirmed live (`document.elementFromPoint` at the tab's coordinates

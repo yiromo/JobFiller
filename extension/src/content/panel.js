@@ -31,6 +31,11 @@
   border-right: none;
   box-shadow: -4px 0 16px rgba(0, 0, 0, 0.5);
   cursor: pointer;
+  opacity: 1;
+  transition:
+    transform 260ms cubic-bezier(0.22, 1, 0.36, 1) 80ms,
+    opacity 160ms ease 80ms,
+    visibility 0s;
 }
 
 .jf-corner-tab:hover {
@@ -39,7 +44,15 @@
 }
 
 .jf-corner-tab[hidden] {
-  display: none;
+  display: flex;
+  visibility: hidden;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(calc(100% + 8px), -50%);
+  transition:
+    transform 200ms cubic-bezier(0.4, 0, 1, 1),
+    opacity 140ms ease,
+    visibility 0s linear 200ms;
 }
 
 .jf-panel {
@@ -56,10 +69,33 @@
   border: 1px solid rgba(255, 255, 255, 0.3);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
   overflow-y: auto;
+  opacity: 1;
+  transform: translateX(0);
+  transition:
+    transform 280ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 200ms ease,
+    visibility 0s;
 }
 
 .jf-panel[hidden] {
-  display: none;
+  display: flex;
+  visibility: hidden;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateX(calc(100% + 32px));
+  transition:
+    transform 240ms cubic-bezier(0.55, 0, 1, 0.45),
+    opacity 180ms ease,
+    visibility 0s linear 240ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .jf-corner-tab,
+  .jf-corner-tab[hidden],
+  .jf-panel,
+  .jf-panel[hidden] {
+    transition: none;
+  }
 }
 
 .jf-header {
