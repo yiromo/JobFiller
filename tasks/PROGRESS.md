@@ -4,6 +4,31 @@ Newest first. One entry per feature commit — added when the feature actually l
 
 ## Done
 
+- **Fill closed the LinkedIn Easy Apply dialog instead of filling it** — three ways `applyFillPlan`
+  could dismiss a native modal, all now blocked, none of which show up on a non-modal ATS page so
+  none were caught before. (1) `sizedTarget` walks up to 5 ancestors looking for a clickable box
+  when the field's own element is too small; on a tight LinkedIn field that walk reaches the
+  `<dialog>` itself, and the `click-box` tactic then fires `pointerdown/mousedown/mouseup/click`
+  on it — exactly what a light-dismiss handler reads as a click outside the form. The walk now
+  stops at any `dialog`, `form`, `[role="dialog"]` or node covering over half the viewport and
+  falls back to the field itself, and `clickOption` refuses those nodes outright as a second
+  guard. Same lesson as the `[class*="control" i]` ancestor-walk bug already in CLAUDE.md. (2)
+  `closeWidget`'s Escape bubbles to whatever the page listens on; inside a modal that is usually a
+  document-level dismiss handler. Escape and Enter dispatched at an element inside an open dialog
+  now carry a one-shot bubble listener on that dialog which stops propagation for that exact event
+  object, so the combobox's own input/wrapper handlers still see the key and the page's dismiss
+  and submit handlers never do. Enter matters as much as Escape here: it can advance the Easy
+  Apply step, which loses more than closing it. (3) `selectValue` opens by calling
+  `closeWidget(document.activeElement)`, and with nothing focused that is `<body>` — an Escape
+  fired outside the dialog, unstoppable by any listener inside it, so those two keys are now
+  dropped entirely when a dialog is open and the target sits outside it. The scoping is
+  deliberately conditional on an open dialog: on Greenhouse/Ashby the keys still bubble normally,
+  because plenty of comboboxes there listen at the document.
+  Still open after this, from the same run: `«r23»` came back `not-found` and `«r1m»`
+  (wanted "Sanzhar Amanzholov") `dropdown-never-opened` with every tactic tried, so LinkedIn's
+  contact-info widgets are a shape the fill engine doesn't recognise yet. That needs the real
+  markup, not a guess.
+
 - **Download button per CV in Manage CVs** — generated CVs only existed inside core's media
   directory, so the obvious next thing after generating one (open it, check it, attach it
   somewhere by hand) meant digging through a Docker volume. Each row now has Download next to

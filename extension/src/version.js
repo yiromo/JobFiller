@@ -1,1 +1,1 @@
-const JF_BUILD = "06";
+const JF_BUILD = "07";

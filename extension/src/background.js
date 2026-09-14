@@ -230,10 +230,20 @@ async function applyFillPlan(plan, fileByRef) {
     el.dispatchEvent(new Event("change", eventInit));
   }
 
+  function isPageContainer(node) {
+    if (!node || node === document.body || node === document.documentElement) return true;
+    if (node.tagName === "DIALOG" || node.tagName === "FORM") return true;
+    if ((node.getAttribute("role") || "").toLowerCase() === "dialog") return true;
+    const rect = node.getBoundingClientRect();
+    return rect.width * rect.height > window.innerWidth * window.innerHeight * 0.5;
+  }
+
   function clickOption(optionEl) {
+    if (!optionEl || isPageContainer(optionEl)) return false;
     for (const type of ["pointerdown", "mousedown", "mouseup", "click"]) {
       optionEl.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true }));
     }
+    return true;
   }
 
   function fillText(el, value) {
@@ -259,9 +269,29 @@ async function applyFillPlan(plan, fileByRef) {
     return el.value === value ? "direct" : null;
   }
 
+  const DISMISSING_KEYS = new Set(["Escape", "Enter"]);
+
   function pressKey(el, key, init = {}) {
+    let dialog = null;
+    if (DISMISSING_KEYS.has(key)) {
+      dialog = el.closest?.("dialog[open]") || null;
+      if (!dialog && document.querySelector("dialog[open]")) return;
+    }
     for (const type of ["keydown", "keyup"]) {
-      el.dispatchEvent(new KeyboardEvent(type, { key, bubbles: true, cancelable: true, ...init }));
+      const event = new KeyboardEvent(type, { key, bubbles: true, cancelable: true, ...init });
+      if (!dialog) {
+        el.dispatchEvent(event);
+        continue;
+      }
+      const stopAtDialog = (e) => {
+        if (e === event) e.stopPropagation();
+      };
+      dialog.addEventListener(type, stopAtDialog);
+      try {
+        el.dispatchEvent(event);
+      } finally {
+        dialog.removeEventListener(type, stopAtDialog);
+      }
     }
   }
 
@@ -348,6 +378,7 @@ async function applyFillPlan(plan, fileByRef) {
   function sizedTarget(el) {
     let node = el;
     for (let i = 0; i < 5 && node; i++) {
+      if (node !== el && isPageContainer(node)) return el;
       const rect = node.getBoundingClientRect();
       if (rect.width >= 10 && rect.height >= 10) return node;
       node = node.parentElement;
