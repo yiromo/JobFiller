@@ -24,10 +24,11 @@ docker compose up --build
 ```
 
 Generating a tailored CV (Manage CVs → "Generate a tailored CV") typesets the result with
-`pdflatex`, so that one feature needs a TeX distribution on whatever runs `core`. Everything else
-works without it, and the endpoint returns a 503 saying so rather than failing silently. On
-Fedora: `sudo dnf install texlive-scheme-medium texlive-fontawesome5 texlive-charter
-texlive-paracol`. The Docker image does **not** ship TeX yet.
+`pdflatex`, so that one feature needs a TeX distribution on whatever runs `core`. The Docker image
+installs one, so `docker compose up --build` needs nothing extra. Running `core` straight from the
+host needs it installed there — on Fedora: `sudo dnf install texlive-scheme-medium
+texlive-fontawesome5 texlive-charter texlive-paracol`. Everything else works without TeX, and the
+generate endpoint returns a 503 saying what to install rather than failing silently.
 
 Extension (Firefox / Zen), with `core` running on `localhost:8000`:
 1. Go to `about:debugging#/runtime/this-firefox`.

@@ -4,6 +4,24 @@ Newest first. One entry per feature commit — added when the feature actually l
 
 ## Done
 
+- **CV generation now works in Docker** — it shipped working only under a host `runserver`, and
+  `core` actually runs from `docker compose`, so the first real click returned the 503 telling the
+  user to install TeX on a machine that wasn't running anything. The image now installs
+  `texlive-latex-base`, `-latex-recommended`, `-latex-extra`, `-fonts-recommended` and `lmodern`
+  (272 MB; every `.sty` the template uses except one). The exception is `fontawesome5`, which
+  Debian ships only inside `texlive-fonts-extra` (~1 GB for a handful of contact icons), so it's
+  installed straight from CTAN's 1.7 MB package zip into `TEXMFLOCAL` instead — `.sty`/`.def`/
+  `.fd` into `tex/latex`, the Type1 `.pfb`s, `.tfm`s and `.enc`s into their font trees, then
+  `mktexlsr` + `updmap-sys --enable Map=fontawesome5.map` so pdflatex can actually embed them.
+  Copying only `*.sty` out of that zip is what the first attempt got wrong: the package loads
+  `fontawesome5-mapping.def` at runtime, so it installed cleanly and then failed at compile time.
+  That download is deliberately non-fatal — a CTAN outage must not break the whole backend image
+  over icons — and the template pairs it with `\IfFileExists{fontawesome5.sty}`, falling back to
+  no-op `\fa...` macros (including a `\@ifstar` swallow for `\faMapMarker*`) so the CV renders
+  icon-less rather than not at all. Image goes from ~250 MB to 895 MB. Verified by rebuilding and
+  curling the real containerised core: 201, one page, icons present, then the smoke-test row
+  deleted again.
+
 - **Generate a new CV from an existing one** — `POST /api/v1/cvs/<id>/generate/` takes
   `{instructions, position_text, filename}`, rewrites that CV for the target position and saves
   the result as a new PDF row, so it shows up in the panel's CV dropdown like any uploaded file.

@@ -288,7 +288,15 @@ def _build_tex(data: dict, contact: dict) -> str:
 \usepackage{{ifthen}}
 \usepackage{{needspace}}
 \usepackage{{iftex}}
-\usepackage{{fontawesome5}}
+\IfFileExists{{fontawesome5.sty}}{{\usepackage{{fontawesome5}}}}{{
+    \newcommand{{\faEnvelope}}[1][]{{}}
+    \newcommand{{\faPhone}}{{}}
+    \newcommand{{\faLinkedin}}{{}}
+    \newcommand{{\faGithub}}{{}}
+    \makeatletter
+    \newcommand{{\faMapMarker}}{{\@ifstar{{}}{{}}}}
+    \makeatother
+}}
 
 \ifPDFTeX
     \input{{glyphtounicode}}

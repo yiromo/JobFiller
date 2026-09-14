@@ -14,9 +14,6 @@ Roughly in order. Not started unless noted in `PROGRESS.md`.
 4. **Fit rate** — quick % match score for a job posting vs. the chosen/best CV.
 5. ~~**CV generator/adjuster**~~ — done, see `tasks/PROGRESS.md`; it does render a PDF, via the
    pdflatex template ported from yiromo.com. Remaining under this heading:
-   - `core`'s Docker image has no TeX, so `POST /api/v1/cvs/<id>/generate/` 503s there while
-     working fine under a local `runserver`. Either add texlive to the image (~1GB) or accept it
-     as a local-only feature — don't half-add packages and find out at request time.
    - Generate from the panel, using the page the user is already on as `position_text`
      (`lastPageText` is already in `panel.js`), instead of pasting the posting into Manage CVs.
    - The one-page fit is prompt-enforced (bullet/section caps), not measured. If a generated CV
