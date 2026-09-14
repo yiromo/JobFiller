@@ -34,6 +34,34 @@ repeat a mistake. Everything else (what was curled, what lint said, which build 
   already-correct fields are unchanged. The extension half is unverified — no browser here; it
   passes `web-ext lint` and the walk was reviewed, nothing more.
 
+  Two follow-ups the first attempt still got wrong, both found by reading the live form's
+  `outerHTML` rather than reasoning about it — **the uploads still didn't attach**:
+  - **`resolveSection` stopped at a screen-reader-only sibling.** Rippling puts
+    `<div data-testid="screen-reader-only">Total 0 file selected</div>` immediately before the
+    file input's `<label>`, so the walk returned that instead of climbing to the "Résumé" heading
+    one level up. It's clipped, not `display:none`, so it's still in the layout and `innerText`
+    happily returns its text. Siblings now have to be `aria-hidden="false"` and paint a box
+    bigger than 1×1 — a rendered-size test, not a class-name test, so it isn't Rippling-specific.
+  - **`Résumé` doesn't contain `resume`.** `_RESUME_KEYWORDS` is a substring check and the field's
+    heading carries acute accents, so the résumé dropzone matched nothing even once the section
+    resolved. `field_haystack` now NFKD-folds and strips combining marks before lowercasing.
+    Deliberately narrower than the separator-normalizing rewrite that was tried and reverted for
+    breaking `"email"` vs `"e-mail"`: folding touches diacritics only, never separators, and can
+    only ever make more things match.
+
+  Same pass also confirmed, from that markup, that the 4 remaining EEOC pickers, both yes/no
+  radio groups and both 1–5 scales are `div[role=radio]`/`div[role=combobox]` with their real
+  `<input>` at `display:none` or absent entirely — still unscanned, still BACKLOG 8/11. Two
+  measurements from that markup worth keeping for when the scanner does widen: a `div[role=radio]`
+  reaches its group question at ancestor depth 3–4, but the hidden `input[type=radio]` two levels
+  further in sits at 6 — pick the div, not the input. And a heading is not always reachable at
+  all: the phone country picker's own "Phone number" heading is **11** ancestors up, past two
+  `data-testid="field"` wrappers, which is deeper than any cap that doesn't also reach page-level
+  containers. So depth is 8 and the real protection is structural, not numeric — a dropdown-like
+  field with no label, no section and no options is unguessable by definition and is now refused
+  by `_is_llm_eligible` outright, which is what actually stops a blind combobox from being
+  answered (the phone guard needs `"phone"` in the haystack and wouldn't have had it).
+
 - **Fill dismissed the LinkedIn Easy Apply dialog instead of filling it** — three ways
   `applyFillPlan` could close a native modal, none visible on a non-modal ATS page. (1)
   `sizedTarget` walks up to 5 ancestors for a clickable box and reached the `<dialog>` itself,

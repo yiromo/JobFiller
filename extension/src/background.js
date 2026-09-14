@@ -33,10 +33,9 @@ function scanPage() {
   const CONTROL_SELECTOR =
     "input, select, textarea, [role='radio'], [role='combobox'], [role='checkbox']";
 
-  // A design system that builds its own widgets out of divs hands every control
-  // the same generic accessible name ("Select...", "Search", and literally
-  // "combobox" when no label was passed). Treating those as a label is worse
-  // than having none: it hides the field's real question from every mapper.
+  const HIDDEN_SELECTOR =
+    '[aria-hidden="true"], [data-testid*="screen-reader" i], .sr-only, .visually-hidden';
+
   const GENERIC_NAMES = new Set([
     "search",
     "select",
@@ -81,20 +80,18 @@ function scanPage() {
     return cleanName(el.getAttribute("aria-label"));
   }
 
-  // The question a field belongs to, when it isn't reachable as an accessible
-  // name — the heading a design system renders as a plain sibling div above the
-  // control, and the group question a radio/scale option can't carry itself.
-  // Only ever read from a sibling that holds no form control of its own, so it
-  // can't pick up a neighbouring field's label or value; siblings that do hold
-  // one are stepped over rather than ending the walk, since a widget's own
-  // sub-controls (a phone country picker beside its number input) sit between
-  // the control and its heading.
+  function isRenderedBox(el) {
+    const rect = el.getBoundingClientRect();
+    return rect.width > 1 && rect.height > 1;
+  }
+
   function resolveSection(el) {
     let node = el;
-    for (let depth = 0; depth < 6 && node && node !== document.body; depth++) {
+    for (let depth = 0; depth < 8 && node && node !== document.body; depth++) {
       if (node.tagName === "FORM" || node.getAttribute?.("role") === "form") break;
       for (let sib = node.previousElementSibling; sib; sib = sib.previousElementSibling) {
         if (sib.matches(CONTROL_SELECTOR) || sib.querySelector(CONTROL_SELECTOR)) continue;
+        if (sib.matches(HIDDEN_SELECTOR) || !isRenderedBox(sib)) continue;
         const text = (sib.innerText || "").replace(/\s+/g, " ").trim();
         if (text && text.length <= 200) return text;
         if (text) break;

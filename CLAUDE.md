@@ -169,14 +169,26 @@ which splices them into the in-memory plan so a second Fill click doesn't repeat
   only from a sibling containing no form control (so it can never pick up a neighbouring field's
   label or value), steps *over* control-bearing siblings rather than giving up — a phone widget's
   country picker sits between the number input and their shared "Phone number" heading — and caps
-  the walk at 6 ancestors, a `<form>`, and 200 characters. Loosen any of those and it finds a
-  page-level container, the same failure mode `findToggleControl` had.
+  the walk at 8 ancestors, a `<form>`, and 200 characters. Loosen any of those and it finds a
+  page-level container, the same failure mode `findToggleControl` had. It also skips
+  screen-reader-only siblings: those are clipped, not `display:none`, so they still paint a box
+  and still yield `innerText` — a "Total 0 file selected" node sits directly above Rippling's
+  résumé dropzone and was winning over the "Résumé" heading one level further up. Some headings
+  are simply out of reach (that phone country picker's own heading is 11 ancestors up, past two
+  nested field wrappers); the answer is the structural guard in the next bullet, not a bigger cap.
 - **Skipping a field in the heuristic does not keep the LLM away from it.**
   `augment_skipped_fields` treats every `skip` as an unanswered candidate, so a heuristic skip is
   a suggestion, not a decision. A phone country picker proved this: `field_mapper` skipped it for
   want of a country, and the LLM pass — seeing a combobox under a "Phone number" heading — typed
   the phone number into it. Anything the heuristic skips *on purpose* must also fail
-  `_is_llm_eligible`, which is why `PHONE_KEYWORDS` is public alongside `EEO_KEYWORDS`.
+  `_is_llm_eligible`, which is why `PHONE_KEYWORDS` is public alongside `EEO_KEYWORDS`. A keyword
+  guard only holds where a keyword actually reaches the haystack, though, so the general rule is
+  structural: a dropdown-like field with no label, no section and no options is unguessable and
+  `_is_llm_eligible` refuses it regardless of keywords.
+- **`field_haystack` folds accents, and that is the only normalizing it does.** A résumé dropzone
+  labelled "Résumé" matches none of `_RESUME_KEYWORDS`, since those are plain substring checks —
+  hence the NFKD fold. Do not extend this into separator normalizing (treating `-`/`_`/spaces
+  alike): that was tried, and it broke `"email"` against `"e-mail"`.
 - **UI lives in a content script, not a toolbar popup.** `extension/src/content/panel.js` injects
   on every page (`<all_urls>`, a required permission) and mounts a closed shadow DOM host with a
   corner tab + slide-out panel — this replaced the old `action.default_popup`

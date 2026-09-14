@@ -1,11 +1,10 @@
+import unicodedata
+
 from agent.profile import Profile
 
 # Order matters: more specific categories are checked before generic ones
 # (e.g. "preferred name" must not fall through to the full-name match).
 # Public — shared with llm_mapper.py so both stay in sync on what's never auto-answered.
-# PHONE_KEYWORDS is public for the same reason: a phone widget's country picker
-# matches them, and skipping it in the heuristic only holds if the LLM pass
-# doesn't then claim it back as an unanswered field.
 EEO_KEYWORDS = (
     "gender",
     "ethnicity",
@@ -28,10 +27,17 @@ _LINKEDIN_KEYWORDS = ("linkedin",)
 _GIT_KEYWORDS = ("github", "gitlab")
 
 
+def strip_accents(text: str) -> str:
+    return "".join(
+        char for char in unicodedata.normalize("NFKD", text) if not unicodedata.combining(char)
+    )
+
+
 def field_haystack(field: dict) -> str:
-    return " ".join(
+    joined = " ".join(
         str(field.get(key, "")) for key in ("label", "section", "name", "id", "placeholder")
-    ).lower()
+    )
+    return strip_accents(joined).lower()
 
 
 def is_dropdown_field(field: dict) -> bool:
@@ -84,9 +90,6 @@ def _map_field(field: dict, profile: Profile | None, cv_id: int | None) -> dict:
         return type_value(profile.email, 0.95) if profile.email else skip()
 
     if any(keyword in haystack for keyword in PHONE_KEYWORDS):
-        # A phone widget's country picker sits under the same heading as its
-        # number input, so it matches here too — typing the number into it would
-        # both fail and wipe a correct pre-filled country.
         if is_dropdown_field(field):
             return skip()
         return type_value(profile.phone, 0.9) if profile.phone else skip()

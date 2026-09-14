@@ -78,10 +78,11 @@ def _is_llm_eligible(field: dict) -> bool:
     never_llm_keywords = EEO_KEYWORDS + _ATTESTATION_KEYWORDS + _LOGISTICS_KEYWORDS
     if any(keyword in haystack for keyword in never_llm_keywords):
         return False
-    # A phone widget's country picker: field_mapper deliberately skips it for
-    # want of a country in the profile, and the model — given only the heading
-    # it shares with the number input — answers with the number itself.
-    return not (is_dropdown_field(field) and any(k in haystack for k in PHONE_KEYWORDS))
+    if not is_dropdown_field(field):
+        return True
+    if any(keyword in haystack for keyword in PHONE_KEYWORDS):
+        return False
+    return bool(field.get("label") or field.get("section") or field.get("options"))
 
 
 def augment_skipped_fields(
