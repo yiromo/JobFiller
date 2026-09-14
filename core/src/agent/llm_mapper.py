@@ -5,7 +5,7 @@ import re
 from django.conf import settings
 from openai import OpenAI
 
-from agent.field_mapper import EEO_KEYWORDS, field_haystack
+from agent.field_mapper import EEO_KEYWORDS, PHONE_KEYWORDS, field_haystack, is_dropdown_field
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +52,8 @@ _ACTION_ECHO_RE = re.compile(r"^(type|select)\s*:?\s+", re.IGNORECASE)
 
 _SYSTEM_PROMPT = """You fill in job application form fields using ONLY facts grounded in the \
 candidate's CV (and, for context, the job posting text). Rules:
+- A field's "section" is the heading or question text rendered next to it on the page. When \
+"label" is empty or generic, "section" is what the field is actually asking — answer that.
 - Never invent employers, dates, numbers, or skills that are not in the CV.
 - Write answers in first person.
 - If a field's tag is "select" or its role is "combobox": respond with "select" and, when a \
@@ -74,7 +76,12 @@ field given, in the same order, using the exact "ref" values given."""
 def _is_llm_eligible(field: dict) -> bool:
     haystack = field_haystack(field)
     never_llm_keywords = EEO_KEYWORDS + _ATTESTATION_KEYWORDS + _LOGISTICS_KEYWORDS
-    return not any(keyword in haystack for keyword in never_llm_keywords)
+    if any(keyword in haystack for keyword in never_llm_keywords):
+        return False
+    # A phone widget's country picker: field_mapper deliberately skips it for
+    # want of a country in the profile, and the model — given only the heading
+    # it shares with the number input — answers with the number itself.
+    return not (is_dropdown_field(field) and any(k in haystack for k in PHONE_KEYWORDS))
 
 
 def augment_skipped_fields(
@@ -123,6 +130,7 @@ def _call_llm(candidates: list[dict], cv_raw_text: str, page_text: str) -> list[
                 {
                     "ref": field["ref"],
                     "label": field.get("label", ""),
+                    "section": field.get("section", ""),
                     "tag": field.get("tag", ""),
                     "type": field.get("type", ""),
                     "role": field.get("role", ""),

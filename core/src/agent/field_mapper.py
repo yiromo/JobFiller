@@ -3,11 +3,23 @@ from agent.profile import Profile
 # Order matters: more specific categories are checked before generic ones
 # (e.g. "preferred name" must not fall through to the full-name match).
 # Public — shared with llm_mapper.py so both stay in sync on what's never auto-answered.
-EEO_KEYWORDS = ("gender", "ethnicity", "hispanic", "latino", "veteran", "disability", "race")
+# PHONE_KEYWORDS is public for the same reason: a phone widget's country picker
+# matches them, and skipping it in the heuristic only holds if the LLM pass
+# doesn't then claim it back as an unanswered field.
+EEO_KEYWORDS = (
+    "gender",
+    "ethnicity",
+    "hispanic",
+    "latino",
+    "veteran",
+    "disability",
+    "race",
+    "pronoun",
+)
 _RESUME_KEYWORDS = ("resume", "cv")
 _COVER_LETTER_KEYWORDS = ("cover letter", "cover_letter", "cover-letter", "coverletter")
 _EMAIL_KEYWORDS = ("email", "e-mail")
-_PHONE_KEYWORDS = ("phone", "mobile", "telephone")
+PHONE_KEYWORDS = ("phone", "mobile", "telephone")
 _PREFERRED_NAME_KEYWORDS = ("prefer",)
 _FIRST_NAME_KEYWORDS = ("first name", "given name")
 _LAST_NAME_KEYWORDS = ("last name", "surname", "family name")
@@ -18,8 +30,16 @@ _GIT_KEYWORDS = ("github", "gitlab")
 
 def field_haystack(field: dict) -> str:
     return " ".join(
-        str(field.get(key, "")) for key in ("label", "name", "id", "placeholder")
+        str(field.get(key, "")) for key in ("label", "section", "name", "id", "placeholder")
     ).lower()
+
+
+def is_dropdown_field(field: dict) -> bool:
+    return (
+        field.get("tag") == "select"
+        or field.get("role") == "combobox"
+        or field.get("aria_haspopup") == "listbox"
+    )
 
 
 def is_cover_letter_field(field: dict) -> bool:
@@ -63,7 +83,12 @@ def _map_field(field: dict, profile: Profile | None, cv_id: int | None) -> dict:
     if any(keyword in haystack for keyword in _EMAIL_KEYWORDS):
         return type_value(profile.email, 0.95) if profile.email else skip()
 
-    if any(keyword in haystack for keyword in _PHONE_KEYWORDS):
+    if any(keyword in haystack for keyword in PHONE_KEYWORDS):
+        # A phone widget's country picker sits under the same heading as its
+        # number input, so it matches here too — typing the number into it would
+        # both fail and wipe a correct pre-filled country.
+        if is_dropdown_field(field):
+            return skip()
         return type_value(profile.phone, 0.9) if profile.phone else skip()
 
     if any(keyword in haystack for keyword in _PREFERRED_NAME_KEYWORDS):

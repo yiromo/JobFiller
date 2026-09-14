@@ -97,16 +97,20 @@ candidate field with a `data-jf-ref` attribute (existing `id` reused when presen
   "page_text": "...",
   "form_snapshot": [
     {"ref": "...", "tag": "input", "type": "text", "name": "...", "id": "...",
-     "label": "...", "placeholder": "...", "options": [...], "required": true,
+     "label": "...", "section": "...", "placeholder": "...", "options": [...], "required": true,
      "role": "combobox", "aria_haspopup": "listbox", "aria_controls": "...listbox-id..."}
   ],
   "eeo_answers": [{"match": "gender", "answer": "male"}]
 }
 ```
 
-`page_text` (job posting text, truncated) and `role`/`aria_haspopup`/`aria_controls` exist only
-to give the LLM pass context and to tell a custom combobox apart from a plain text input — the
-heuristic pass ignores them. Core returns:
+`label` is the field's accessible name and `section` is the nearest heading/question text
+rendered beside it — see the "accessible name is often junk" bullet below for why both are
+needed. Both feed `field_haystack`, so every keyword rule (EEO, attestation, logistics, resume,
+cover letter) sees them, and both are sent to every LLM pass. `page_text` (job posting text,
+truncated) and `role`/`aria_haspopup`/`aria_controls` exist only to give the LLM pass context and
+to tell a custom combobox apart from a plain text input — the heuristic pass ignores them. Core
+returns:
 
 ```json
 [{"ref": "...", "value": "...", "action": "type|select|check|upload|skip", "confidence": 0.0,
@@ -148,6 +152,31 @@ which splices them into the in-memory plan so a second Fill click doesn't repeat
 
 ## Non-obvious things (these will bite you)
 
+- **A field's accessible name is often junk, and every keyword rule depends on it.** An ATS built
+  on a component library (Rippling is the known case) hands each control a generic
+  `aria-label` — `Select...`, `Search`, `textbox`, literally `combobox` — randomizes `name` to a
+  nonce, and renders the real question as a plain sibling `div`, not a `<label for>`. That
+  leaves `field_haystack` semantically empty, and an empty haystack doesn't just lose a fill:
+  `EEO_KEYWORDS`, `_ATTESTATION_KEYWORDS` and `_LOGISTICS_KEYWORDS` are substring checks over it,
+  so **the hard skips silently stop applying** and a question they exist to block reaches the
+  CV-grounded pass. Hence `resolveLabel` rejects a known set of generic names outright (returning
+  `""` is safer than a label that looks real), prefers `aria-labelledby` over `aria-label` per the
+  accessible-name spec, and `resolveSection` supplies the heading by DOM proximity. `section`
+  never replaces `label`; a file dropzone's `<label>` legitimately reads "Drop or select
+  (.doc / .docx / .pdf)", which is a correct accessible name and useless for deciding that the
+  field is the résumé — the section heading above it is what says "Resume".
+- **`resolveSection` must not walk by class name or stop at the first control.** It reads text
+  only from a sibling containing no form control (so it can never pick up a neighbouring field's
+  label or value), steps *over* control-bearing siblings rather than giving up — a phone widget's
+  country picker sits between the number input and their shared "Phone number" heading — and caps
+  the walk at 6 ancestors, a `<form>`, and 200 characters. Loosen any of those and it finds a
+  page-level container, the same failure mode `findToggleControl` had.
+- **Skipping a field in the heuristic does not keep the LLM away from it.**
+  `augment_skipped_fields` treats every `skip` as an unanswered candidate, so a heuristic skip is
+  a suggestion, not a decision. A phone country picker proved this: `field_mapper` skipped it for
+  want of a country, and the LLM pass — seeing a combobox under a "Phone number" heading — typed
+  the phone number into it. Anything the heuristic skips *on purpose* must also fail
+  `_is_llm_eligible`, which is why `PHONE_KEYWORDS` is public alongside `EEO_KEYWORDS`.
 - **UI lives in a content script, not a toolbar popup.** `extension/src/content/panel.js` injects
   on every page (`<all_urls>`, a required permission) and mounts a closed shadow DOM host with a
   corner tab + slide-out panel — this replaced the old `action.default_popup`

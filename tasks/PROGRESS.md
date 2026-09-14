@@ -4,6 +4,36 @@ Roughly newest first, one entry per feature/fix commit, added when it lands. Ent
 cause and the constraint that made the fix non-obvious — the stuff a future agent needs to not
 repeat a mistake. Everything else (what was curled, what lint said, which build number) is in git.
 
+- **Label resolution: generic accessible names rejected, `section` added to the contract** — on
+  Rippling's ATS a scan produced 9 of 16 fields with a label of `""`, `"Search"`, `"Select..."` or
+  `"textbox"`: its component library sets a generic `aria-label` on every control, randomizes
+  `name` to a nonce (`D_p4hxxjUY`), numbers `id` as `field-NN`, and renders the real question as a
+  sibling `div` rather than a `<label for>`. `field_haystack` was therefore semantically empty for
+  those fields, which lost the obvious things (résumé and cover-letter dropzones both matched no
+  keyword and were skipped, so nothing ever attached; the three real technical questions were
+  skipped) and one non-obvious one: **the EEO/attestation/logistics hard skips are substring
+  checks over that haystack, so they silently stopped applying** — the salary question was
+  answered by the CV-grounded pass, and the one scannable EEOC select escaped `eeo_pending` (it
+  resolved to `skip` by luck, not by rule). `resolveLabel` now rejects a set of known generic
+  names (returning `""`, which is safer than a label that looks real) and prefers
+  `aria-labelledby` over `aria-label`, per the accessible-name spec — the old order had
+  `aria-label` winning, which is exactly backwards for this case. New `resolveSection` finds the
+  question by DOM proximity and travels as its own `section` key rather than being folded into
+  `label`, because a dropzone's `<label>` ("Drop or select (.doc / .docx / .pdf)") is a *correct*
+  accessible name that no blacklist should discard — and because `section` is the same mechanism
+  a radio/scale group will need when the scanner is widened (BACKLOG 8/11). Two knock-ons the
+  section text forced: a phone widget's country picker shares its heading with the number input,
+  so `field_mapper` skips a dropdown-like phone match — and, since `augment_skipped_fields` treats
+  every `skip` as a candidate, it also has to fail `_is_llm_eligible` or the model types the phone
+  number into the country picker (observed, not theorized). `pronoun` joined `EEO_KEYWORDS`: it's
+  self-identification, so it belongs to the Settings-grounded `eeo_mapper`, never to a CV guess.
+  Verified by replaying the stored snapshot of the bad scan with `section` filled in, through the
+  real `/scan/` endpoint: résumé and cover letter now `upload`, salary `skip`, pronouns and the
+  EEOC select `skip` via the EEO path, the country picker `skip`, Location fills a city instead of
+  the applicant's name, the three technical questions get grounded prose, and the five
+  already-correct fields are unchanged. The extension half is unverified — no browser here; it
+  passes `web-ext lint` and the walk was reviewed, nothing more.
+
 - **Fill dismissed the LinkedIn Easy Apply dialog instead of filling it** — three ways
   `applyFillPlan` could close a native modal, none visible on a non-modal ATS page. (1)
   `sizedTarget` walks up to 5 ancestors for a clickable box and reached the `<dialog>` itself,

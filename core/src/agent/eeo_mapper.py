@@ -14,7 +14,7 @@ You are given the applicant's own answer rows ("match": a topic keyword, "answer
 told you in their own words) and a list of form fields. Rules:
 - Use ONLY the given rows. Never invent, infer, or guess an answer that is not a direct \
 restatement of a row's "answer" text.
-- For each field, decide whether any row is about the same topic as the field's label (a \
+- For each field, decide whether any row is about the same topic as the field's question (its "label", or its "section" heading when the label is empty or generic) (a \
 "hispanic"/"latino" row answers a Hispanic-or-Latino ethnicity question, not a general race \
 question, and vice versa — treat them as distinct topics).
 - If a matching row exists: for a field with a non-empty "options" list, respond with "select" \
@@ -66,6 +66,7 @@ def _call_llm(fields: list[dict], eeo_answers: list[dict]) -> list[dict]:
                 {
                     "ref": field["ref"],
                     "label": field.get("label", ""),
+                    "section": field.get("section", ""),
                     "tag": field.get("tag", ""),
                     "type": field.get("type", ""),
                     "role": field.get("role", ""),

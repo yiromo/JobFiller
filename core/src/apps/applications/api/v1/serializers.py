@@ -8,6 +8,7 @@ class FormFieldSerializer(serializers.Serializer):
     name = serializers.CharField(required=False, allow_blank=True, default="")
     id = serializers.CharField(required=False, allow_blank=True, default="")
     label = serializers.CharField(required=False, allow_blank=True, default="")
+    section = serializers.CharField(required=False, allow_blank=True, default="")
     placeholder = serializers.CharField(required=False, allow_blank=True, default="")
     options = serializers.ListField(child=serializers.CharField(), required=False, default=list)
     required = serializers.BooleanField(required=False, default=False)

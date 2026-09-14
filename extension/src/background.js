@@ -30,23 +30,76 @@ function scanPage() {
     return el.type !== "file" && el.tabIndex === -1;
   }
 
+  const CONTROL_SELECTOR =
+    "input, select, textarea, [role='radio'], [role='combobox'], [role='checkbox']";
+
+  // A design system that builds its own widgets out of divs hands every control
+  // the same generic accessible name ("Select...", "Search", and literally
+  // "combobox" when no label was passed). Treating those as a label is worse
+  // than having none: it hides the field's real question from every mapper.
+  const GENERIC_NAMES = new Set([
+    "search",
+    "select",
+    "choose",
+    "please select",
+    "textbox",
+    "combobox",
+    "listbox",
+    "dropdown",
+    "option",
+  ]);
+
+  function cleanName(text) {
+    const trimmed = (text || "").replace(/\s+/g, " ").trim();
+    const bare = trimmed
+      .replace(/[…:*]+$/, "")
+      .replace(/\.{2,}$/, "")
+      .trim();
+    if (!bare || GENERIC_NAMES.has(bare.toLowerCase())) return "";
+    return trimmed;
+  }
+
   function resolveLabel(el) {
     if (el.id) {
       const byFor = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
-      if (byFor && byFor.textContent.trim()) return byFor.textContent.trim();
+      const name = cleanName(byFor?.textContent);
+      if (name) return name;
     }
-    const closestLabel = el.closest("label");
-    if (closestLabel && closestLabel.textContent.trim()) return closestLabel.textContent.trim();
-    const ariaLabel = el.getAttribute("aria-label");
-    if (ariaLabel) return ariaLabel;
+    const closestLabel = cleanName(el.closest("label")?.textContent);
+    if (closestLabel) return closestLabel;
     const labelledBy = el.getAttribute("aria-labelledby");
     if (labelledBy) {
-      const text = labelledBy
-        .split(" ")
-        .map((id) => document.getElementById(id)?.textContent?.trim())
-        .filter(Boolean)
-        .join(" ");
-      if (text) return text;
+      const name = cleanName(
+        labelledBy
+          .split(" ")
+          .map((id) => document.getElementById(id)?.textContent?.trim())
+          .filter(Boolean)
+          .join(" "),
+      );
+      if (name) return name;
+    }
+    return cleanName(el.getAttribute("aria-label"));
+  }
+
+  // The question a field belongs to, when it isn't reachable as an accessible
+  // name — the heading a design system renders as a plain sibling div above the
+  // control, and the group question a radio/scale option can't carry itself.
+  // Only ever read from a sibling that holds no form control of its own, so it
+  // can't pick up a neighbouring field's label or value; siblings that do hold
+  // one are stepped over rather than ending the walk, since a widget's own
+  // sub-controls (a phone country picker beside its number input) sit between
+  // the control and its heading.
+  function resolveSection(el) {
+    let node = el;
+    for (let depth = 0; depth < 6 && node && node !== document.body; depth++) {
+      if (node.tagName === "FORM" || node.getAttribute?.("role") === "form") break;
+      for (let sib = node.previousElementSibling; sib; sib = sib.previousElementSibling) {
+        if (sib.matches(CONTROL_SELECTOR) || sib.querySelector(CONTROL_SELECTOR)) continue;
+        const text = (sib.innerText || "").replace(/\s+/g, " ").trim();
+        if (text && text.length <= 200) return text;
+        if (text) break;
+      }
+      node = node.parentElement;
     }
     return "";
   }
@@ -70,6 +123,7 @@ function scanPage() {
       name: el.name || "",
       id: el.id || "",
       label: resolveLabel(el),
+      section: resolveSection(el),
       placeholder: el.placeholder || "",
       options: el.tagName === "SELECT" ? Array.from(el.options).map((o) => o.textContent.trim()) : [],
       required: el.required || el.getAttribute("aria-required") === "true",
@@ -134,7 +188,7 @@ function attachGenerateButtons(fields, applicationId, pageText) {
     const el = document.querySelector(`[data-jf-ref="${CSS.escape(field.ref)}"]`);
     if (!el || el.dataset.jfAiAttached) continue;
     el.dataset.jfAiAttached = "1";
-    const question = field.label || field.placeholder;
+    const question = field.label || field.section || field.placeholder;
     if (!question) continue;
 
     const button = document.createElement("button");
@@ -694,7 +748,7 @@ function applyEeoSettings(formSnapshot, fieldMapping, eeoSettings, logLines) {
     const field = fieldsByRef[mapping.ref];
     if (!field) return mapping;
 
-    const haystack = [field.label, field.name, field.id, field.placeholder]
+    const haystack = [field.label, field.section, field.name, field.id, field.placeholder]
       .join(" ")
       .toLowerCase();
     const setting = eeoSettings.find((row) => haystack.includes(row.match.toLowerCase()));
@@ -845,8 +899,13 @@ async function handleScan(message, tabId) {
   let buttonsAttached = 0;
   for (const { frameId, result } of framesWithFields) {
     const textareaFields = result.form_snapshot
-      .filter((f) => f.tag === "textarea" && (f.label || f.placeholder))
-      .map((f) => ({ ref: f.ref, label: f.label, placeholder: f.placeholder }));
+      .filter((f) => f.tag === "textarea" && (f.label || f.section || f.placeholder))
+      .map((f) => ({
+        ref: f.ref,
+        label: f.label,
+        section: f.section,
+        placeholder: f.placeholder,
+      }));
     if (!textareaFields.length) continue;
     try {
       await browser.scripting.executeScript({

@@ -180,7 +180,9 @@ class ApplicationService:
         if record is None:
             raise ApplicationNotFoundError
 
-        labels_by_ref = {f["ref"]: f.get("label", "") for f in record.form_snapshot}
+        labels_by_ref = {
+            f["ref"]: f.get("label") or f.get("section", "") for f in record.form_snapshot
+        }
         enriched = [{**f, "label": labels_by_ref.get(f["ref"], "")} for f in fields]
         resolved = resolve_options(enriched)
 
