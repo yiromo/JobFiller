@@ -1,5 +1,6 @@
 import base64
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
 
 from django.conf import settings
@@ -50,18 +51,35 @@ class ApplicationService:
         profile = self._profile_from_cv(cv) if cv else None
         resolved_cv_id = cv.id if cv else None
 
-        field_mapping = build_fill_plan(payload.form_snapshot, profile, resolved_cv_id)
+        base_plan = build_fill_plan(payload.form_snapshot, profile, resolved_cv_id)
+
+        passes = [
+            (
+                {"eeo_pending"},
+                lambda: self._resolve_eeo(base_plan, payload.form_snapshot, payload.eeo_answers),
+            )
+        ]
         if cv is not None:
-            field_mapping = augment_skipped_fields(
-                form_snapshot=payload.form_snapshot,
-                field_mapping=field_mapping,
-                cv_raw_text=cv.raw_text,
-                page_text=payload.page_text,
+            passes.append(
+                (
+                    {"skip"},
+                    lambda: augment_skipped_fields(
+                        form_snapshot=payload.form_snapshot,
+                        field_mapping=base_plan,
+                        cv_raw_text=cv.raw_text,
+                        page_text=payload.page_text,
+                    ),
+                )
             )
-            field_mapping = self._resolve_cover_letter(
-                field_mapping, cv, payload.page_text, payload.about_text
+            passes.append(
+                (
+                    {"cover_letter_upload", "cover_letter_type"},
+                    lambda: self._resolve_cover_letter(
+                        base_plan, cv, payload.page_text, payload.about_text
+                    ),
+                )
             )
-        field_mapping = self._resolve_eeo(field_mapping, payload.form_snapshot, payload.eeo_answers)
+        field_mapping = self._run_resolution_passes(base_plan, passes)
 
         site = urlparse(payload.url).netloc
         return self._repo.create(
@@ -71,6 +89,29 @@ class ApplicationService:
             field_mapping=field_mapping,
             cv_id=resolved_cv_id,
         )
+
+    @staticmethod
+    def _run_resolution_passes(
+        base_plan: list[dict], passes: list[tuple[set[str], object]]
+    ) -> list[dict]:
+        owned = [
+            ({item["ref"] for item in base_plan if item["action"] in actions}, run)
+            for actions, run in passes
+        ]
+        active = [(refs, run) for refs, run in owned if refs]
+        if not active:
+            return base_plan
+
+        with ThreadPoolExecutor(max_workers=len(active)) as pool:
+            futures = [(refs, pool.submit(run)) for refs, run in active]
+            results = [(refs, future.result()) for refs, future in futures]
+
+        overrides = {}
+        for refs, resolved in results:
+            for item in resolved:
+                if item["ref"] in refs:
+                    overrides[item["ref"]] = item
+        return [overrides.get(item["ref"], item) for item in base_plan]
 
     @staticmethod
     def _resolve_eeo(

@@ -4,6 +4,22 @@ Newest first. One entry per feature commit — added when the feature actually l
 
 ## Done
 
+- **A scan's three AI passes now run in parallel instead of back to back** — `scan()` fired
+  `augment_skipped_fields`, then the cover-letter generation, then the EEO resolution, each a
+  separate MiMo round trip of its own, so a page with all three cost the sum of three model calls
+  while the extension sat on a progress bar. They were never actually dependent on each other:
+  all three read the heuristic plan `build_fill_plan` returns and each one only rewrites entries
+  carrying its own placeholder action (`skip`, `cover_letter_upload`/`cover_letter_type`,
+  `eeo_pending`) — three disjoint slices. `_run_resolution_passes` now forks them into a
+  `ThreadPoolExecutor` and merges the results by `ref`, taking from each pass only the refs it
+  owns, so a pass that rewrites something outside its slice can't leak into the plan. A pass whose
+  slice is empty isn't submitted at all, and with no active passes the heuristic plan is returned
+  untouched. Wall-clock scan time drops from roughly the sum of the three calls to roughly the
+  slowest one. Safe off the request thread because no pass touches an ORM object — they take plain
+  dicts, a `CvDTO` and strings, and the only DB write (`_repo.create`) happens after the join.
+  This was the answer to "would FastAPI be faster": the latency was three serial LLM waits, not
+  framework overhead, so the fix is here and not a rewrite.
+
 - **UI rewritten black-and-white and scaled up** — the green-on-near-black monospace terminal look
   is gone, replaced with the palette a real ATS board renders under (charcoal `#161616` ground,
   pure-black `#000000` surfaces for inputs/cards/logs, white text, white borders at 10% alpha for

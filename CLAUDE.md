@@ -192,14 +192,26 @@ which splices them into the in-memory plan so a second Fill click doesn't repeat
   (`agent/eeo_mapper.py`'s `resolve_eeo_fields` degrades to all-skip in every one of those cases,
   same never-crash-the-scan pattern as `llm_mapper`/`cover_letter`). `background.js`'s
   `applyEeoSettings` still runs afterward as a client-side verbatim fallback for anything core
-  still returned `skip` on. `ApplicationService._resolve_eeo` runs after the cover-letter step,
-  not before `augment_skipped_fields` — an `eeo_pending` field must stay out of that pass's
-  `action == "skip"` candidate filter, so it's never sent to the CV-grounded LLM pass at all.
+  still returned `skip` on. An `eeo_pending` field must stay out of `augment_skipped_fields`'s
+  `action == "skip"` candidate filter so it's never sent to the CV-grounded LLM pass at all —
+  that holds because every pass reads the same heuristic plan (see the parallel-passes bullet
+  below), where an EEO field's action is `eeo_pending` and never `skip`.
   Resolved EEO values are persisted in `Application.field_mapping` in SQLite like every other
   answer (same as the cover-letter text) — they no longer stay entirely client-side. Radio-button-
   rendered EEO questions aren't handled by either path yet
   (not seen on any test site so far); don't build that blind — confirm the actual markup on a
   real ATS first.
+- **A scan's three AI passes run in parallel threads, not in sequence.**
+  `ApplicationService._run_resolution_passes` forks `augment_skipped_fields`, `_resolve_cover_letter`
+  and `_resolve_eeo` off the same `build_fill_plan` output in a `ThreadPoolExecutor` and merges
+  their results by `ref`. This is only correct because each pass owns a disjoint slice of the plan,
+  identified by the heuristic action it replaces — `skip`, `cover_letter_upload`/`cover_letter_type`,
+  and `eeo_pending` respectively — and a pass's edits outside its own slice are discarded by the
+  merge. Adding a pass, or making one rewrite an action it doesn't own, breaks that: keep the
+  owned-action set in `scan()` exactly matched to what the pass actually changes. The passes touch
+  no ORM object (they take plain dicts, a `CvDTO` and strings; the only DB write is `_repo.create`
+  after the join), which is what makes running them off the request thread safe.
+
 - **Refs don't survive a full re-render.** If the SPA re-renders the form between Scan and
   Fill, the stamped `data-jf-ref` attributes are gone — the fix is re-scanning, not retrying.
 - **`agent/option_resolver.py`'s EEO-safety is entirely because it never sees CV or page text** —
