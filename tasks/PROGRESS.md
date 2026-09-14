@@ -4,6 +4,15 @@ Newest first. One entry per feature commit — added when the feature actually l
 
 ## Done
 
+- **Download button per CV in Manage CVs** — generated CVs only existed inside core's media
+  directory, so the obvious next thing after generating one (open it, check it, attach it
+  somewhere by hand) meant digging through a Docker volume. Each row now has Download next to
+  Delete. It fetches `/api/v1/cvs/<id>/file/` and saves the blob through a temporary object URL
+  rather than linking straight at the endpoint, because that view returns `Content-Disposition:
+  inline` — a plain link would open the PDF in a tab instead of saving it, and would lose the
+  stored filename. The object URL is revoked a minute later, not immediately, since revoking it in
+  the same tick can race the browser's own read of it.
+
 - **CV generation now works in Docker** — it shipped working only under a host `runserver`, and
   `core` actually runs from `docker compose`, so the first real click returned the 503 telling the
   user to install TeX on a machine that wasn't running anything. The image now installs

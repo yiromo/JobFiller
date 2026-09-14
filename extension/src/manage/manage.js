@@ -26,15 +26,41 @@ async function loadCvs() {
     const filename = document.createElement("span");
     filename.className = "cv-filename";
     filename.textContent = cv.original_filename;
+    const downloadBtn = document.createElement("button");
+    downloadBtn.type = "button";
+    downloadBtn.className = "cv-download-btn";
+    downloadBtn.textContent = "Download";
+    downloadBtn.addEventListener("click", () => downloadCv(cv.id, cv.original_filename));
     const deleteBtn = document.createElement("button");
     deleteBtn.type = "button";
     deleteBtn.className = "cv-delete-btn";
     deleteBtn.textContent = "Delete";
     deleteBtn.addEventListener("click", () => deleteCv(cv.id, cv.original_filename));
-    li.append(name, " — ", filename, deleteBtn);
+    li.append(name, " — ", filename, downloadBtn, deleteBtn);
     cvListEl.appendChild(li);
   }
   setStatus(cvs.length ? `${cvs.length} CV(s) uploaded.` : "No CVs uploaded yet.");
+}
+
+async function downloadCv(cvId, filename) {
+  setStatus(`Downloading ${filename}...`);
+  let objectUrl = "";
+  try {
+    const response = await fetch(`${CORE_URL}/api/v1/cvs/${cvId}/file/`);
+    if (!response.ok) throw new Error(`core returned ${response.status}`);
+    objectUrl = URL.createObjectURL(await response.blob());
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setStatus(`Downloaded ${filename}.`);
+  } catch (err) {
+    setStatus(`Download failed: ${err}`);
+  } finally {
+    if (objectUrl) setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+  }
 }
 
 async function deleteCv(cvId, filename) {
