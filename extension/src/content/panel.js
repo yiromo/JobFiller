@@ -617,6 +617,45 @@
   document.body.appendChild(host);
   const shadow = host.attachShadow({ mode: "closed" });
 
+  const SUPPORTS_MODAL_SELECTOR = CSS.supports("selector(:modal)");
+  const anchorObserver = new MutationObserver(queueHostSync);
+  let hostSyncQueued = false;
+
+  function topmostModalDialog() {
+    if (!SUPPORTS_MODAL_SELECTOR) return null;
+    let found = null;
+    for (const dialog of document.querySelectorAll("dialog[open]")) {
+      if (dialog.matches(":modal")) found = dialog;
+    }
+    return found;
+  }
+
+  function syncHostParent() {
+    const target = topmostModalDialog() || document.body;
+    anchorObserver.disconnect();
+    if (host.parentElement !== target) target.appendChild(host);
+    if (target !== document.body && target.parentNode) {
+      anchorObserver.observe(target.parentNode, { childList: true });
+    }
+  }
+
+  function queueHostSync() {
+    if (hostSyncQueued) return;
+    hostSyncQueued = true;
+    requestAnimationFrame(() => {
+      hostSyncQueued = false;
+      syncHostParent();
+    });
+  }
+
+  new MutationObserver(queueHostSync).observe(document.documentElement, {
+    subtree: true,
+    attributes: true,
+    attributeFilter: ["open"],
+  });
+
+  syncHostParent();
+
   const $ = (id) => shadow.getElementById(id);
 
   function mount(css) {

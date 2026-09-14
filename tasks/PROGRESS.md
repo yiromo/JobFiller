@@ -4,6 +4,30 @@ Newest first. One entry per feature commit — added when the feature actually l
 
 ## Done
 
+- **Panel was dead on LinkedIn Easy Apply** — the corner tab rendered but no click reached it once
+  the Easy Apply dialog was open. Not a z-index problem: LinkedIn opens that form with native
+  `<dialog>.showModal()`, confirmed live (`document.elementFromPoint` at the tab's coordinates
+  returned the `DIALOG`, `document.querySelector(':modal')` non-null, while the host itself was
+  connected, `position: fixed`, `z-index: 2147483647`, `pointer-events: auto`, not `inert`). A
+  modal dialog sits in the browser's **top layer**, which paints above every z-index there is, and
+  the HTML spec makes everything outside its subtree inert — so the panel was both covered and
+  unclickable, and no styling on our side could have fixed it. The only escape is to be inside the
+  dialog: `panel.js` now reparents `#job-filler-panel-host` into the topmost open modal dialog
+  while one exists and back to `<body>` when it closes. Driven by two observers rather than a
+  one-shot at mount (the modal opens long after the panel does): an `attributeFilter: ["open"]`
+  subtree observer on `documentElement` catches `showModal()`/`close()` — `showModal()` can only
+  be called on an already-connected element, so the `open` attribute flip always fires — plus a
+  narrow `childList` observer on the current dialog's parent for the case where the dialog is
+  ripped out of the DOM while still open, which mutates no attribute. Both funnel into one
+  rAF-debounced sync, so LinkedIn's DOM churn costs one `querySelectorAll` per frame at worst, and
+  the reparent's own mutation converges instead of looping. The shadow root, its listeners and all
+  panel state survive the move (`appendChild` relocates the node; nothing is rebuilt). Guarded by
+  `CSS.supports("selector(:modal)")` so an engine without `:modal` keeps the old body-anchored
+  behaviour instead of throwing on every page. Known open question: if LinkedIn ever positions
+  that dialog with a `transform`, the dialog becomes the containing block for our `position:
+  fixed` host and the panel would render inside the card — the fix then is promoting the host to
+  the top layer with the popover API, not abandoning the reparent.
+
 - **A scan's three AI passes now run in parallel instead of back to back** — `scan()` fired
   `augment_skipped_fields`, then the cover-letter generation, then the EEO resolution, each a
   separate MiMo round trip of its own, so a page with all three cost the sum of three model calls
