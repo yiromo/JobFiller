@@ -3,9 +3,10 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from agent.cv_writer import CvGenerationError, ToolchainMissing
 from apps.cvs.container import CvsContainer
 
-from .serializers import CvSerializer, CvUploadSerializer
+from .serializers import CvGenerateSerializer, CvSerializer, CvUploadSerializer
 
 
 class CvListCreateView(APIView):
@@ -31,6 +32,33 @@ class CvFileDownloadView(APIView):
         if cv is None:
             raise Http404
         return FileResponse(open(cv.file_path, "rb"), filename=cv.original_filename)
+
+
+class CvGenerateView(APIView):
+    def post(self, request, cv_id: int) -> Response:
+        serializer = CvGenerateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        service = CvsContainer.cv_service()
+        try:
+            result = service.generate_from(
+                cv_id,
+                serializer.validated_data["instructions"],
+                serializer.validated_data["position_text"],
+                serializer.validated_data["filename"],
+            )
+        except ToolchainMissing as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        except CvGenerationError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+
+        if result is None:
+            raise Http404
+        cv, added_skills = result
+        return Response(
+            {**CvSerializer(cv).data, "added_skills": added_skills},
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class CvDetailView(APIView):

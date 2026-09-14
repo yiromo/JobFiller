@@ -4,6 +4,36 @@ Newest first. One entry per feature commit — added when the feature actually l
 
 ## Done
 
+- **Generate a new CV from an existing one** — `POST /api/v1/cvs/<id>/generate/` takes
+  `{instructions, position_text, filename}`, rewrites that CV for the target position and saves
+  the result as a new PDF row, so it shows up in the panel's CV dropdown like any uploaded file.
+  Two stages in `agent/cv_writer.py`: one MiMo call (`response_format=json_object`, 120s timeout)
+  turning the source CV's raw text plus the user's instructions into a structured CV, then a
+  `pdflatex` render. The LaTeX template is ported from yiromo.com's `npm run cv`
+  (`portfolio/scripts/generate-cv.mjs`) — same preamble, `twocolentry`/`highlights`/`header`
+  environments and charter+fontawesome5 look, so a generated CV is visually the same document as
+  the hand-maintained one. `CvService.generate_from` wraps the PDF bytes in a `ContentFile` and
+  hands it to the existing `upload()`, which means text extraction and `extract_profile` run on
+  the generated file exactly as they do for a hand-uploaded one; no new model, no migration.
+  Grounding: employers, titles, dates, locations, degrees and numbers are copied from the source
+  CV, bullets may be rewritten and reordered freely, and a technology may only be added if it
+  appears in the user's instructions or the posting text. **Every added technology is detected in
+  Python** by diffing the rendered skills against the source CV's raw text, not trusted from the
+  model's own report — a real run added "Docker" while reporting only "Temporal", which is
+  exactly the failure that would get someone caught in an interview. The union of both lists is
+  shown back in Manage CVs under "confirm each one is true before you send this CV". A trailing
+  version number doesn't count as an addition (source "Django", output "Django 5" stays quiet),
+  but only that — the check deliberately doesn't collapse on a shared first word, or "Apache
+  Kafka" would be silently waved through on a CV that only says "Apache Spark".
+  The contact block (name, email, phone, LinkedIn, GitHub) is taken from the source CV's stored
+  fields and never passes through the model, so no digit of a phone number can drift. Model
+  output is NFKC-normalised, smart punctuation is folded to ASCII and anything outside Latin-1 is
+  dropped before LaTeX escaping, because the template's fonts have no glyphs for it and pdflatex
+  would otherwise fail on a Cyrillic place name. A missing `pdflatex` returns 503 with install
+  instructions and a failed compile returns 502 with the last 30 log lines, never a 500. Verified
+  end to end against a running server: upload → generate → `GET /api/v1/cvs/` lists it → download
+  → one page, correct content, 45s round trip.
+
 - **Panel slides instead of snapping** — closing with × and opening from the corner tab were
   instant `display: none` flips. Both now animate: the panel slides out to the right and fades,
   the corner tab slides back in behind it (its own transform keeps the `-50%` vertical centring).

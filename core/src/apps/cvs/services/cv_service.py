@@ -1,3 +1,8 @@
+import re
+
+from django.core.files.base import ContentFile
+
+from agent import cv_writer
 from agent.profile import extract_profile
 from apps.cvs.dto import CvDTO
 from apps.cvs.repositories.interfaces import ICvRepository
@@ -31,3 +36,33 @@ class CvService:
 
     def delete(self, cv_id: int) -> bool:
         return self._repo.delete(cv_id)
+
+    def generate_from(
+        self,
+        source_id: int,
+        instructions: str,
+        position_text: str = "",
+        filename: str = "",
+    ) -> tuple[CvDTO, list[str]] | None:
+        source = self._repo.get(source_id)
+        if source is None:
+            return None
+
+        data = cv_writer.rewrite(source.raw_text, instructions, position_text)
+        pdf_bytes = cv_writer.render_pdf(
+            data,
+            {
+                "full_name": source.full_name,
+                "email": source.email,
+                "phone": source.phone,
+                "linkedin_url": source.linkedin_url,
+                "git_url": source.git_url,
+            },
+        )
+        name = _pdf_filename(filename or f"CV {source.full_name} {data['title']}")
+        return self.upload(ContentFile(pdf_bytes, name=name), name), data["added_skills"]
+
+
+def _pdf_filename(label: str) -> str:
+    stem = re.sub(r"[^A-Za-z0-9]+", "_", label).strip("_") or "Generated_CV"
+    return f"{stem[:120]}.pdf"

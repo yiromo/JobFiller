@@ -23,6 +23,12 @@ Or via Docker (also needs `core/.env` — same `cp` step, from `core/`):
 docker compose up --build
 ```
 
+Generating a tailored CV (Manage CVs → "Generate a tailored CV") typesets the result with
+`pdflatex`, so that one feature needs a TeX distribution on whatever runs `core`. Everything else
+works without it, and the endpoint returns a 503 saying so rather than failing silently. On
+Fedora: `sudo dnf install texlive-scheme-medium texlive-fontawesome5 texlive-charter
+texlive-paracol`. The Docker image does **not** ship TeX yet.
+
 Extension (Firefox / Zen), with `core` running on `localhost:8000`:
 1. Go to `about:debugging#/runtime/this-firefox`.
 2. "Load Temporary Add-on…" → select `extension/manifest.json`.

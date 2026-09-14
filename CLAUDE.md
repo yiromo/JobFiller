@@ -65,7 +65,11 @@ Don't put DB queries or business logic in views — mirror an existing app. Apps
 
 - `core` — `/health/`
 - `cvs` — CV upload/list/file-download. Regex-based email/phone extraction lives here for now
-  (`agent/profile.py` builds the structured profile from a CV's raw text).
+  (`agent/profile.py` builds the structured profile from a CV's raw text). Also
+  `POST /api/v1/cvs/<id>/generate/`: rewrites that CV for a target position via
+  `agent/cv_writer.py` (one MiMo call to structured JSON, then a `pdflatex` render ported from
+  yiromo.com's `npm run cv`) and saves the PDF back through `CvService.upload`, so a generated CV
+  is an ordinary `Cv` row and is immediately selectable for filling.
 - `applications` — `POST /api/v1/applications/scan/`: takes a page's `form_snapshot`, returns
   a fill plan built by `agent/field_mapper.py` (heuristic pass) then `agent/llm_mapper.py`
   (MiMo pass over whatever the heuristic skipped, only if `MIMO_API_KEY` is set). Any field whose
@@ -230,6 +234,12 @@ which splices them into the in-memory plan so a second Fill click doesn't repeat
   page-level container, so every combobox on the page ended up clicking and reading one single
   unrelated field's menu. Click the exact `data-jf-ref`-stamped element itself instead; it's
   guaranteed correctly scoped.
+- **A generated CV's "added skills" list is computed in Python, not taken from the model.**
+  `cv_writer.rewrite` asks the model to report every technology it added, and then re-derives the
+  list by diffing the rendered skills against the source CV's raw text — because the model does
+  miss some (an observed run added "Docker" and reported only "Temporal"). The union is what the
+  UI shows. That list is the entire safety story for the "apply a modern 2026 stack" feature, so
+  never replace it with the model's own `added_skills`.
 - Only `core/.env` (git-ignored) holds secrets — `MIMO_API_KEY` included. Never put a key in a
   commit or `docker-compose.yml`. An empty `MIMO_API_KEY` is a valid, supported state:
   `llm_mapper.augment_skipped_fields` no-ops and the heuristic-only plan is returned as-is.

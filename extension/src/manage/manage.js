@@ -16,6 +16,7 @@ async function loadCvs() {
   if (!response.ok) throw new Error(`core returned ${response.status}`);
   const cvs = await response.json();
 
+  renderGenSources(cvs);
   cvListEl.innerHTML = "";
   for (const cv of cvs) {
     const li = document.createElement("li");
@@ -66,6 +67,74 @@ cvFileInput.addEventListener("change", async () => {
     setStatus(`Upload failed: ${err}`);
   } finally {
     cvFileInput.value = "";
+  }
+});
+
+const genSourceEl = document.getElementById("gen-source");
+const genInstructionsEl = document.getElementById("gen-instructions");
+const genPositionEl = document.getElementById("gen-position");
+const genFilenameEl = document.getElementById("gen-filename");
+const genBtn = document.getElementById("gen-btn");
+const genStatusEl = document.getElementById("gen-status");
+const genAddedEl = document.getElementById("gen-added");
+const genAddedListEl = document.getElementById("gen-added-list");
+
+function renderGenSources(cvs) {
+  const previous = genSourceEl.value;
+  genSourceEl.innerHTML = "";
+  for (const cv of cvs) {
+    const option = document.createElement("option");
+    option.value = cv.id;
+    option.textContent = `${cv.full_name || "(name unknown)"} — ${cv.original_filename}`;
+    genSourceEl.appendChild(option);
+  }
+  if (previous && cvs.some((cv) => String(cv.id) === previous)) genSourceEl.value = previous;
+  genBtn.disabled = cvs.length === 0;
+}
+
+function renderAddedSkills(skills) {
+  genAddedListEl.innerHTML = "";
+  genAddedEl.hidden = !skills.length;
+  for (const skill of skills) {
+    const li = document.createElement("li");
+    li.textContent = skill;
+    genAddedListEl.appendChild(li);
+  }
+}
+
+genBtn.addEventListener("click", async () => {
+  const sourceId = genSourceEl.value;
+  const instructions = genInstructionsEl.value.trim();
+  if (!sourceId) return;
+  if (!instructions) {
+    genStatusEl.textContent = "Say what should change first.";
+    return;
+  }
+
+  genBtn.disabled = true;
+  genAddedEl.hidden = true;
+  genStatusEl.textContent = "Rewriting and typesetting — this takes up to a couple of minutes...";
+  try {
+    const response = await fetch(`${CORE_URL}/api/v1/cvs/${sourceId}/generate/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        instructions,
+        position_text: genPositionEl.value.trim(),
+        filename: genFilenameEl.value.trim(),
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.detail || `core returned ${response.status}`);
+    }
+    genStatusEl.textContent = `Saved as ${payload.original_filename}. Pick it in the panel's CV list.`;
+    renderAddedSkills(payload.added_skills || []);
+    await loadCvs();
+  } catch (err) {
+    genStatusEl.textContent = `Generation failed: ${err.message || err}`;
+  } finally {
+    genBtn.disabled = false;
   }
 });
 

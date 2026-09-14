@@ -18,6 +18,46 @@
 
     <hr />
 
+    <h1>Generate a tailored CV</h1>
+    <p class="hint">
+      Rewrites one of your CVs for a specific position and saves the result as a new PDF you can
+      pick when filling a form. Employers, titles, dates, degrees and numbers are copied from the
+      source CV and never invented. Your stack gets reordered and renamed to its current 2026
+      naming for the target role, and a technology is only added if you asked for it below or the
+      position text mentions it — anything added is listed back to you so you can check it before
+      sending the CV anywhere.
+    </p>
+    <div class="gen-form">
+      <label class="gen-label" for="gen-source">Source CV</label>
+      <select id="gen-source"></select>
+
+      <label class="gen-label" for="gen-instructions">What should change</label>
+      <textarea
+        id="gen-instructions"
+        rows="4"
+        placeholder="e.g. target senior backend roles, lead with the payments work, drop the internship, add Kubernetes and Temporal"
+      ></textarea>
+
+      <label class="gen-label" for="gen-position">Target position (optional)</label>
+      <textarea
+        id="gen-position"
+        rows="6"
+        placeholder="Paste the job posting text here so the rewrite can match what it asks for."
+      ></textarea>
+
+      <label class="gen-label" for="gen-filename">File name (optional)</label>
+      <input id="gen-filename" type="text" placeholder="CV Sanzhar Amanzholov Backend" />
+
+      <button id="gen-btn" type="button">Generate CV</button>
+      <p id="gen-status"></p>
+      <div id="gen-added" hidden>
+        <strong>Added to your stack — confirm each one is true before you send this CV:</strong>
+        <ul id="gen-added-list"></ul>
+      </div>
+    </div>
+
+    <hr />
+
     <h1>Settings</h1>
     <p class="hint">
       EEO/demographic questions (gender, race, veteran, disability status, etc.) are never

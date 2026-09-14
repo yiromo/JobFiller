@@ -12,10 +12,16 @@ Roughly in order. Not started unless noted in `PROGRESS.md`.
 3. **Multi-CV "best fit" matching** — score uploaded CVs against a scanned job posting, auto-pick
    instead of requiring manual selection in the popup.
 4. **Fit rate** — quick % match score for a job posting vs. the chosen/best CV.
-5. **CV generator/adjuster** — tailor a CV's summary/bullets to a specific job posting. Output
-   structured JSON + markdown; no PDF rendering (out of scope — see yiromo.com's pdflatex
-   pipeline if that's wanted later). Partially covered in spirit by the cover letter generator
-   (see `tasks/PROGRESS.md`) — same MiMo-grounded-in-CV pattern, applied to the CV itself.
+5. ~~**CV generator/adjuster**~~ — done, see `tasks/PROGRESS.md`; it does render a PDF, via the
+   pdflatex template ported from yiromo.com. Remaining under this heading:
+   - `core`'s Docker image has no TeX, so `POST /api/v1/cvs/<id>/generate/` 503s there while
+     working fine under a local `runserver`. Either add texlive to the image (~1GB) or accept it
+     as a local-only feature — don't half-add packages and find out at request time.
+   - Generate from the panel, using the page the user is already on as `position_text`
+     (`lastPageText` is already in `panel.js`), instead of pasting the posting into Manage CVs.
+   - The one-page fit is prompt-enforced (bullet/section caps), not measured. If a generated CV
+     ever spills to two pages, the check belongs server-side after the render, with one retry at
+     a tighter cap — `pdfinfo` isn't guaranteed present, so count pages from the PDF itself.
 6. **Vision fallback** — when the heuristic/LLM mapper has low confidence on a field, send a
    screenshot (`tabs.captureVisibleTab`, `activeTab` permission) alongside the HTML for that
    one field. This is the one part of the pipeline that's a real LangGraph graph (confidence
