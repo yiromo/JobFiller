@@ -15,7 +15,7 @@ logBg("BACKGROUND_LOADED");
 
 // Runs inside the page, injected via scripting.executeScript — cannot
 // reference anything from this file's scope.
-function scanPage() {
+function scanPage(scanId) {
   let refCounter = 0;
 
   function isVisible(el) {
@@ -85,6 +85,12 @@ function scanPage() {
     return rect.width > 1 && rect.height > 1;
   }
 
+  function overlaps(a, b) {
+    const r1 = a.getBoundingClientRect();
+    const r2 = b.getBoundingClientRect();
+    return r1.left < r2.right && r2.left < r1.right && r1.top < r2.bottom && r2.top < r1.bottom;
+  }
+
   function resolveSection(el) {
     let node = el;
     for (let depth = 0; depth < 8 && node && node !== document.body; depth++) {
@@ -92,6 +98,7 @@ function scanPage() {
       for (let sib = node.previousElementSibling; sib; sib = sib.previousElementSibling) {
         if (sib.matches(CONTROL_SELECTOR) || sib.querySelector(CONTROL_SELECTOR)) continue;
         if (sib.matches(HIDDEN_SELECTOR) || !isRenderedBox(sib)) continue;
+        if (overlaps(sib, el)) continue;
         const text = (sib.innerText || "").replace(/\s+/g, " ").trim();
         if (text && text.length <= 200) return text;
         if (text) break;
@@ -101,8 +108,46 @@ function scanPage() {
     return "";
   }
 
+  function isShown(el) {
+    const style = window.getComputedStyle(el);
+    if (style.display === "none" || style.visibility === "hidden") return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  function scanRoots() {
+    const tiers = [
+      { selector: '[aria-modal="true"]', minControls: 1 },
+      { selector: "dialog[open]", minControls: 1 },
+      { selector: '[role="dialog"]', minControls: 2 },
+    ];
+    for (const { selector, minControls } of tiers) {
+      const open = Array.from(document.querySelectorAll(selector)).filter(isShown);
+      const outermost = open.filter((el) => !open.some((o) => o !== el && o.contains(el)));
+      const withControls = outermost.filter(
+        (root) => root.querySelectorAll("input, select, textarea").length,
+      );
+      const total = withControls.reduce(
+        (n, root) => n + root.querySelectorAll("input, select, textarea").length,
+        0,
+      );
+      if (withControls.length && total >= minControls) return withControls;
+    }
+    return [document];
+  }
+
+  const candidates = [];
+  const seen = new Set();
+  scanRoots().forEach((root) => {
+    root.querySelectorAll("input, select, textarea").forEach((el) => {
+      if (seen.has(el)) return;
+      seen.add(el);
+      candidates.push(el);
+    });
+  });
+
   const fields = [];
-  document.querySelectorAll("input, select, textarea").forEach((el) => {
+  candidates.forEach((el) => {
     // File inputs are routinely styled hidden behind a custom "Attach"/"Choose
     // a File" button — the input itself still works via el.files + a change
     // event regardless of CSS visibility, so don't skip it for that reason.
@@ -110,7 +155,7 @@ function scanPage() {
     if (el.type !== "file" && !isVisible(el)) return;
     if (["hidden", "submit", "button", "image"].includes(el.type)) return;
 
-    const ref = el.id || `jf-${refCounter++}`;
+    const ref = `${scanId}-${el.id || `jf-${refCounter++}`}`;
     el.setAttribute("data-jf-ref", ref);
 
     fields.push({
@@ -829,11 +874,13 @@ async function handleScan(message, tabId) {
   // allFrames catches ATS forms embedded in a cross-origin iframe (e.g.
   // Newton/gnewton career pages) — <all_urls> is a required permission now,
   // so this always has access.
+  const scanId = `s${Date.now().toString(36)}`;
   let injectionResults;
   try {
     injectionResults = await browser.scripting.executeScript({
       target: { tabId, allFrames: true },
       func: scanPage,
+      args: [scanId],
     });
   } catch (err) {
     logBg("SCAN_ALLFRAMES_FAILED", { tabId, error: String(err) });
@@ -842,6 +889,7 @@ async function handleScan(message, tabId) {
     injectionResults = await browser.scripting.executeScript({
       target: { tabId },
       func: scanPage,
+      args: [scanId],
     });
   }
 
@@ -978,6 +1026,14 @@ async function handleFill(message, tabId) {
 
   const failed = allResults.filter((r) => !r.ok);
   const logLines = [`Filled ${allResults.length - failed.length}/${allResults.length}.`];
+  for (const [frameId, items] of itemsByFrame) {
+    for (const item of items) {
+      if (item.action === "skip") continue;
+      logLines.push(
+        `  applied frame ${frameId} / ${item.ref}: ${item.action} ${JSON.stringify(String(item.value).slice(0, 60))}`,
+      );
+    }
+  }
   failed.forEach((r) => logLines.push(`  frame ${r.frameId} / ${r.ref}: ${r.reason}`));
   if (unresolvedByGlobalRef.size) {
     const picked = entries.filter((e) => e.action === "select" && e.value).length;
@@ -994,21 +1050,26 @@ async function resolveUnmatchedDropdowns(tabId, applicationId, unresolvedByGloba
   if (!unresolvedByGlobalRef.size) return { entries: [] };
   if (!applicationId) return { entries: [], error: "no application id — re-scan first" };
 
+  const payloadFields = Array.from(unresolvedByGlobalRef, ([ref, u]) => ({
+    ref,
+    wanted: u.wanted,
+    options: (u.options || []).map((o) => String(o).trim()).filter(Boolean),
+  })).filter((f) => f.options.length);
+  if (!payloadFields.length) {
+    return { entries: [], error: "the page's dropdown listed no options to match against" };
+  }
+
   let resolved;
   try {
     const response = await fetch(`${CORE_URL}/api/v1/applications/resolve-options/`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        application_id: applicationId,
-        fields: Array.from(unresolvedByGlobalRef, ([ref, u]) => ({
-          ref,
-          wanted: u.wanted,
-          options: u.options,
-        })),
-      }),
+      body: JSON.stringify({ application_id: applicationId, fields: payloadFields }),
     });
-    if (!response.ok) return { entries: [], error: `core returned ${response.status}` };
+    if (!response.ok) {
+      const body = (await response.text().catch(() => "")).slice(0, 300);
+      return { entries: [], error: `core returned ${response.status}${body ? ` — ${body}` : ""}` };
+    }
     resolved = (await response.json()).fields;
   } catch (err) {
     return { entries: [], error: String(err) };

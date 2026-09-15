@@ -4,6 +4,54 @@ Roughly newest first, one entry per feature/fix commit, added when it lands. Ent
 cause and the constraint that made the fix non-obvious — the stuff a future agent needs to not
 repeat a mistake. Everything else (what was curled, what lint said, which build number) is in git.
 
+- **Scan scope, ref staleness, and a placeholder masquerading as a section heading** — a LinkedIn
+  Easy Apply run typed the candidate's name into LinkedIn's own job-search box. Four separate
+  causes, found from the persisted `Application.form_snapshot`, which is the artifact to reach for
+  first when a fill goes wrong — it is what core actually saw.
+  `scanPage` ran `document.querySelectorAll("input, select, textarea")` over the whole document, so
+  with a modal open it also collected the page behind it: of three fields found, two were LinkedIn
+  chrome (the "Describe the job you want" box and the global search combobox in an iframe). It now
+  scopes to the open modal, tried as `[aria-modal="true"]`, then `dialog[open]`, then
+  `[role="dialog"]`, taking the outermost of each tier and only accepting a tier whose containers
+  actually hold a control — a cookie banner marked `role="dialog"` therefore falls through to the
+  document instead of reducing a Greenhouse page to zero fields. The bare `[role="dialog"]` tier
+  additionally needs two controls before it wins, because a chat or messaging widget is one lone
+  textarea marked `role="dialog"` and would otherwise capture the scan on an ordinary careers page
+  that has no modal at all; `aria-modal` and `dialog[open]` are explicit enough to accept a single
+  control, which is what the LinkedIn case needs. Visibility here uses
+  `getBoundingClientRect`, not the existing `isVisible`: modals are `position: fixed`, whose
+  `offsetParent` is null, so `isVisible` rejects every one of them.
+  `data-jf-ref` now carries a per-scan nonce. The refs on that page were React 19 `useId` values
+  (`«r27»`, `«r28»`) and on another were react-select's `react-select-N-input`; both are assigned in
+  mount order and **recycled onto different nodes** across renders, so a ref from an earlier scan
+  did not fail to resolve, it resolved to a live element that was a different question. The
+  documented "refs don't survive a re-render, re-scan" hazard assumed the failure mode was
+  `not-found`; with mount-order ids it is a silent write to the wrong field, which is worse. The
+  nonce makes a stale plan match nothing.
+  `resolveSection` was returning the widget's own placeholder as the question: on react-select the
+  placeholder is a `div` that is a previous sibling of the input's wrapper and contains no form
+  control, so it passed every existing guard, and four dropdowns came back with sections like
+  "Select all that interest you" and "Select stages you've worked at" instead of the headings above
+  them. The new guard rejects a sibling whose bounding box overlaps the field's own — a heading sits
+  above a control, an in-widget placeholder or adornment is painted over it. This is deliberately
+  geometric rather than class-based; walking by class name is the mistake that is already documented
+  two bullets down.
+  `POST /resolve-options/` 400d and lost a whole batch because `options` was `[""]` — the page's
+  listbox had a blank row and the serializer's `CharField` rejects it. `allow_blank=True` now, the
+  extension drops blank options and skips a field left with none, and a non-2xx response logs its
+  body: `core returned 400` on its own hid `options: This field may not be blank`.
+  Two smaller things from the same runs. A composite textarea — one box whose label is ten questions
+  ("Full Name: Total Years of Experience: ... Expected Salary Per Year:") — was being answered with
+  just the name, because `_map_field` matched "full name" in the haystack. `is_composite_question`
+  (textarea, label of 80+ chars with 3+ colons) now skips it and also fails `_is_llm_eligible`, so
+  neither mapper guesses at salary or visa status; the extension already attaches a "Generate with
+  AI" button to open-ended textareas, which is the right way to answer it. And the fill log now
+  prints the plan it actually applied, ref by ref — a report where the log's `wanted=` disagreed
+  with the persisted `field_mapping` could not be resolved without it.
+  `findOptions`' document-wide `[role="option"]` fallback was left alone on purpose: many combobox
+  libraries portal their listbox to `document.body`, so scoping it would break real ATSs, and once
+  the page's own search box is no longer scanned there is nothing to trigger the leak.
+
 - **Employment titles are overridable, but only by an explicit directive** — the verbatim guard on
   `role` did its job and then became the complaint: a CV headlined "Full-Stack Engineer" listed five
   `Backend Developer` jobs, which is correct but not what the candidate wanted. Titles are now

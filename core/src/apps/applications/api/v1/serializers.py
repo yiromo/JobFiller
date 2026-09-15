@@ -74,7 +74,7 @@ class AnalyzeRequestSerializer(serializers.Serializer):
 class ResolveOptionSerializer(serializers.Serializer):
     ref = serializers.CharField()
     wanted = serializers.CharField(allow_blank=True)
-    options = serializers.ListField(child=serializers.CharField())
+    options = serializers.ListField(child=serializers.CharField(allow_blank=True))
 
 
 class ResolveOptionsRequestSerializer(serializers.Serializer):

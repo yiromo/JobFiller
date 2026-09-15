@@ -52,6 +52,13 @@ def is_cover_letter_field(field: dict) -> bool:
     return any(keyword in field_haystack(field) for keyword in _COVER_LETTER_KEYWORDS)
 
 
+def is_composite_question(field: dict) -> bool:
+    if field.get("tag") != "textarea":
+        return False
+    label = str(field.get("label") or "")
+    return len(label) >= 80 and label.count(":") >= 3
+
+
 def build_fill_plan(
     form_snapshot: list[dict],
     profile: Profile | None,
@@ -82,6 +89,9 @@ def _map_field(field: dict, profile: Profile | None, cv_id: int | None) -> dict:
 
     if is_cover_letter_field(field) and cv_id is not None:
         return {"ref": ref, "value": "", "action": "cover_letter_type", "confidence": 0.7}
+
+    if is_composite_question(field):
+        return skip()
 
     if profile is None:
         return skip()

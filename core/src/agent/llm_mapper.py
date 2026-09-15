@@ -5,7 +5,13 @@ import re
 from django.conf import settings
 from openai import OpenAI
 
-from agent.field_mapper import EEO_KEYWORDS, PHONE_KEYWORDS, field_haystack, is_dropdown_field
+from agent.field_mapper import (
+    EEO_KEYWORDS,
+    PHONE_KEYWORDS,
+    field_haystack,
+    is_composite_question,
+    is_dropdown_field,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +80,8 @@ field given, in the same order, using the exact "ref" values given."""
 
 
 def _is_llm_eligible(field: dict) -> bool:
+    if is_composite_question(field):
+        return False
     haystack = field_haystack(field)
     never_llm_keywords = EEO_KEYWORDS + _ATTESTATION_KEYWORDS + _LOGISTICS_KEYWORDS
     if any(keyword in haystack for keyword in never_llm_keywords):
@@ -165,7 +173,12 @@ def validate_override(override: dict, field: dict) -> dict:
 
     if action == "check":
         if value.lower() in ("true", "yes", "1"):
-            return {"ref": ref, "value": "true", "action": "check", "confidence": _clamp(confidence)}
+            return {
+                "ref": ref,
+                "value": "true",
+                "action": "check",
+                "confidence": _clamp(confidence),
+            }
         return {"ref": ref, "value": "", "action": "skip", "confidence": 0.0}
 
     if action not in ("type", "select") or not value:
