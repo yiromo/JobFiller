@@ -18,6 +18,22 @@ logBg("BACKGROUND_LOADED");
 function scanPage(scanId) {
   let refCounter = 0;
 
+  function deepQueryAll(selector, root) {
+    const out = [];
+    const visit = (node) => {
+      if (!node || !node.querySelectorAll) return;
+      out.push(...node.querySelectorAll(selector));
+      node.querySelectorAll("*").forEach((el) => el.shadowRoot && visit(el.shadowRoot));
+    };
+    visit(root || document);
+    return out;
+  }
+
+  function deepQueryOne(selector, root) {
+    return deepQueryAll(selector, root)[0] || null;
+  }
+
+
   function isVisible(el) {
     const style = window.getComputedStyle(el);
     if (style.display === "none" || style.visibility === "hidden") return false;
@@ -62,7 +78,7 @@ function scanPage(scanId) {
 
   function resolveLabel(el) {
     if (el.id) {
-      const byFor = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+      const byFor = deepQueryOne(`label[for="${CSS.escape(el.id)}"]`, el.getRootNode());
       const name = cleanName(byFor?.textContent);
       if (name) return name;
     }
@@ -73,7 +89,7 @@ function scanPage(scanId) {
       const name = cleanName(
         labelledBy
           .split(" ")
-          .map((id) => document.getElementById(id)?.textContent?.trim())
+          .map((id) => deepQueryOne(`#${CSS.escape(id)}`, el.getRootNode())?.textContent?.trim())
           .filter(Boolean)
           .join(" "),
       );
@@ -105,7 +121,7 @@ function scanPage(scanId) {
         if (text && text.length <= 200) return text;
         if (text) break;
       }
-      node = node.parentElement;
+      node = node.parentElement || node.getRootNode()?.host || null;
     }
     return "";
   }
@@ -124,13 +140,13 @@ function scanPage(scanId) {
       { selector: '[role="dialog"]', minControls: 2 },
     ];
     for (const { selector, minControls } of tiers) {
-      const open = Array.from(document.querySelectorAll(selector)).filter(isShown);
+      const open = deepQueryAll(selector).filter(isShown);
       const outermost = open.filter((el) => !open.some((o) => o !== el && o.contains(el)));
       const withControls = outermost.filter(
-        (root) => root.querySelectorAll("input, select, textarea").length,
+        (root) => deepQueryAll("input, select, textarea", root).length,
       );
       const total = withControls.reduce(
-        (n, root) => n + root.querySelectorAll("input, select, textarea").length,
+        (n, root) => n + deepQueryAll("input, select, textarea", root).length,
         0,
       );
       if (withControls.length && total >= minControls) return withControls;
@@ -141,7 +157,7 @@ function scanPage(scanId) {
   const candidates = [];
   const seen = new Set();
   scanRoots().forEach((root) => {
-    root.querySelectorAll("input, select, textarea").forEach((el) => {
+    deepQueryAll("input, select, textarea", root).forEach((el) => {
       if (seen.has(el)) return;
       seen.add(el);
       candidates.push(el);
@@ -223,13 +239,27 @@ function scanPage(scanId) {
 // Runs inside the page, injected via scripting.executeScript — cannot
 // reference anything from this file's scope.
 function attachGenerateButtons(fields, applicationId, pageText) {
+  function deepQueryAll(selector, root) {
+    const out = [];
+    const visit = (node) => {
+      if (!node || !node.querySelectorAll) return;
+      out.push(...node.querySelectorAll(selector));
+      node.querySelectorAll("*").forEach((el) => el.shadowRoot && visit(el.shadowRoot));
+    };
+    visit(root || document);
+    return out;
+  }
+
+  function deepQueryOne(selector, root) {
+    return deepQueryAll(selector, root)[0] || null;
+  }
   // Shared by every button's click handler (old and new) so a re-scan with a
   // different CV/application updates already-attached buttons too, not just
   // ones attached this call.
   window.__jfScanContext = { applicationId, pageText };
 
   for (const field of fields) {
-    const el = document.querySelector(`[data-jf-ref="${CSS.escape(field.ref)}"]`);
+    const el = deepQueryOne(`[data-jf-ref="${CSS.escape(field.ref)}"]`);
     if (!el || el.dataset.jfAiAttached) continue;
     el.dataset.jfAiAttached = "1";
     const question = field.label || field.section || field.placeholder;
@@ -292,6 +322,20 @@ function attachGenerateButtons(fields, applicationId, pageText) {
 // scripting.executeScript awaits a returned Promise and resolves to its
 // settled value, so this works the same as the old synchronous version did.
 async function applyFillPlan(plan, fileByRef) {
+  function deepQueryAll(selector, root) {
+    const out = [];
+    const visit = (node) => {
+      if (!node || !node.querySelectorAll) return;
+      out.push(...node.querySelectorAll(selector));
+      node.querySelectorAll("*").forEach((el) => el.shadowRoot && visit(el.shadowRoot));
+    };
+    visit(root || document);
+    return out;
+  }
+
+  function deepQueryOne(selector, root) {
+    return deepQueryAll(selector, root)[0] || null;
+  }
   const nativeInputSetter = Object.getOwnPropertyDescriptor(
     window.HTMLInputElement.prototype,
     "value",
@@ -373,7 +417,7 @@ async function applyFillPlan(plan, fileByRef) {
     let dialog = null;
     if (DISMISSING_KEYS.has(key)) {
       dialog = el.closest?.("dialog[open]") || null;
-      if (!dialog && document.querySelector("dialog[open]")) return;
+      if (!dialog && deepQueryOne("dialog[open]")) return;
     }
     for (const type of ["keydown", "keyup"]) {
       const event = new KeyboardEvent(type, { key, bubbles: true, cancelable: true, ...init });
@@ -418,26 +462,24 @@ async function applyFillPlan(plan, fileByRef) {
   function findOptions(el, before) {
     const container = el.closest('[role="combobox"], [aria-haspopup="listbox"]') || el;
     const controlsId = container.getAttribute("aria-controls") || container.getAttribute("aria-owns");
-    const scope = controlsId ? document.getElementById(controlsId) : null;
+    const scope = controlsId ? deepQueryOne(`#${CSS.escape(controlsId)}`) : null;
     if (scope) {
-      return Array.from(scope.querySelectorAll('[role="option"]')).filter(isRendered);
+      return deepQueryAll('[role="option"]', scope).filter(isRendered);
     }
 
     const prefix = widgetInstancePrefix(el);
     if (prefix) {
-      const scoped = Array.from(document.querySelectorAll(`[id^="${prefix}-option"]`)).filter(
-        isRendered,
-      );
+      const scoped = deepQueryAll(`[id^="${prefix}-option"]`).filter(isRendered);
       if (scoped.length) return scoped;
     }
 
-    return Array.from(document.querySelectorAll('[role="option"]'))
+    return deepQueryAll('[role="option"]')
       .filter(isRendered)
       .filter((o) => !before.has(o));
   }
 
   function optionSnapshot() {
-    return new Set(document.querySelectorAll('[role="option"]'));
+    return new Set(deepQueryAll('[role="option"]'));
   }
 
   function selectedText(el) {
@@ -678,7 +720,7 @@ async function applyFillPlan(plan, fileByRef) {
   // Sequential, not parallel: opening one combobox's option list can close
   // another's, so fills must happen one at a time.
   for (const item of plan) {
-    const el = document.querySelector(`[data-jf-ref="${CSS.escape(item.ref)}"]`);
+    const el = deepQueryOne(`[data-jf-ref="${CSS.escape(item.ref)}"]`);
     if (!el) {
       results.push({ ref: item.ref, ok: false, reason: "not-found" });
       continue;

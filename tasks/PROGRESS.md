@@ -4,18 +4,31 @@ Roughly newest first, one entry per feature/fix commit, added when it lands. Ent
 cause and the constraint that made the fix non-obvious — the stuff a future agent needs to not
 repeat a mistake. Everything else (what was curled, what lint said, which build number) is in git.
 
-- **`isVisible` dropped every field inside a fixed-position form** — a SmartRecruiters
-  `oneclick-ui` page scanned to exactly one field: a `file` input labelled "Upload profile image".
-  One field is the tell, and so is its type — file inputs are the only kind exempted from
-  `isVisible` (they are routinely styled hidden behind a custom Attach button), so a scan that
-  returns nothing but a file input means `isVisible` rejected all the rest. The cause was
-  `el.offsetParent !== null`: `offsetParent` is null for anything inside a `position: fixed`
-  subtree, which is how that apply UI renders its whole form, so every text input on the page
-  failed. The check now accepts a non-zero bounding box as an alternative to `offsetParent`, which
-  is strictly more permissive — nothing that passed before can fail now — and `isHoneypot` is still
-  what keeps traps out, not this. Pre-existing, not a regression from the modal-scoping change in
-  the entry below; that change was confirmed innocent because the field it did find sits in the
-  real form, next to its "Fields marked with * are required." heading.
+- **Shadow DOM: the scan could not see a web-component form at all** — a SmartRecruiters
+  `oneclick-ui` page scanned to exactly one field, a `file` input labelled "Upload profile image",
+  while the visible form had first name, last name, email, city, phone, LinkedIn and more. The
+  markup gives it away: `<slot name="inner-prefix">` around `<input id="first-name-input">`, inside
+  `c-spl-*` custom elements. Those inputs live in **open shadow roots**, and
+  `document.querySelectorAll` does not pierce a shadow boundary — the lone file input was simply the
+  one control still in the light DOM. `deepQueryAll`/`deepQueryOne` now walk `element.shadowRoot`
+  recursively and are used everywhere a ref or a control is looked up: field collection and the
+  modal-tier check in `scanPage`, the `[data-jf-ref]` lookups in `applyFillPlan` and
+  `attachGenerateButtons`, `dialog[open]`, the `aria-controls` scope, and every `[role="option"]`
+  query. The helper is defined three times over because each of these is injected separately by
+  `scripting.executeScript` and cannot share a closure. `resolveLabel` now resolves `label[for]` and
+  `aria-labelledby` against `el.getRootNode()` rather than `document`, since inside a shadow root
+  the label is a sibling in that root and invisible to a document lookup, and `resolveSection`'s
+  ancestor walk hops the boundary with `node.parentElement || node.getRootNode()?.host` — a
+  `parentElement` chain stops dead at a shadow root and would never reach the heading. Only open
+  roots are reachable; a closed root stays invisible to a content script and there is nothing to be
+  done about that. Note the option-polling path now walks the whole tree on each poll; it has not
+  been a problem on real pages, but that is where to look first if a fill ever feels slow.
+  **This was first misdiagnosed as `isVisible`** rejecting the fields because `offsetParent` is null
+  inside a `position: fixed` subtree — plausible, since file inputs are the one type exempt from
+  `isVisible`, so "only a file input survived" fits that story too. It was wrong here. The
+  `isVisible` change (accept a non-zero bounding box as an alternative to `offsetParent`) was kept
+  anyway: it is strictly more permissive, nothing that passed before can fail now, and the reasoning
+  does hold for genuinely fixed-position modals. It just fixed nothing on this page.
   Same run confirmed the scan nonce works in a browser: after a page reload three Fill clicks in a
   row reported `smu3b0zzl-jf-0: not-found` instead of writing into whatever element had inherited
   that id. Failing safe is right but silent, so a fill where every failure is `not-found` now says
