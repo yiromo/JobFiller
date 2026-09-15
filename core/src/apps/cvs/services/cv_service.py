@@ -43,13 +43,13 @@ class CvService:
         instructions: str,
         position_text: str = "",
         filename: str = "",
-    ) -> tuple[CvDTO, list[str]] | None:
+    ) -> tuple[CvDTO, list[str], list[str]] | None:
         source = self._repo.get(source_id)
         if source is None:
             return None
 
         data = cv_writer.rewrite(source.raw_text, instructions, position_text)
-        pdf_bytes = cv_writer.render_pdf(
+        pdf_bytes, render_warnings = cv_writer.render_pdf(
             data,
             {
                 "full_name": source.full_name,
@@ -60,7 +60,11 @@ class CvService:
             },
         )
         name = _pdf_filename(filename or f"CV {source.full_name} {data['title']}")
-        return self.upload(ContentFile(pdf_bytes, name=name), name), data["added_skills"]
+        return (
+            self.upload(ContentFile(pdf_bytes, name=name), name),
+            data["added_skills"],
+            data["warnings"] + render_warnings,
+        )
 
 
 def _pdf_filename(label: str) -> str:

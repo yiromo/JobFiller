@@ -104,6 +104,8 @@ const genBtn = document.getElementById("gen-btn");
 const genStatusEl = document.getElementById("gen-status");
 const genAddedEl = document.getElementById("gen-added");
 const genAddedListEl = document.getElementById("gen-added-list");
+const genWarningsEl = document.getElementById("gen-warnings");
+const genWarningsListEl = document.getElementById("gen-warnings-list");
 
 function renderGenSources(cvs) {
   const previous = genSourceEl.value;
@@ -118,13 +120,13 @@ function renderGenSources(cvs) {
   genBtn.disabled = cvs.length === 0;
 }
 
-function renderAddedSkills(skills) {
-  genAddedListEl.innerHTML = "";
-  genAddedEl.hidden = !skills.length;
-  for (const skill of skills) {
+function renderList(container, listEl, items) {
+  listEl.innerHTML = "";
+  container.hidden = !items.length;
+  for (const item of items) {
     const li = document.createElement("li");
-    li.textContent = skill;
-    genAddedListEl.appendChild(li);
+    li.textContent = item;
+    listEl.appendChild(li);
   }
 }
 
@@ -139,6 +141,7 @@ genBtn.addEventListener("click", async () => {
 
   genBtn.disabled = true;
   genAddedEl.hidden = true;
+  genWarningsEl.hidden = true;
   genStatusEl.textContent = "Rewriting and typesetting — this takes up to a couple of minutes...";
   try {
     const response = await fetch(`${CORE_URL}/api/v1/cvs/${sourceId}/generate/`, {
@@ -155,7 +158,8 @@ genBtn.addEventListener("click", async () => {
       throw new Error(payload.detail || `core returned ${response.status}`);
     }
     genStatusEl.textContent = `Saved as ${payload.original_filename}. Pick it in the panel's CV list.`;
-    renderAddedSkills(payload.added_skills || []);
+    renderList(genAddedEl, genAddedListEl, payload.added_skills || []);
+    renderList(genWarningsEl, genWarningsListEl, payload.warnings || []);
     await loadCvs();
   } catch (err) {
     genStatusEl.textContent = `Generation failed: ${err.message || err}`;

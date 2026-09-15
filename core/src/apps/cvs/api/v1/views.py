@@ -54,9 +54,9 @@ class CvGenerateView(APIView):
 
         if result is None:
             raise Http404
-        cv, added_skills = result
+        cv, added_skills, warnings = result
         return Response(
-            {**CvSerializer(cv).data, "added_skills": added_skills},
+            {**CvSerializer(cv).data, "added_skills": added_skills, "warnings": warnings},
             status=status.HTTP_201_CREATED,
         )
 

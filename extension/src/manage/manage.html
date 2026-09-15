@@ -23,9 +23,10 @@
       Rewrites one of your CVs for a specific position and saves the result as a new PDF you can
       pick when filling a form. Employers, titles, dates, degrees and numbers are copied from the
       source CV and never invented. Your stack gets reordered and renamed to its current 2026
-      naming for the target role, and a technology is only added if you asked for it below or the
-      position text mentions it — anything added is listed back to you so you can check it before
-      sending the CV anywhere.
+      naming for the target role. A technology is only added when you explicitly ask for it below —
+      asking to prioritize or lead with something reorders what is already on your CV, it never
+      adds it. Anything added, and any wording that is not in the source CV, is listed back to you
+      so you can check it before sending the CV anywhere.
     </p>
     <div class="gen-form">
       <label class="gen-label" for="gen-source">Source CV</label>
@@ -53,6 +54,10 @@
       <div id="gen-added" hidden>
         <strong>Added to your stack — confirm each one is true before you send this CV:</strong>
         <ul id="gen-added-list"></ul>
+      </div>
+      <div id="gen-warnings" hidden>
+        <strong>Check these before you send this CV:</strong>
+        <ul id="gen-warnings-list"></ul>
       </div>
     </div>
 

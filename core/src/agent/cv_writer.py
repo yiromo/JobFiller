@@ -27,34 +27,45 @@ following the candidate's own instructions. You respond with a JSON object only.
 Grounding rules, in order of priority:
 - Employers, job titles, employment dates, locations, degrees, schools, GPA and every number \
 (team sizes, percentages, user counts, revenue) are copied from the source CV. Never invent one, \
-never inflate one, never shift a date.
+never inflate one, never shift a date. A job title is the candidate's real employment title, not \
+the position being targeted: the headline may say anything, "role" may not.
+- Include every experience the source CV lists, in the order it lists them. Never drop one, never \
+merge two, never reorder them. Repositioning happens in the headline, the summary and the wording \
+of bullets, never in the employment history itself.
 - You may rewrite the wording of any bullet freely: sharpen it, lead with impact, drop what is \
-irrelevant to the target position, and reorder bullets and sections so the most relevant work \
-comes first.
+irrelevant to the target position, and reorder the bullets within one experience so the most \
+relevant work comes first.
 - Technologies: reorder and rename the candidate's existing stack to the current 2026 naming and \
-put what the target position asks for first. You may ADD a technology only if it appears in the \
-candidate's instructions or in the target position text. Never add a technology from your own \
+put what the target position asks for first. You may ADD a technology only when the candidate's \
+instructions explicitly ask for that technology to be added. A technology named only as something \
+to prioritize, emphasize or lead with is NOT permission to add it -- prioritizing means reordering \
+what is already there. Never add one from the target position text alone, and never from your own \
 idea of what is modern.
+- Never list a technology that the source CV mentions only as something the candidate's work sat \
+behind, next to, or integrated with, rather than something the candidate built in.
 - Every technology you added that was not already in the source CV must be listed in \
 "added_skills", verbatim as you wrote it in the skills section. This list is shown to the \
 candidate so they can confirm each one before sending the CV out.
 - Latin script only. No em dash, no en dash, no double hyphen, no smart quotes, no emoji. Write \
 like a person, not an AI assistant: vary sentence length, avoid stock phrases.
-- Keep the whole CV to what fits on one page: at most 4 experiences, at most 4 bullets each, at \
-most 3 projects, at most 5 skill categories.
+- Keep the whole CV to what fits on one page: at most 3 bullets per experience, at most 3 \
+projects, at most 5 skill categories. Never drop an experience to save space -- cut bullets.
 
 Respond with this JSON object:
 {"title": <the professional title line under the name, targeted at the position>,
- "location": <city, country from the source CV, "" if absent>,
+ "location_details": [<each part of the source CV's header location line, as written in the \
+source CV -- city, timezone, work mode, contract type; [] if the source CV has no such line>],
  "summary": <3-4 sentence professional summary in first person without "I", targeted>,
  "impact": [<up to 4 short "<number> <what it was>" achievement fragments taken from the source \
 CV, e.g. "40% faster checkout">],
  "skills": {<category name>: [<technology>, ...], ...},
- "experiences": [{"role": <title>, "company": <name>, "company_url": <url or "">, \
+ "experiences": [{"role": <as written in the source CV>, "company": <as written in \
+the source CV>, "company_url": <url or "">, \
 "period": <as written in the source CV>, "location": <as written or "">, \
 "description": [<bullet>, ...]}, ...],
  "projects": [{"title": <name>, "subtitle": <one short line>, "description": <one sentence>, \
-"link_label": <label or "">, "link_url": <url or "">}, ...],
+"link_label": <the link label from the source CV, "" if absent>, "link_url": <the matching url \
+from the source CV, "" if absent>}, ...],
  "education": {"degree": <degree>, "school": <school>, "period": <as written>, "gpa": <as \
 written or "">},
  "languages": [{"language": <name>, "level": <level>}, ...],
@@ -82,6 +93,68 @@ def _sanitize(value) -> str:
         text = text.replace(source, replacement)
     text = "".join(char for char in text if char == "\n" or 32 <= ord(char) < 256)
     return text.strip()
+
+
+_WHITESPACE_RE = re.compile(r"\s+")
+_TOKEN_RE = re.compile(r"[A-Za-z][\w.+#-]*")
+_SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?])\s")
+_PAGE_COUNT_RE = re.compile(r"Output written on .*?\((\d+) pages?,")
+_GROUNDED_FIELDS = ("role", "company", "period")
+
+
+def _comparable(value) -> str:
+    return _WHITESPACE_RE.sub(" ", _sanitize(value)).casefold()
+
+
+def _ungrounded_facts(experiences: list[dict], haystack: str) -> list[str]:
+    facts = []
+    for exp in experiences:
+        employer = _sanitize(exp.get("company")) or "an unnamed employer"
+        for field in _GROUNDED_FIELDS:
+            value = _sanitize(exp.get(field))
+            if value and _comparable(value) not in haystack:
+                facts.append(f'{field} for {employer}: "{value}" is not in the source CV')
+    return facts
+
+
+def _in_source_order(experiences: list[dict], haystack: str) -> list[dict]:
+    def position(exp: dict) -> tuple[bool, int]:
+        for field in ("period", "company"):
+            needle = _comparable(exp.get(field))
+            at = haystack.find(needle) if needle else -1
+            if at >= 0:
+                return (False, at)
+        return (True, 0)
+
+    return sorted(experiences, key=position)
+
+
+def _split_sourced(values: list, haystack: str) -> tuple[list[str], list[str]]:
+    kept, dropped = [], []
+    for value in values:
+        text = _sanitize(value)
+        if not text:
+            continue
+        (kept if _comparable(text) in haystack else dropped).append(text)
+    return kept, dropped
+
+
+def _unsourced_prose(data: dict, haystack: str) -> list[str]:
+    passages = [data.get("summary") or ""]
+    passages.extend(str(item) for item in data.get("impact") or [])
+    for exp in data.get("experiences") or []:
+        passages.extend(str(line) for line in exp.get("description") or [])
+    for project in data.get("projects") or []:
+        passages.extend(str(project.get(key) or "") for key in ("title", "subtitle", "description"))
+
+    found: list[str] = []
+    for passage in passages:
+        for sentence in _SENTENCE_BREAK_RE.split(_sanitize(passage)):
+            for token in list(_TOKEN_RE.finditer(sentence))[1:]:
+                term = token.group(0).rstrip(".,;:")
+                if term[:1].isupper() and term.casefold() not in haystack and term not in found:
+                    found.append(term)
+    return found
 
 
 def _escape(value) -> str:
@@ -213,8 +286,18 @@ def _education_section(education: dict, languages: list[dict]) -> str:
 def _build_tex(data: dict, contact: dict) -> str:
     name = _escape(contact.get("full_name") or "")
     title = _escape(data.get("title") or "")
-    location = data.get("location") or ""
-    location_line = f"\\faMapMarker* {_escape(location)}\\\\" if location else ""
+    details = [_sanitize(item) for item in data.get("location_details") or []]
+    details = [item for item in details if item] or (
+        [_sanitize(data["location"])] if data.get("location") else []
+    )
+    location_line = (
+        " $\\cdot$ ".join(
+            [f"\\faMapMarker* {_escape(details[0])}"] + [_escape(item) for item in details[1:]]
+        )
+        + "\\\\"
+        if details
+        else ""
+    )
     impact = " \\textbar{} ".join(_escape(item) for item in data.get("impact", []) if item)
     impact_block = (
         f"\n\n        \\vspace{{3pt}}\n        \\textbf{{Selected Impact:}} {impact}"
@@ -439,23 +522,46 @@ def rewrite(cv_raw_text: str, instructions: str, position_text: str = "") -> dic
         str(category): [str(item) for item in items or []]
         for category, items in (parsed.get("skills") or {}).items()
     }
-    return {
+    haystack = _comparable(cv_raw_text)
+    experiences = parsed.get("experiences") or []
+    ungrounded = _ungrounded_facts(experiences, haystack)
+    if ungrounded:
+        raise CvGenerationError(
+            "The rewrite changed employment facts that must be copied from the source CV: "
+            + "; ".join(ungrounded)
+            + ". Generate again."
+        )
+
+    details, unsourced_details = _split_sourced(parsed.get("location_details") or [], haystack)
+    data = {
         "title": str(parsed.get("title") or ""),
-        "location": str(parsed.get("location") or ""),
+        "location_details": details,
         "summary": str(parsed.get("summary") or ""),
         "impact": [str(item) for item in parsed.get("impact") or []],
         "skills": skills,
-        "experiences": parsed.get("experiences") or [],
+        "experiences": _in_source_order(experiences, haystack),
         "projects": parsed.get("projects") or [],
         "education": parsed.get("education") or {},
         "languages": parsed.get("languages") or [],
-        "added_skills": _added_skills(
-            skills, cv_raw_text, [str(item) for item in parsed.get("added_skills") or []]
-        ),
     }
+    warnings = [
+        f'Left "{item}" out of the header line: it is not in the source CV.'
+        for item in unsourced_details
+    ]
+    unsourced = _unsourced_prose(data, haystack)
+    if unsourced:
+        warnings.append(
+            "Wording not found in the source CV, check each one before sending: "
+            + ", ".join(unsourced)
+        )
+    data["added_skills"] = _added_skills(
+        skills, cv_raw_text, [str(item) for item in parsed.get("added_skills") or []]
+    )
+    data["warnings"] = warnings
+    return data
 
 
-def render_pdf(data: dict, contact: dict) -> bytes:
+def render_pdf(data: dict, contact: dict) -> tuple[bytes, list[str]]:
     pdflatex = shutil.which("pdflatex")
     if not pdflatex:
         raise ToolchainMissing(
@@ -464,6 +570,25 @@ def render_pdf(data: dict, contact: dict) -> bytes:
             "texlive-fontawesome5, texlive-charter and texlive-paracol)."
         )
 
+    projects = list(data.get("projects") or [])
+    dropped: list[str] = []
+    while True:
+        pdf_bytes, pages = _typeset({**data, "projects": projects}, contact, pdflatex)
+        if pages <= 1 or not projects:
+            break
+        dropped.append(_sanitize(projects[-1].get("title")) or "an untitled project")
+        projects = projects[:-1]
+    if pages > 1:
+        raise CvGenerationError(
+            f"The rewritten CV is {pages} pages with no projects left to cut. Ask for fewer "
+            "bullets or a shorter summary and generate again."
+        )
+    return pdf_bytes, [
+        f'Dropped the project "{title}" to keep the CV on one page.' for title in dropped
+    ]
+
+
+def _typeset(data: dict, contact: dict, pdflatex: str) -> tuple[bytes, int]:
     tex = _build_tex(data, contact)
     with tempfile.TemporaryDirectory(prefix="jobfiller-cv-") as build_dir:
         tex_path = Path(build_dir) / "cv.tex"
@@ -494,4 +619,5 @@ def render_pdf(data: dict, contact: dict) -> bytes:
                 tail = "\n".join(log.splitlines()[-30:])
                 logger.error("pdflatex failed:\n%s", tail)
                 raise CvGenerationError(f"pdflatex could not typeset the CV:\n{tail}")
-        return pdf_path.read_bytes()
+            match = _PAGE_COUNT_RE.search(result.stdout.decode("utf-8", "replace"))
+        return pdf_path.read_bytes(), int(match.group(1)) if match else 0

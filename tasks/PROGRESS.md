@@ -4,6 +4,50 @@ Roughly newest first, one entry per feature/fix commit, added when it lands. Ent
 cause and the constraint that made the fix non-obvious — the stuff a future agent needs to not
 repeat a mistake. Everything else (what was curled, what lint said, which build number) is in git.
 
+- **Generated CVs stopped inventing employment history** — two real runs (Golang Backend,
+  Full-Stack) each dropped a job, reordered the employment history, lost the header's
+  `UTC+5 / Worldwide Remote / B2B / EOR` line, and one rewrote every historical title to the
+  targeted one. Root cause: the port of yiromo.com's `npm run cv` kept the LaTeX template verbatim
+  but replaced the whole data layer with model output. In `portfolio/src/data/cv.ts` the role,
+  period, header detail parts, ordering and project links are hand-authored data that
+  `generate-cv.mjs` renders with a bare `.map()` — no sort, no filter, all five jobs always — and
+  page fit is enforced *after* compile by a `pdfinfo` check that fails the build and tells the
+  human to trim `CV_PROJECT_IDS`. `cv_writer.py` had made every one of those a model decision and
+  dropped both guards, replacing them with two prompt lines that combine into silent truncation:
+  "reorder ... so the most relevant work comes first" plus "at most 4 experiences" over a 5-job CV
+  deletes whichever job scores least relevant. It was never a length problem — both bad PDFs were
+  one page and the source fits 5 jobs plus 2 projects. The Golang run lost the tail (Cleverest);
+  the Full-Stack run lost Turing from the middle, leaving a visible Jan 2024 - Apr 2025 gap.
+  Fixes, all in Python rather than prompting, same principle as `added_skills`:
+  `_ungrounded_facts` requires `role`/`company`/`period` to be whitespace-collapsed, accent-folded,
+  casefolded verbatim substrings of the source `raw_text` and raises `CvGenerationError` naming the
+  field, employer and offending value — blocking, not a warning, because the added-skills surface
+  demonstrably already fired on `Stripe` and `TypeScript` in the bad runs and the human shipped
+  past it. `_in_source_order` sorts experiences by where their period (then company) appears in the
+  source text: it reproduces the human's own hand-ordering exactly and has no date-format failure
+  mode, which a month-parsing sort would. The 4-experience cap is gone and `render_pdf` re-added
+  the lost page gate — it reads the count from pdflatex's own `Output written on ... (N pages`
+  line rather than taking a poppler dependency the Docker image doesn't have, drops one project per
+  retry like the original tells the human to, reports each drop as a warning, and raises if it is
+  still over with no projects left. Removing the experience cap makes overflow likelier, so the
+  per-experience bullet cap dropped from 4 to 3. `location` (schema-narrowed to "city, country",
+  which is why the rest of the header line could not survive) became `location_details`, a list
+  validated part-by-part and joined with `$\cdot$` like the original. `_unsourced_prose` extends
+  the fabrication diff past the skills dict into summary/impact/bullets/project prose, flagging
+  capitalized tokens that are not sentence-initial and not in the source — that is what catches
+  `Stripe` replacing the source's `BCC 3-D Secure`, which lived in a bullet where the skills diff
+  could never see it. It skips `title` deliberately, or every generation warns on its own
+  repositioned headline. Two prompt rules also changed: a technology named only as something to
+  "prioritize" or "lead with" is explicitly *not* permission to add it (the user's own instructions
+  listed WebSockets and Next.js/TypeScript under "prioritize", and the old rule read that as
+  consent), and a technology the source mentions only as something the work sat *behind* may not be
+  listed. That second one is prompt-only with no Python backstop: `_added_skills` is a substring
+  check, so `Next.js` passes silently because "behind a Next.js frontend" is in the source text and
+  it cannot tell "I built X" from "my backend sat behind X". Rerunning both original instruction
+  texts now yields five jobs in source order, real titles under repositioned headlines, the header
+  line intact, one page each, no Stripe and no TypeScript; the warnings channel surfaced `SaaS`
+  and `Go-based` as unsourced wording and the Full-Stack run's four added skills.
+
 - **Label resolution: generic accessible names rejected, `section` added to the contract** — on
   Rippling's ATS a scan produced 9 of 16 fields with a label of `""`, `"Search"`, `"Select..."` or
   `"textbox"`: its component library sets a generic `aria-label` on every control, randomizes
