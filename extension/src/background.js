@@ -20,7 +20,9 @@ function scanPage(scanId) {
 
   function isVisible(el) {
     const style = window.getComputedStyle(el);
-    return style.display !== "none" && style.visibility !== "hidden" && el.offsetParent !== null;
+    if (style.display === "none" || style.visibility === "hidden") return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 || rect.height > 0 || el.offsetParent !== null;
   }
 
   // Honeypot traps are hidden from users but in the DOM; file inputs legitimately use
@@ -1035,6 +1037,11 @@ async function handleFill(message, tabId) {
     }
   }
   failed.forEach((r) => logLines.push(`  frame ${r.frameId} / ${r.ref}: ${r.reason}`));
+  if (failed.length && failed.every((r) => r.reason === "not-found")) {
+    logLines.push(
+      "None of the scanned fields are still on the page — it reloaded or re-rendered. Click Re-scan.",
+    );
+  }
   if (unresolvedByGlobalRef.size) {
     const picked = entries.filter((e) => e.action === "select" && e.value).length;
     logLines.push(

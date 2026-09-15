@@ -4,6 +4,23 @@ Roughly newest first, one entry per feature/fix commit, added when it lands. Ent
 cause and the constraint that made the fix non-obvious — the stuff a future agent needs to not
 repeat a mistake. Everything else (what was curled, what lint said, which build number) is in git.
 
+- **`isVisible` dropped every field inside a fixed-position form** — a SmartRecruiters
+  `oneclick-ui` page scanned to exactly one field: a `file` input labelled "Upload profile image".
+  One field is the tell, and so is its type — file inputs are the only kind exempted from
+  `isVisible` (they are routinely styled hidden behind a custom Attach button), so a scan that
+  returns nothing but a file input means `isVisible` rejected all the rest. The cause was
+  `el.offsetParent !== null`: `offsetParent` is null for anything inside a `position: fixed`
+  subtree, which is how that apply UI renders its whole form, so every text input on the page
+  failed. The check now accepts a non-zero bounding box as an alternative to `offsetParent`, which
+  is strictly more permissive — nothing that passed before can fail now — and `isHoneypot` is still
+  what keeps traps out, not this. Pre-existing, not a regression from the modal-scoping change in
+  the entry below; that change was confirmed innocent because the field it did find sits in the
+  real form, next to its "Fields marked with * are required." heading.
+  Same run confirmed the scan nonce works in a browser: after a page reload three Fill clicks in a
+  row reported `smu3b0zzl-jf-0: not-found` instead of writing into whatever element had inherited
+  that id. Failing safe is right but silent, so a fill where every failure is `not-found` now says
+  the page re-rendered and to click Re-scan.
+
 - **Scan scope, ref staleness, and a placeholder masquerading as a section heading** — a LinkedIn
   Easy Apply run typed the candidate's name into LinkedIn's own job-search box. Four separate
   causes, found from the persisted `Application.form_snapshot`, which is the artifact to reach for
