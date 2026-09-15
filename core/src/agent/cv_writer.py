@@ -29,6 +29,11 @@ Grounding rules, in order of priority:
 (team sizes, percentages, user counts, revenue) are copied from the source CV. Never invent one, \
 never inflate one, never shift a date. A job title is the candidate's real employment title, not \
 the position being targeted: the headline may say anything, "role" may not.
+- One exception, the only one: when the candidate's instructions contain a line of the form \
+"Title <employer> as <role>", use that role verbatim for that employer, and keep any parenthetical \
+qualifier the source CV attaches to it, e.g. "Title Dreams Group as Full-Stack Engineer" applied to \
+a source role of "Backend Developer (Part-time)" gives "Full-Stack Engineer (Part-time)". Employer \
+names and dates are never overridable this way, and without such a line a role is copied.
 - Include every experience the source CV lists, in the order it lists them. Never drop one, never \
 merge two, never reorder them. Repositioning happens in the headline, the summary and the wording \
 of bullets, never in the employment history itself.
@@ -100,19 +105,86 @@ _TOKEN_RE = re.compile(r"[A-Za-z][\w.+#-]*")
 _SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?])\s")
 _PAGE_COUNT_RE = re.compile(r"Output written on .*?\((\d+) pages?,")
 _GROUNDED_FIELDS = ("role", "company", "period")
+_TITLE_DIRECTIVE_RE = re.compile(r"(?im)^\s*title\s+(.+?)\s+as\s+(.+?)\s*$")
+_QUALIFIER_RE = r"\(([^)]{2,40})\)\s*\|\s*"
+_BLANKET_EMPLOYERS = (
+    "all",
+    "all roles",
+    "every role",
+    "all jobs",
+    "every job",
+    "all positions",
+    "all titles",
+)
 
 
 def _comparable(value) -> str:
     return _WHITESPACE_RE.sub(" ", _sanitize(value)).casefold()
 
 
-def _ungrounded_facts(experiences: list[dict], haystack: str) -> list[str]:
+def _title_overrides(instructions: str) -> list[tuple[str, str]]:
+    overrides = []
+    for employer, role in _TITLE_DIRECTIVE_RE.findall(_sanitize(instructions)):
+        pattern, title = _comparable(employer), _sanitize(role)
+        if pattern and title:
+            overrides.append((pattern, title))
+    return overrides
+
+
+def _override_matches(pattern: str, company: str) -> bool:
+    return pattern in _BLANKET_EMPLOYERS or (bool(company) and pattern in company)
+
+
+def _override_for(company, overrides: list[tuple[str, str]]) -> str:
+    target = _comparable(company)
+    for pattern, role in overrides:
+        if pattern not in _BLANKET_EMPLOYERS and _override_matches(pattern, target):
+            return role
+    for pattern, role in overrides:
+        if pattern in _BLANKET_EMPLOYERS:
+            return role
+    return ""
+
+
+def _role_allowed(role: str, override: str, haystack: str) -> bool:
+    if _comparable(role) in haystack:
+        return True
+    if not override:
+        return False
+    remainder = _comparable(role).replace(_comparable(override), " ")
+    remainder = _WHITESPACE_RE.sub(" ", remainder).strip()
+    return not remainder or remainder in haystack
+
+
+def _lost_qualifiers(experiences: list[dict], haystack: str) -> list[tuple[str, str]]:
+    lost = []
+    for exp in experiences:
+        company = _comparable(exp.get("company"))
+        if not company:
+            continue
+        match = re.search(_QUALIFIER_RE + re.escape(company), haystack)
+        if match and match.group(1) not in _comparable(exp.get("role")):
+            lost.append((_sanitize(exp.get("company")), match.group(1)))
+    return lost
+
+
+def _ungrounded_facts(
+    experiences: list[dict], haystack: str, overrides: list[tuple[str, str]]
+) -> list[str]:
     facts = []
     for exp in experiences:
         employer = _sanitize(exp.get("company")) or "an unnamed employer"
         for field in _GROUNDED_FIELDS:
             value = _sanitize(exp.get(field))
-            if value and _comparable(value) not in haystack:
+            if not value:
+                continue
+            if field == "role":
+                if not _role_allowed(value, _override_for(exp.get("company"), overrides), haystack):
+                    facts.append(
+                        f'role for {employer}: "{value}" is not in the source CV and no '
+                        f'"Title {employer} as ..." line authorises it'
+                    )
+            elif _comparable(value) not in haystack:
                 facts.append(f'{field} for {employer}: "{value}" is not in the source CV')
     return facts
 
@@ -524,7 +596,8 @@ def rewrite(cv_raw_text: str, instructions: str, position_text: str = "") -> dic
     }
     haystack = _comparable(cv_raw_text)
     experiences = parsed.get("experiences") or []
-    ungrounded = _ungrounded_facts(experiences, haystack)
+    overrides = _title_overrides(instructions)
+    ungrounded = _ungrounded_facts(experiences, haystack, overrides)
     if ungrounded:
         raise CvGenerationError(
             "The rewrite changed employment facts that must be copied from the source CV: "
@@ -545,6 +618,23 @@ def rewrite(cv_raw_text: str, instructions: str, position_text: str = "") -> dic
         "languages": parsed.get("languages") or [],
     }
     warnings = [
+        f"Employment title for {_sanitize(exp.get('company'))} changed to "
+        f'"{_sanitize(exp.get("role"))}" on your instruction; the source CV says otherwise.'
+        for exp in experiences
+        if _sanitize(exp.get("role")) and _comparable(exp.get("role")) not in haystack
+    ]
+    warnings += [
+        f'Dropped "({qualifier})" from the title for {employer}, which the source CV attaches to it.'
+        for employer, qualifier in _lost_qualifiers(experiences, haystack)
+    ]
+    warnings += [
+        f'"Title {pattern} as {role}" matched none of your employers.'
+        for pattern, role in overrides
+        if not any(
+            _override_matches(pattern, _comparable(exp.get("company"))) for exp in experiences
+        )
+    ]
+    warnings += [
         f'Left "{item}" out of the header line: it is not in the source CV.'
         for item in unsourced_details
     ]

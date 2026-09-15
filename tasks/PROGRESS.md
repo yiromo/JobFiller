@@ -4,6 +4,34 @@ Roughly newest first, one entry per feature/fix commit, added when it lands. Ent
 cause and the constraint that made the fix non-obvious — the stuff a future agent needs to not
 repeat a mistake. Everything else (what was curled, what lint said, which build number) is in git.
 
+- **Employment titles are overridable, but only by an explicit directive** — the verbatim guard on
+  `role` did its job and then became the complaint: a CV headlined "Full-Stack Engineer" listed five
+  `Backend Developer` jobs, which is correct but not what the candidate wanted. Titles are now
+  overridable via a `Title <employer> as <role>` line in the instructions, parsed by
+  `_title_overrides` and matched to an experience by containment after `_comparable`
+  (`dreams` matches `Dreams Group`), with a blanket `all roles` form. The mechanism has to be a
+  dedicated parsed directive, not "the title string appears somewhere in the instructions": the same
+  instructions already say `Change the headline to "Full-Stack Engineer"`, so a substring test would
+  be satisfied by the headline line and silently reinstate the exact bug the guard was built for.
+  There is a regression test for that direction — the original instruction text, unchanged, must
+  still be blocked. `_role_allowed` strips the override from the model's role and requires the
+  remainder to be empty or itself in the source, which lets
+  `Full-Stack Engineer (Part-time Contract)` through while still blocking a `Senior` the model
+  added on its own. Only `role` takes this path; `company` and `period` stay unconditionally
+  blocked, so an overridden experience is still transitively grounded in the source. Every applied
+  override is reported as a warning naming the employer, as is a directive matching no employer.
+  `_lost_qualifiers` warns when the source attaches a parenthetical to a title
+  (`Backend Developer (Part-time)`) and the output drops it — a real run did exactly that, turning
+  two part-time contracts into apparent full-time roles, which is a second misrepresentation nobody
+  asked for; putting the qualifier inside the directive is the fix and the warning is what surfaces
+  it. Also learned from the same runs, and worth knowing before trusting the skills diff:
+  `_added_skills` appends the model's own `added_skills` claim on top of the Python diff, so a
+  flagged skill is not proof the diff caught it — `Next.js` showed up flagged only because the model
+  self-reported it, and the substring check still cannot catch it (the source contains "behind a
+  Next.js frontend"). The one-page trim also proved it has teeth in the wrong direction: with 3
+  bullets across 5 jobs it dropped the very project the instructions asked to highlight, so project
+  order in the instructions now matters — the trim always cuts from the end.
+
 - **Generated CVs stopped inventing employment history** — two real runs (Golang Backend,
   Full-Stack) each dropped a job, reordered the employment history, lost the header's
   `UTC+5 / Worldwide Remote / B2B / EOR` line, and one rewrote every historical title to the
