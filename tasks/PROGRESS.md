@@ -1,5 +1,17 @@
 # Progress log
 
+- **LinkedIn contact page still timed out with an empty mobile number** — the v0.5.2 screenshot
+  showed Kazakhstan (+7) selected but Mobile phone number blank. The saved form had all three
+  contact fields marked required, yet the flow only rechecked fields whose final action was
+  `skip`; a Settings-provided phone value could appear filled initially and then be cleared by
+  LinkedIn on rerender. It now checks every required field after a short settle and once more
+  immediately before clicking Next. The top-frame Easy Apply modal is recognized by its visible
+  dialog on LinkedIn, so unrelated iframe inputs are excluded. A full international number from
+  CV/Settings is converted to local digits when the matching country code is separately selected;
+  mismatched prefixes remain for user review. The Firefox fixture covers iframe filtering, a
+  post-fill value being cleared, and +7 normalization. The browser-side cause of the cleared
+  value is not proven without a live rerun.
+
 - **LinkedIn Next could time out without explaining the form error** — the saved Medix scan had
   three required contact fields plus an unrelated iframe input. The selected CV has no phone
   number, and the country-code select lists Andorra first. A skipped select could therefore look
@@ -7,8 +19,8 @@
   unrelated iframe fields; a skipped select's unchosen first option counts as unanswered. When a
   click does not advance, the extension reports visible LinkedIn validation messages and invalid
   field labels. Settings dropdown failures also name the field whose answer did not match an
-  option. The exact live validation failure was not captured, so the default-option explanation
-  remains an inference until rerun.
+  option. A later screenshot showed Kazakhstan selected while the mobile number was blank, so
+  the default-option explanation did not account for that attempt.
 
 - **LinkedIn's ordinary Fill button stopped after one page** — a live screenshot showed the
   extension's one-page "Done — review before submitting" status at step 3/5, with Python and AWS

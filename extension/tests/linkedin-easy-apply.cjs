@@ -13,6 +13,14 @@ const framesSource = source.slice(
   source.indexOf("function framesWithApplicationFields(injectionResults)"),
   source.indexOf("\nasync function handleScan(message, tabId)"),
 );
+const normalizePhoneSource = source.slice(
+  source.indexOf("function normalizeLinkedInPhonePlan(formSnapshot, fieldMapping, pageUrl, logLines)"),
+  source.indexOf("\nfunction arrayBufferToBase64(", source.indexOf("function normalizeLinkedInPhonePlan(")),
+);
+const settingsSource = source.slice(
+  source.indexOf("function bestOptionMatch(options, value)"),
+  source.indexOf("\nfunction arrayBufferToBase64(", source.indexOf("function bestOptionMatch(")),
+);
 const mainFillSource = panelSource.slice(
   panelSource.indexOf("async function runFill()"),
   panelSource.indexOf('    $("jf-scan-btn").addEventListener("click"'),
@@ -24,9 +32,30 @@ async function main() {
     { frameId: 0, result: { easy_apply_modal: true, form_snapshot: [{ ref: "phone" }] } },
     { frameId: 123, result: { easy_apply_modal: false, form_snapshot: [{ ref: "unrelated" }] } },
   ]).map((frame) => frame.frameId), [0]);
+  const normalizePhone = new Function(`${normalizePhoneSource}\nreturn normalizeLinkedInPhonePlan;`)();
+  const applySettings = new Function(`${settingsSource}\nreturn applyEeoSettings;`)();
+  const phoneFields = [
+    { ref: "country", label: "Phone country code*", selected_option: "Kazakhstan (+7)" },
+    { ref: "mobile", label: "Mobile phone number*", type: "tel" },
+  ];
+  const phonePlan = [{ ref: "mobile", action: "type", value: "+71234567890", confidence: 1 }];
+  assert.equal(normalizePhone(phoneFields, phonePlan, "https://www.linkedin.com/jobs/view/123", [])[0].value, "1234567890");
+  assert.equal(normalizePhone(phoneFields, phonePlan, "https://example.com/apply", [])[0].value, "+71234567890");
+  assert.equal(normalizePhone(phoneFields, [{ ...phonePlan[0], value: "+15551234567" }],
+    "https://www.linkedin.com/jobs/view/123", [])[0].action, "skip");
+  const fromSettings = applySettings(phoneFields,
+    [{ ref: "country", action: "skip", value: "" }, { ref: "mobile", action: "skip", value: "" }],
+    [{ match: "Mobile phone number", answer: "+71234567890" }], []);
+  assert.equal(normalizePhone(phoneFields, fromSettings,
+    "https://www.linkedin.com/jobs/view/123", []).find((entry) => entry.ref === "mobile").value,
+  "1234567890");
   const browser = await firefox.launch({ headless: true, executablePath: process.env.FIREFOX_PATH });
   const page = await browser.newPage();
   try {
+    await page.route("https://www.linkedin.com/**", (route) => route.fulfill({
+      status: 200, contentType: "text/html", body: "<html><body>LinkedIn fixture</body></html>",
+    }));
+    await page.goto("https://www.linkedin.com/jobs/view/123");
     const markup = `
       <button class="jobs-apply-button" aria-label="Easy Apply to Example">Easy Apply</button>
       <input id="search" required placeholder="Search jobs">
@@ -103,8 +132,12 @@ async function main() {
       };
       window.eval(`
         async function handleScan() {
-          const fields = [...document.querySelectorAll('[role="dialog"] input')].map((el) => ({ ref: el.id, required: el.required }));
-          return { formSnapshot: fields, fieldMapping: fields.map((field) => ({ ref: field.ref, action: 'type' })) };
+          const fields = [...document.querySelectorAll('[role="dialog"] input')].map((el) => {
+            el.setAttribute('data-jf-ref', el.id);
+            return { ref: el.id, required: el.required || (el.closest('label')?.innerText || '').trim().endsWith('*'), label: el.closest('label')?.innerText || '' };
+          });
+          return { formSnapshot: fields, fieldMapping: fields.map((field) => ({ ref: field.ref, action: 'type' })),
+            refFrameMap: Object.fromEntries(fields.map((field) => [field.ref, { frameId: 0, localRef: field.ref }])) };
         }
         async function handleFill(scan) {
           for (const field of scan.formSnapshot) document.getElementById(field.ref).value = 'answer';
@@ -167,10 +200,33 @@ async function main() {
     assert.deepEqual(defaultCountry.before, ["country"]);
     assert.deepEqual(defaultCountry.after, []);
     assert.match(defaultCountry.diagnosis.issues.join(" "), /valid phone country code/);
+    assert.equal((await page.evaluate(() => window.jfScan("country").form_snapshot))
+      .find((field) => field.tag === "select").selected_option, "Kazakhstan (+7)");
 
-    await page.route("https://www.linkedin.com/**", (route) => route.fulfill({
-      status: 200, contentType: "text/html", body: "<html><body>LinkedIn fixture</body></html>",
-    }));
+    await page.setContent(markup);
+    const clearedByRerender = await page.evaluate(async () => {
+      window.handleScan = async () => {
+        const input = document.querySelector("#phone");
+        input.setAttribute("data-jf-ref", "phone");
+        return { formSnapshot: [{ ref: "phone", label: "Phone*", required: true }],
+          fieldMapping: [{ ref: "phone", action: "type", value: "123" }],
+          refFrameMap: { phone: { frameId: 0, localRef: "phone" } } };
+      };
+      window.handleFill = async () => {
+        const input = document.querySelector("#phone");
+        input.value = "123";
+        setTimeout(() => { input.value = ""; }, 50);
+        return { failedCount: 0, logLines: ["Filled 1 field"] };
+      };
+      try {
+        await window.jfFlow(1, 42, false);
+        return "";
+      } catch (err) {
+        return String(err);
+      }
+    });
+    assert.match(clearedByRerender, /answer required field: Phone/);
+
     await page.goto("https://www.linkedin.com/jobs/view/123");
     const routed = await page.evaluate(async (script) => {
       window.eval(`async function runLinkedInSteps() { window.easyApplyCalled = true; }\n${script}\nwindow.jfMainFill = runFill;`);

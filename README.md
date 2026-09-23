@@ -58,7 +58,9 @@ review and click. If the CV cannot support a required answer, it fills the other
 with the dialog open. Enter your answer and click **Continue Easy Apply** to resume. This flow has
 been checked against a multi-page Firefox fixture; it still needs a live LinkedIn run after
 reloading the extension. If your CV omits a required contact number, enter the phone number and
-country code in LinkedIn before continuing.
+country code in LinkedIn before continuing. LinkedIn has separate country-code and mobile-number
+fields; if you store a full `+7…` answer in Settings, JobFiller removes the selected `+7` prefix
+before filling the mobile-number box.
 
 ### Generating a tailored CV
 

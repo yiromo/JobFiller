@@ -156,11 +156,8 @@ function scanPage(scanId) {
   }
 
   const roots = scanRoots();
-  const easyApplyModal = roots.some((root) => root !== document && (
-    root.matches?.(".jobs-easy-apply-modal") ||
-    root.querySelector?.(".jobs-easy-apply-content, .jobs-easy-apply-form-section__grouping") ||
-    /easy apply|application/i.test(root.getAttribute?.("aria-label") || "")
-  ));
+  const easyApplyModal = window.location.hostname === "www.linkedin.com" &&
+    roots.some((root) => root !== document);
   const candidates = [];
   const seen = new Set();
   roots.forEach((root) => {
@@ -194,6 +191,7 @@ function scanPage(scanId) {
       section: resolveSection(el),
       placeholder: el.placeholder || "",
       options: el.tagName === "SELECT" ? Array.from(el.options).map((o) => o.textContent.trim()) : [],
+      selected_option: el.tagName === "SELECT" ? el.selectedOptions[0]?.textContent.trim() || "" : "",
       required: el.required || el.getAttribute("aria-required") === "true" || /\*\s*$/.test(label),
       // role/aria-haspopup/aria-controls are what distinguish a custom JS
       // combobox (Greenhouse/Ashby style) from a plain text input — a native
@@ -1008,6 +1006,30 @@ function applyEeoSettings(formSnapshot, fieldMapping, eeoSettings, logLines) {
   return result;
 }
 
+function normalizeLinkedInPhonePlan(formSnapshot, fieldMapping, pageUrl, logLines) {
+  if (new URL(pageUrl).hostname !== "www.linkedin.com") return fieldMapping;
+  const countryField = formSnapshot.find((field) =>
+    /phone country code/i.test([field.label, field.section, field.name].join(" ")),
+  );
+  const countryCode = countryField?.selected_option?.match(/\(\+(\d{1,4})\)/)?.[1];
+  if (!countryCode) return fieldMapping;
+  const fieldsByRef = Object.fromEntries(formSnapshot.map((field) => [field.ref, field]));
+  return fieldMapping.map((entry) => {
+    const field = fieldsByRef[entry.ref];
+    if (entry.action !== "type" || !field || field.type !== "tel" ||
+      !/mobile phone number/i.test([field.label, field.section, field.name].join(" "))) return entry;
+    const original = String(entry.value || "").trim();
+    if (!original.startsWith("+")) return entry;
+    const digits = original.replace(/\D/g, "");
+    if (!digits.startsWith(countryCode) || digits.length <= countryCode.length) {
+      logLines.push("Phone number prefix does not match the selected country code; enter the local number in LinkedIn.");
+      return { ...entry, action: "skip", value: "", confidence: 0 };
+    }
+    logLines.push("Removed the selected country code from the mobile-number answer.");
+    return { ...entry, value: digits.slice(countryCode.length) };
+  });
+}
+
 function arrayBufferToBase64(buffer) {
   let binary = "";
   const bytes = new Uint8Array(buffer);
@@ -1147,7 +1169,12 @@ async function handleScan(message, tabId) {
   if (!response.ok) throw new Error(`core returned ${response.status}`);
 
   const data = await response.json();
-  const fieldMapping = applyEeoSettings(formSnapshot, data.field_mapping, eeoSettings, logLines);
+  const fieldMapping = normalizeLinkedInPhonePlan(
+    formSnapshot,
+    applyEeoSettings(formSnapshot, data.field_mapping, eeoSettings, logLines),
+    message.url,
+    logLines,
+  );
   const skipped = fieldMapping.filter((f) => f.action === "skip").length;
   logLines.push(`Fill plan ready: ${fieldMapping.length - skipped} to fill, ${skipped} skipped.`);
 
@@ -1366,7 +1393,7 @@ function scanStorageKey(tabId) {
 
 function reportError(type, err) {
   console.error(`[JobFiller ${JF_VERSION}] ${type} failed:`, err);
-  return { ok: false, error: String(err) };
+  return { ok: false, error: err instanceof Error ? err.message : String(err) };
 }
 
 function startKeepalive() {
@@ -1503,6 +1530,16 @@ function linkedInEasyApply(action) {
   });
   const fieldCount = Array.from(dialog.querySelectorAll("input, select, textarea"))
     .filter((el) => !el.disabled && (visible(el) || el.type === "file") && !["hidden", "submit", "button"].includes(el.type)).length;
+  const fieldLabel = (el) => (el.id && dialog.querySelector(`label[for="${CSS.escape(el.id)}"]`)?.innerText) ||
+    el.closest("label")?.innerText || el.getAttribute("aria-label") || el.name || "Unnamed field";
+  const missingStarred = Array.from(dialog.querySelectorAll("input, select, textarea"))
+    .filter(visible)
+    .filter((el) => {
+      if (!/\*\s*$/.test(fieldLabel(el).trim())) return false;
+      if (el.type === "checkbox" || el.type === "radio") return !el.checked;
+      if (el.tagName === "SELECT") return !el.value || (el.options.length > 1 && el.selectedIndex === 0);
+      return !String(el.value || "").trim();
+    });
   if (action === "inspect") return { ok: true, kind, signature, fieldCount };
   if (action === "diagnose") {
     const feedback = Array.from(dialog.querySelectorAll(
@@ -1514,10 +1551,11 @@ function linkedInEasyApply(action) {
       .map((el) => el.getAttribute("aria-label") ||
         (el.id && dialog.querySelector(`label[for="${CSS.escape(el.id)}"]`)?.innerText) ||
         el.closest("label")?.innerText || el.name || "Unnamed field");
-    return { ok: true, issues: [...new Set([...feedback, ...invalid])].slice(0, 8) };
+    return { ok: true, issues: [...new Set([...feedback, ...invalid, ...missingStarred.map(fieldLabel)])].slice(0, 8) };
   }
   if (choices.length !== 1) return { ok: false, reason: `Found ${choices.length} ${kind} buttons in Easy Apply` };
   if (action !== kind) return { ok: false, reason: `Expected ${action}, found ${kind}` };
+  if (missingStarred.length) return { ok: false, reason: `Answer required field${missingStarred.length === 1 ? "" : "s"}: ${missingStarred.map(fieldLabel).join("; ").slice(0, 300)}` };
   const invalid = Array.from(dialog.querySelectorAll("input, select, textarea"))
     .filter((el) => visible(el) && el.willValidate && !el.checkValidity());
   if (invalid.length) return { ok: false, reason: `${invalid.length} required or invalid fields remain` };
@@ -1615,14 +1653,15 @@ async function fillLinkedInSteps(tabId, cvId, autoSubmit) {
     if (state.fieldCount) {
       const scan = await handleScan({ url: tab.url, cvId }, tabId);
       if (!scan.formSnapshot.length) throw new Error(`Step ${step}: visible fields were not scanned`);
-      const requiredRefs = new Set(scan.formSnapshot.filter((field) => field.required).map((field) => field.ref));
-      const requiredSkipped = scan.fieldMapping.filter(
-        (entry) => requiredRefs.has(entry.ref) && entry.action === "skip",
-      );
+      const requiredEntries = scan.formSnapshot.filter((field) => field.required)
+        .map((field) => ({ ref: field.ref }));
       const filled = await handleFill(scan, tabId);
       if (filled.failedCount) throw new Error(`Step ${step}: ${filled.failedCount} fields failed to fill`);
       logLines.push(`Step ${step}: ${filled.logLines[0]}`);
-      const unanswered = await unansweredLinkedInRequired(tabId, scan, requiredSkipped);
+      // React may accept a value immediately and then clear it on rerender.
+      // Verify every required field after the page has had time to settle.
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const unanswered = await unansweredLinkedInRequired(tabId, scan, requiredEntries);
       if (unanswered.length) {
         const labels = scan.formSnapshot.filter((field) => unanswered.includes(field.ref))
           .map((field) => field.label || field.section || field.name || "Unnamed field");

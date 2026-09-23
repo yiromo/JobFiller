@@ -22,8 +22,9 @@ The final submit checks use the same isolated Firefox fixture:
 NODE_PATH=/tmp/job-filler-browser-tests/node_modules node extension/tests/auto-apply.cjs
 ```
 
-The LinkedIn fixture covers modal-only scanning, required-field validation, Continue/Review
-navigation, and the manual stop before final submission:
+The LinkedIn fixture covers modal-only scanning, unrelated iframe filtering, required-field
+validation after a rerender, phone-prefix normalization, Continue/Review navigation, and the
+manual stop before final submission:
 
 ```sh
 NODE_PATH=/tmp/job-filler-browser-tests/node_modules node extension/tests/linkedin-easy-apply.cjs
