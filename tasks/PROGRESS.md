@@ -1,5 +1,16 @@
 # Progress log
 
+- **LinkedIn's ordinary Fill button stopped after one page** — a live screenshot showed the
+  extension's one-page "Done — review before submitting" status at step 3/5, with Python and AWS
+  experience questions unanswered. The ordinary Fill button now invokes the same multi-step Easy
+  Apply flow as the dedicated button. Scans treat a trailing `*` in a label as required, each step
+  fills supported values before reporting unanswered required fields, and a user-entered value can
+  satisfy a field the CV could not answer. Step transitions compare progress, headings, controls,
+  and button type, so validation text appearing on the same page is not mistaken for progress.
+  The selected CV supports four years of Python but lists AWS without a duration; AWS is left for
+  the applicant to enter. The Firefox fixture covers these checks; a live account-side rerun is
+  still needed after extension reload.
+
 - **LinkedIn Easy Apply multi-step filling** — the panel now offers Fill Easy Apply steps with a
   selected CV. It opens the modal, scopes scans to its visible fields, fills each step, and advances
   through Continue and Review. A manual run stops at final Submit for review. The proactive queue

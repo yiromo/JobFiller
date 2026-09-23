@@ -849,7 +849,8 @@
     const scanBtn = $("jf-scan-btn");
     if (lastFieldMapping) {
       scanBtn.dataset.mode = "fill";
-      scanBtn.textContent = "Fill application";
+      scanBtn.textContent = window.location.hostname === "www.linkedin.com"
+        ? "Fill & continue Easy Apply" : "Fill application";
       scanBtn.disabled = false;
       finishProgress(scanBtn);
       $("jf-rescan-btn").hidden = false;
@@ -1105,7 +1106,8 @@
         setStatus("Scanned — review, then Fill.");
         finishProgress(scanBtn);
         scanBtn.dataset.mode = "fill";
-        scanBtn.textContent = "Fill application";
+        scanBtn.textContent = window.location.hostname === "www.linkedin.com"
+          ? "Fill & continue Easy Apply" : "Fill application";
         $("jf-rescan-btn").hidden = false;
         $("jf-generate-cl-btn").disabled = false;
         $("jf-analyze-btn").disabled = false;
@@ -1124,6 +1126,10 @@
     }
 
     async function runFill() {
+      if (window.location.hostname === "www.linkedin.com") {
+        await runLinkedInSteps();
+        return;
+      }
       if (!lastFieldMapping) return;
       const scanBtn = $("jf-scan-btn");
       scanBtn.disabled = true;
@@ -1165,11 +1171,12 @@
       logEvent("CLICK", { id: "rescan-btn" });
       runScan();
     });
-    $("jf-linkedin-steps-btn").addEventListener("click", async () => {
+    async function runLinkedInSteps() {
       const btn = $("jf-linkedin-steps-btn");
       const cvId = Number($("jf-cv-select").value);
       if (!cvId) return;
       btn.disabled = true;
+      $("jf-scan-btn").disabled = true;
       btn.textContent = "Filling Easy Apply...";
       setStatus("Filling Easy Apply steps...");
       lastFieldMapping = null;
@@ -1189,13 +1196,17 @@
         setStatus("Easy Apply filled — review and submit in LinkedIn.");
         await saveScanState();
       } catch (err) {
-        setStatus("Easy Apply stopped — review the open dialog.");
+        setStatus(`Easy Apply paused — ${String(err).replace(/^(Error:\s*)+/, "")}`);
         log(String(err), "jf-scan-log");
+        $("jf-scan-btn").dataset.mode = "fill";
+        $("jf-scan-btn").textContent = "Continue Easy Apply";
       } finally {
         btn.textContent = "Fill Easy Apply steps";
         btn.disabled = false;
+        $("jf-scan-btn").disabled = !$("jf-cv-select").value;
       }
-    });
+    }
+    $("jf-linkedin-steps-btn").addEventListener("click", runLinkedInSteps);
 
     $("jf-generate-cl-btn").addEventListener("click", async () => {
       logEvent("CLICK", { id: "generate-cl-btn" });

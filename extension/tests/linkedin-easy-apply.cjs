@@ -4,10 +4,15 @@ const path = require("node:path");
 const { firefox } = require("playwright");
 
 const source = fs.readFileSync(path.join(__dirname, "../src/background.js"), "utf8");
+const panelSource = fs.readFileSync(path.join(__dirname, "../src/content/panel.js"), "utf8");
 const start = source.indexOf("function linkedInEasyApply(action)");
 const end = source.indexOf("\nfunction submitJobForm()", start);
 const stepsSource = source.slice(start, end);
 const scanSource = source.slice(source.indexOf("function scanPage(scanId)"), source.indexOf("\nfunction attachGenerateButtons("));
+const mainFillSource = panelSource.slice(
+  panelSource.indexOf("async function runFill()"),
+  panelSource.indexOf('    $("jf-scan-btn").addEventListener("click"'),
+);
 
 async function main() {
   const browser = await firefox.launch({ headless: true, executablePath: process.env.FIREFOX_PATH });
@@ -21,7 +26,7 @@ async function main() {
         const dialog = document.querySelector('[role="dialog"]');
         const screens = [
           '<h2>Contact info</h2><label>Phone<input id="phone" required></label><button data-easy-apply-next-button>Continue</button>',
-          '<h2>Additional questions</h2><label>Years of experience<input id="years" required></label><button>Review application</button>',
+          '<h2>Additional questions</h2><label>Years of experience*<input id="years"></label><button>Review application</button>',
           '<h2>Review your application</h2><button>Submit application</button>',
         ];
         let screen = 0;
@@ -37,7 +42,7 @@ async function main() {
       })();</script>
     `;
     await page.setContent(markup);
-    await page.evaluate((script) => window.eval(`${script}\nwindow.jfStep = linkedInEasyApply;`), stepsSource);
+    await page.evaluate((script) => window.eval(`${script}\nwindow.jfStep = linkedInEasyApply; window.jfUnanswered = unansweredLinkedInFields;`), stepsSource);
 
     let result = await page.evaluate(() => window.jfStep("open"));
     assert.equal(result.ok, true);
@@ -61,8 +66,12 @@ async function main() {
     result = await page.evaluate(() => window.jfStep("inspect"));
     assert.equal(result.kind, "review");
     assert.equal(result.fieldCount, 1);
+    const requiredOnSecondPage = await page.evaluate(() => window.jfScan("second").form_snapshot);
+    assert.equal(requiredOnSecondPage[0].required, true);
+    assert.deepEqual(await page.evaluate(() => window.jfUnanswered(["second-years"])), ["second-years"]);
 
     await page.locator("#years").fill("4");
+    assert.deepEqual(await page.evaluate(() => window.jfUnanswered(["second-years"])), []);
     result = await page.evaluate(() => window.jfStep("review"));
     assert.equal(result.ok, true);
     result = await page.evaluate(() => window.jfStep("inspect"));
@@ -118,8 +127,35 @@ async function main() {
         return String(err);
       }
     });
-    assert.match(error, /required fields need an answer/);
+    assert.match(error, /answer required field/);
     assert.equal(await page.getByText("Application sent").count(), 0);
+
+    await page.setContent(markup);
+    const applicantAnswer = await page.evaluate(async () => {
+      window.eval("window.jfRequired = unansweredLinkedInRequired;");
+      window.jfStep("open");
+      const input = document.querySelector("#phone");
+      input.setAttribute("data-jf-ref", "manual");
+      const scan = { refFrameMap: { "0:manual": { frameId: 0, localRef: "manual" } } };
+      const entry = [{ ref: "0:manual", action: "skip" }];
+      const missing = await window.jfRequired(1, scan, entry);
+      input.value = "Applicant-provided answer";
+      const answered = await window.jfRequired(1, scan, entry);
+      return { missing, answered };
+    });
+    assert.deepEqual(applicantAnswer.missing, ["0:manual"]);
+    assert.deepEqual(applicantAnswer.answered, []);
+
+    await page.route("https://www.linkedin.com/**", (route) => route.fulfill({
+      status: 200, contentType: "text/html", body: "<html><body>LinkedIn fixture</body></html>",
+    }));
+    await page.goto("https://www.linkedin.com/jobs/view/123");
+    const routed = await page.evaluate(async (script) => {
+      window.eval(`async function runLinkedInSteps() { window.easyApplyCalled = true; }\n${script}\nwindow.jfMainFill = runFill;`);
+      await window.jfMainFill();
+      return window.easyApplyCalled;
+    }, mainFillSource);
+    assert.equal(routed, true);
     console.log("PASS LinkedIn Easy Apply steps, full flow, and manual review stop");
   } finally {
     await browser.close();

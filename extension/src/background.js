@@ -177,17 +177,18 @@ function scanPage(scanId) {
     const ref = `${scanId}-${el.id || `jf-${refCounter++}`}`;
     el.setAttribute("data-jf-ref", ref);
 
+    const label = resolveLabel(el);
     fields.push({
       ref,
       tag: el.tagName.toLowerCase(),
       type: el.type || "",
       name: el.name || "",
       id: el.id || "",
-      label: resolveLabel(el),
+      label,
       section: resolveSection(el),
       placeholder: el.placeholder || "",
       options: el.tagName === "SELECT" ? Array.from(el.options).map((o) => o.textContent.trim()) : [],
-      required: el.required || el.getAttribute("aria-required") === "true",
+      required: el.required || el.getAttribute("aria-required") === "true" || /\*\s*$/.test(label),
       // role/aria-haspopup/aria-controls are what distinguish a custom JS
       // combobox (Greenhouse/Ashby style) from a plain text input — a native
       // <select> is already identified by `tag`.
@@ -1477,9 +1478,12 @@ function linkedInEasyApply(action) {
   const kind = submit.length ? "submit" : review.length ? "review" : next.length ? "next" : "unknown";
   const text = (dialog.innerText || "").replace(/\s+/g, " ").slice(0, 5000);
   const signature = JSON.stringify({
-    text,
+    progress: text.match(/\b\d+\s*\/\s*\d+\s*pages?\b/i)?.[0] ||
+      dialog.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow") || "",
+    headings: Array.from(dialog.querySelectorAll("h1, h2, h3")).map((el) => label(el)).slice(0, 5),
     fields: Array.from(dialog.querySelectorAll("input, select, textarea"))
-      .filter(visible).map((el) => [el.id, el.name, el.type, el.getAttribute("aria-label")]),
+      .filter(visible).map((el) => [el.id, el.name, el.type, el.getAttribute("aria-label"),
+        el.id ? dialog.querySelector(`label[for="${CSS.escape(el.id)}"]`)?.innerText : ""]),
     kind,
   });
   const fieldCount = Array.from(dialog.querySelectorAll("input, select, textarea"))
@@ -1516,6 +1520,47 @@ async function waitForLinkedInStep(tabId, previousSignature) {
   throw new Error("Easy Apply did not advance; check the open dialog for validation errors");
 }
 
+// Runs in a scanned frame after filling. A skipped required field may already
+// have an answer supplied by the applicant or their saved LinkedIn profile.
+function unansweredLinkedInFields(refs) {
+  return refs.filter((ref) => {
+    const el = document.querySelector(`[data-jf-ref="${CSS.escape(ref)}"]`);
+    if (!el) return true;
+    if (el.type === "radio") {
+      if (!el.name) return !el.checked;
+      return !Array.from(document.querySelectorAll(`input[type="radio"][name="${CSS.escape(el.name)}"]`))
+        .some((option) => option.checked);
+    }
+    if (el.type === "checkbox") return !el.checked;
+    if (el.type === "file") return !el.files?.length;
+    return !String(el.value || "").trim();
+  });
+}
+
+async function unansweredLinkedInRequired(tabId, scan, entries) {
+  const byFrame = new Map();
+  const missingRefs = [];
+  for (const entry of entries) {
+    const info = scan.refFrameMap?.[entry.ref];
+    if (!info) {
+      missingRefs.push(entry.ref);
+      continue;
+    }
+    if (!byFrame.has(info.frameId)) byFrame.set(info.frameId, []);
+    byFrame.get(info.frameId).push({ globalRef: entry.ref, localRef: info.localRef });
+  }
+  for (const [frameId, entriesInFrame] of byFrame) {
+    const [{ result }] = await browser.scripting.executeScript({
+      target: { tabId, frameIds: [frameId] }, func: unansweredLinkedInFields,
+      args: [entriesInFrame.map((entry) => entry.localRef)],
+    });
+    for (const entry of entriesInFrame) {
+      if (result.includes(entry.localRef)) missingRefs.push(entry.globalRef);
+    }
+  }
+  return missingRefs;
+}
+
 async function fillLinkedInSteps(tabId, cvId, autoSubmit) {
   const tab = await browser.tabs.get(tabId);
   if (new URL(tab.url).hostname !== "www.linkedin.com") throw new Error("This is not a LinkedIn page");
@@ -1539,10 +1584,15 @@ async function fillLinkedInSteps(tabId, cvId, autoSubmit) {
       const requiredSkipped = scan.fieldMapping.filter(
         (entry) => requiredRefs.has(entry.ref) && entry.action === "skip",
       );
-      if (requiredSkipped.length) throw new Error(`Step ${step}: ${requiredSkipped.length} required fields need an answer`);
       const filled = await handleFill(scan, tabId);
       if (filled.failedCount) throw new Error(`Step ${step}: ${filled.failedCount} fields failed to fill`);
       logLines.push(`Step ${step}: ${filled.logLines[0]}`);
+      const unanswered = await unansweredLinkedInRequired(tabId, scan, requiredSkipped);
+      if (unanswered.length) {
+        const labels = scan.formSnapshot.filter((field) => unanswered.includes(field.ref))
+          .map((field) => field.label || field.section || field.name || "Unnamed field");
+        throw new Error(`Step ${step}: answer required field${unanswered.length === 1 ? "" : "s"}: ${labels.join("; ").slice(0, 300)}`);
+      }
     }
     // A human-initiated run leaves the final submission to the applicant.
     if (state.kind === "submit" && !autoSubmit) {

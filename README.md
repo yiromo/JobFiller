@@ -51,11 +51,13 @@ websites" once.
 Greenhouse, Ashby and LinkedIn Easy Apply have all been driven by hand; `tasks/PROGRESS.md` marks
 what's confirmed live versus only reviewed.
 
-On LinkedIn, select a CV in the panel and click **Fill Easy Apply steps**. The extension opens
-Easy Apply if needed, fills each page, and presses Continue/Review until the final review page.
-It leaves **Submit application** for you to review and click. If a required answer is missing or
-LinkedIn rejects a step, it stops with the dialog open. This flow has been checked against a
-multi-page Firefox fixture; it still needs a live LinkedIn run after reloading the extension.
+On LinkedIn, select a CV and click **Fill Easy Apply steps**, or use the regular Scan button followed
+by **Fill & continue Easy Apply**. The extension opens Easy Apply if needed, fills each page, and
+presses Continue/Review until the final review page. It leaves **Submit application** for you to
+review and click. If the CV cannot support a required answer, it fills the other fields and pauses
+with the dialog open. Enter your answer and click **Continue Easy Apply** to resume. This flow has
+been checked against a multi-page Firefox fixture; it still needs a live LinkedIn run after
+reloading the extension.
 
 ### Generating a tailored CV
 
