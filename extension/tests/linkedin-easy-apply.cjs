@@ -96,7 +96,7 @@ async function main() {
 
     result = await page.evaluate(() => window.jfStep("next"));
     assert.equal(result.ok, false);
-    assert.match(result.reason, /invalid fields/);
+    assert.match(result.reason, /Answer required field: Phone/);
     assert.equal(await page.locator("#years").count(), 0);
 
     await page.locator("#phone").fill("123456789");
@@ -200,6 +200,15 @@ async function main() {
     assert.deepEqual(defaultCountry.before, ["country"]);
     assert.deepEqual(defaultCountry.after, []);
     assert.match(defaultCountry.diagnosis.issues.join(" "), /valid phone country code/);
+    assert.ok(defaultCountry.diagnosis.fields.includes('Phone="Applicant-provided answer" (required)'));
+    assert.ok(defaultCountry.diagnosis.fields.some((field) => field.endsWith('="Kazakhstan (+7)"')));
+    const ariaRequired = await page.evaluate(() => {
+      const dialog = document.querySelector('[role="dialog"]');
+      dialog.insertAdjacentHTML("beforeend", '<span id="mobile-label">Mobile phone number</span><input id="mobile" type="tel" aria-required="true" aria-labelledby="mobile-label">');
+      document.querySelector("#phone").value = "1";
+      return window.jfStep("next");
+    });
+    assert.match(ariaRequired.reason, /Answer required field: Mobile phone number/);
     assert.equal((await page.evaluate(() => window.jfScan("country").form_snapshot))
       .find((field) => field.tag === "select").selected_option, "Kazakhstan (+7)");
 
@@ -220,12 +229,13 @@ async function main() {
       };
       try {
         await window.jfFlow(1, 42, false);
-        return "";
+        return {};
       } catch (err) {
-        return String(err);
+        return { message: String(err), logLines: err.logLines };
       }
     });
-    assert.match(clearedByRerender, /answer required field: Phone/);
+    assert.match(clearedByRerender.message, /answer required field: Phone/);
+    assert.deepEqual(clearedByRerender.logLines, ["Step 1: Filled 1 field"]);
 
     await page.goto("https://www.linkedin.com/jobs/view/123");
     const routed = await page.evaluate(async (script) => {

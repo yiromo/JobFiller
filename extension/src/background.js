@@ -876,7 +876,7 @@ async function applyFillPlan(plan, fileByRef) {
             const tactic = fillText(el, item.value);
             results.push(
               tactic
-                ? { ref: item.ref, ok: true }
+                ? { ref: item.ref, ok: true, via: tactic }
                 : {
                     ref: item.ref,
                     ok: false,
@@ -1267,8 +1267,10 @@ async function handleFill(message, tabId) {
   for (const [frameId, items] of itemsByFrame) {
     for (const item of items) {
       if (item.action === "skip") continue;
+      const via = allResults.find((r) => r.frameId === frameId && r.ref === item.ref)?.via;
       logLines.push(
-        `  applied frame ${frameId} / ${item.ref}: ${item.action} ${JSON.stringify(String(item.value).slice(0, 60))}`,
+        `  applied frame ${frameId} / ${item.ref}: ${item.action} ${JSON.stringify(String(item.value).slice(0, 60))}` +
+          (via ? ` via ${via}` : ""),
       );
     }
   }
@@ -1393,7 +1395,11 @@ function scanStorageKey(tabId) {
 
 function reportError(type, err) {
   console.error(`[JobFiller ${JF_VERSION}] ${type} failed:`, err);
-  return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  return {
+    ok: false,
+    error: err instanceof Error ? err.message : String(err),
+    logLines: Array.isArray(err?.logLines) ? err.logLines : [],
+  };
 }
 
 function startKeepalive() {
@@ -1530,12 +1536,16 @@ function linkedInEasyApply(action) {
   });
   const fieldCount = Array.from(dialog.querySelectorAll("input, select, textarea"))
     .filter((el) => !el.disabled && (visible(el) || el.type === "file") && !["hidden", "submit", "button"].includes(el.type)).length;
+  const labelledBy = (el) => (el.getAttribute("aria-labelledby") || "").split(/\s+/).filter(Boolean)
+    .map((id) => document.getElementById(id)?.innerText || "").join(" ").trim();
   const fieldLabel = (el) => (el.id && dialog.querySelector(`label[for="${CSS.escape(el.id)}"]`)?.innerText) ||
-    el.closest("label")?.innerText || el.getAttribute("aria-label") || el.name || "Unnamed field";
+    el.closest("label")?.innerText || labelledBy(el) || el.getAttribute("aria-label") || el.name || "Unnamed field";
+  const isRequired = (el) => el.required || el.getAttribute("aria-required") === "true" ||
+    /\*\s*$/.test(fieldLabel(el).trim());
   const missingStarred = Array.from(dialog.querySelectorAll("input, select, textarea"))
     .filter(visible)
     .filter((el) => {
-      if (!/\*\s*$/.test(fieldLabel(el).trim())) return false;
+      if (!isRequired(el)) return false;
       if (el.type === "checkbox" || el.type === "radio") return !el.checked;
       if (el.tagName === "SELECT") return !el.value || (el.options.length > 1 && el.selectedIndex === 0);
       return !String(el.value || "").trim();
@@ -1551,7 +1561,21 @@ function linkedInEasyApply(action) {
       .map((el) => el.getAttribute("aria-label") ||
         (el.id && dialog.querySelector(`label[for="${CSS.escape(el.id)}"]`)?.innerText) ||
         el.closest("label")?.innerText || el.name || "Unnamed field");
-    return { ok: true, issues: [...new Set([...feedback, ...invalid, ...missingStarred.map(fieldLabel)])].slice(0, 8) };
+    const fields = Array.from(dialog.querySelectorAll("input, select, textarea"))
+      .filter((el) => visible(el) && !["hidden", "submit", "button"].includes(el.type))
+      .map((el) => {
+        const value = el.tagName === "SELECT" ? el.selectedOptions[0]?.textContent.trim() || "" :
+          ["checkbox", "radio"].includes(el.type) ? String(el.checked) : String(el.value || "");
+        const flags = [isRequired(el) && "required", el.getAttribute("aria-invalid") === "true" && "invalid"]
+          .filter(Boolean);
+        return `${fieldLabel(el).replace(/\s+/g, " ").trim().slice(0, 40)}=${JSON.stringify(value.slice(0, 30))}` +
+          (flags.length ? ` (${flags.join(", ")})` : "");
+      });
+    return {
+      ok: true,
+      issues: [...new Set([...feedback, ...invalid, ...missingStarred.map(fieldLabel)])].slice(0, 8),
+      fields: fields.slice(0, 12),
+    };
   }
   if (choices.length !== 1) return { ok: false, reason: `Found ${choices.length} ${kind} buttons in Easy Apply` };
   if (action !== kind) return { ok: false, reason: `Expected ${action}, found ${kind}` };
@@ -1583,10 +1607,11 @@ async function waitForLinkedInStep(tabId, previousSignature) {
     candidate = state.signature;
   }
   const diagnosis = await linkedInStep(tabId, "diagnose").catch(() => null);
+  const fieldState = diagnosis?.fields?.length ? ` Field state: ${diagnosis.fields.join("; ").slice(0, 600)}` : "";
   if (diagnosis?.issues?.length) {
-    throw new Error(`Easy Apply did not advance: ${diagnosis.issues.join("; ").slice(0, 400)}`);
+    throw new Error(`Easy Apply did not advance: ${diagnosis.issues.join("; ").slice(0, 400)}.${fieldState}`);
   }
-  throw new Error("Easy Apply did not advance; check the open dialog for validation errors");
+  throw new Error(`Easy Apply did not advance; check the open dialog for validation errors.${fieldState}`);
 }
 
 // Runs in a scanned frame after filling. A skipped required field may already
@@ -1645,52 +1670,57 @@ async function fillLinkedInSteps(tabId, cvId, autoSubmit) {
     state = await waitForLinkedInStep(tabId, "");
   }
   const logLines = [];
-  for (let step = 1; step <= 12; step++) {
-    if (!state.ok) throw new Error(state.reason);
-    if (state.kind === "unknown") throw new Error("No recognized Easy Apply step button");
-    // The final review page can have no fields. Do not scan the search form
-    // behind the dialog in that case.
-    if (state.fieldCount) {
-      const scan = await handleScan({ url: tab.url, cvId }, tabId);
-      if (!scan.formSnapshot.length) throw new Error(`Step ${step}: visible fields were not scanned`);
-      const requiredEntries = scan.formSnapshot.filter((field) => field.required)
-        .map((field) => ({ ref: field.ref }));
-      const filled = await handleFill(scan, tabId);
-      if (filled.failedCount) throw new Error(`Step ${step}: ${filled.failedCount} fields failed to fill`);
-      logLines.push(`Step ${step}: ${filled.logLines[0]}`);
-      // React may accept a value immediately and then clear it on rerender.
-      // Verify every required field after the page has had time to settle.
-      await new Promise((resolve) => setTimeout(resolve, 400));
-      const unanswered = await unansweredLinkedInRequired(tabId, scan, requiredEntries);
-      if (unanswered.length) {
-        const labels = scan.formSnapshot.filter((field) => unanswered.includes(field.ref))
-          .map((field) => field.label || field.section || field.name || "Unnamed field");
-        throw new Error(`Step ${step}: answer required field${unanswered.length === 1 ? "" : "s"}: ${labels.join("; ").slice(0, 300)}`);
+  try {
+    for (let step = 1; step <= 12; step++) {
+      if (!state.ok) throw new Error(state.reason);
+      if (state.kind === "unknown") throw new Error("No recognized Easy Apply step button");
+      // The final review page can have no fields. Do not scan the search form
+      // behind the dialog in that case.
+      if (state.fieldCount) {
+        const scan = await handleScan({ url: tab.url, cvId }, tabId);
+        if (!scan.formSnapshot.length) throw new Error(`Step ${step}: visible fields were not scanned`);
+        const requiredEntries = scan.formSnapshot.filter((field) => field.required)
+          .map((field) => ({ ref: field.ref }));
+        const filled = await handleFill(scan, tabId);
+        if (filled.failedCount) throw new Error(`Step ${step}: ${filled.failedCount} fields failed to fill`);
+        logLines.push(`Step ${step}: ${filled.logLines[0]}`, ...filled.logLines.slice(1));
+        // React may accept a value immediately and then clear it on rerender.
+        // Verify every required field after the page has had time to settle.
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        const unanswered = await unansweredLinkedInRequired(tabId, scan, requiredEntries);
+        if (unanswered.length) {
+          const labels = scan.formSnapshot.filter((field) => unanswered.includes(field.ref))
+            .map((field) => field.label || field.section || field.name || "Unnamed field");
+          throw new Error(`Step ${step}: answer required field${unanswered.length === 1 ? "" : "s"}: ${labels.join("; ").slice(0, 300)}`);
+        }
       }
+      // A human-initiated run leaves the final submission to the applicant.
+      if (state.kind === "submit" && !autoSubmit) {
+        return { ok: true, status: "ready_to_submit", logLines };
+      }
+      if (state.kind === "submit") {
+        const before = await browser.scripting.executeScript({
+          target: { tabId, allFrames: true }, func: submittedConfirmation,
+        });
+        if (before.some((frame) => frame.result)) throw new Error("Submission confirmation was already visible");
+        const submitted = await linkedInStep(tabId, "submit");
+        if (!submitted.ok) throw new Error(submitted.reason);
+        await new Promise((resolve) => setTimeout(resolve, 4000));
+        const confirmation = await browser.scripting.executeScript({
+          target: { tabId, allFrames: true }, func: submittedConfirmation,
+        });
+        if (!confirmation.some((frame) => frame.result)) throw new Error("Submit clicked, but no confirmation was detected");
+        return { ok: true, status: "applied", logLines };
+      }
+      const advanced = await linkedInStep(tabId, state.kind);
+      if (!advanced.ok) throw new Error(`Step ${step}: ${advanced.reason}`);
+      state = await waitForLinkedInStep(tabId, advanced.signature);
     }
-    // A human-initiated run leaves the final submission to the applicant.
-    if (state.kind === "submit" && !autoSubmit) {
-      return { ok: true, status: "ready_to_submit", logLines };
-    }
-    if (state.kind === "submit") {
-      const before = await browser.scripting.executeScript({
-        target: { tabId, allFrames: true }, func: submittedConfirmation,
-      });
-      if (before.some((frame) => frame.result)) throw new Error("Submission confirmation was already visible");
-      const submitted = await linkedInStep(tabId, "submit");
-      if (!submitted.ok) throw new Error(submitted.reason);
-      await new Promise((resolve) => setTimeout(resolve, 4000));
-      const confirmation = await browser.scripting.executeScript({
-        target: { tabId, allFrames: true }, func: submittedConfirmation,
-      });
-      if (!confirmation.some((frame) => frame.result)) throw new Error("Submit clicked, but no confirmation was detected");
-      return { ok: true, status: "applied", logLines };
-    }
-    const advanced = await linkedInStep(tabId, state.kind);
-    if (!advanced.ok) throw new Error(`Step ${step}: ${advanced.reason}`);
-    state = await waitForLinkedInStep(tabId, advanced.signature);
+    throw new Error("Easy Apply exceeded 12 steps; inspect the open dialog");
+  } catch (err) {
+    if (err instanceof Error) err.logLines = logLines;
+    throw err;
   }
-  throw new Error("Easy Apply exceeded 12 steps; inspect the open dialog");
 }
 
 function submitJobForm() {

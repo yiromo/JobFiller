@@ -1,5 +1,15 @@
 # Progress log
 
+- **LinkedIn "did not advance" gave no clue while the mobile number was blank** — the v0.5.2-14
+  run filled the contact step, passed the post-fill required check, clicked Next, and then the
+  diagnosis reported nothing even though a required field was visibly empty. The Easy Apply
+  step logic only counted a field as required when its label text ended in `*`; it now also uses
+  `required`/`aria-required` and resolves `aria-labelledby`, the same signals `scanPage` uses.
+  A timeout now appends every visible field's label, current value and required/invalid flags,
+  each typed field's log line names the fill tactic that stuck, and the step log is returned on
+  failure instead of only on success. This is diagnostics, not a fix for the cleared value: the
+  cause still needs a live run's field-state line to confirm.
+
 - **LinkedIn contact page still timed out with an empty mobile number** — the v0.5.2 screenshot
   showed Kazakhstan (+7) selected but Mobile phone number blank. The saved form had all three
   contact fields marked required, yet the flow only rechecked fields whose final action was

@@ -1191,7 +1191,10 @@
       $("jf-analyze-btn").disabled = true;
       try {
         const result = await send("fillLinkedInSteps", { cvId });
-        if (!result.ok) throw new Error(result.error);
+        if (!result.ok) {
+          (result.logLines || []).forEach((line) => log(line, "jf-scan-log"));
+          throw new Error(result.error);
+        }
         result.logLines.forEach((line) => log(line, "jf-scan-log"));
         setStatus("Easy Apply filled — review and submit in LinkedIn.");
         await saveScanState();
