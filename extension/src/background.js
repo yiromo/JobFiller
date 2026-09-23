@@ -1497,6 +1497,15 @@ function findApplyLink() {
 // Runs in the page. Only controls in LinkedIn's visible Easy Apply dialog are
 // eligible; search filters and the JobFiller panel must never be treated as steps.
 function linkedInEasyApply(action) {
+  const deepAll = (selector, root = document) => {
+    const out = [];
+    const visit = (node) => {
+      out.push(...node.querySelectorAll(selector));
+      node.querySelectorAll("*").forEach((el) => el.shadowRoot && visit(el.shadowRoot));
+    };
+    visit(root);
+    return out;
+  };
   const visible = (el) => {
     const rect = el.getBoundingClientRect();
     const style = getComputedStyle(el);
@@ -1510,11 +1519,19 @@ function linkedInEasyApply(action) {
     candidates[0].click();
     return { ok: true };
   }
-  const dialogs = Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"]'))
-    .filter((el) => visible(el) && (el.matches(".jobs-easy-apply-modal") || el.querySelector(".jobs-easy-apply-content, .jobs-easy-apply-form-section__grouping") || /easy apply|application/i.test(el.getAttribute("aria-label") || "")));
+  const byIds = (el, attr) => (el.getAttribute(attr) || "").split(/\s+/).filter(Boolean)
+    .map((id) => el.getRootNode().getElementById?.(id)?.innerText || "").join(" ").trim();
+  const dialogName = (el) => el.getAttribute("aria-label") || byIds(el, "aria-labelledby") ||
+    (deepAll("h1, h2, h3", el)[0]?.innerText || "").trim();
+  const dialogs = deepAll('[role="dialog"], [aria-modal="true"], dialog[open]')
+    .filter((el) => visible(el) && (el.matches(".jobs-easy-apply-modal") ||
+      deepAll(".jobs-easy-apply-content, .jobs-easy-apply-form-section__grouping", el).length ||
+      /easy apply|application|^apply to\b/i.test(dialogName(el)) ||
+      deepAll("button", el).some((button) => visible(button) &&
+        /^(continue( to next step)?|next|review( your)? application|submit application)$/i.test(label(button)))));
   const dialog = dialogs.find((el) => !dialogs.some((other) => other !== el && other.contains(el)));
   if (!dialog) return { ok: false, reason: "LinkedIn Easy Apply dialog is not open" };
-  const buttons = Array.from(dialog.querySelectorAll("button, input[type='submit']"))
+  const buttons = deepAll("button, input[type='submit']", dialog)
     .filter((el) => !el.disabled && visible(el));
   const pick = (pattern) => buttons.filter((el) => pattern.test(label(el)));
   const submit = pick(/^submit( application)?$/i);
@@ -1527,22 +1544,20 @@ function linkedInEasyApply(action) {
   const text = (dialog.innerText || "").replace(/\s+/g, " ").slice(0, 5000);
   const signature = JSON.stringify({
     progress: text.match(/\b\d+\s*\/\s*\d+\s*pages?\b/i)?.[0] ||
-      dialog.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow") || "",
-    headings: Array.from(dialog.querySelectorAll("h1, h2, h3")).map((el) => label(el)).slice(0, 5),
-    fields: Array.from(dialog.querySelectorAll("input, select, textarea"))
+      deepAll('[role="progressbar"]', dialog)[0]?.getAttribute("aria-valuenow") || "",
+    headings: deepAll("h1, h2, h3", dialog).map((el) => label(el)).slice(0, 5),
+    fields: deepAll("input, select, textarea", dialog)
       .filter(visible).map((el) => [el.id, el.name, el.type, el.getAttribute("aria-label"),
-        el.id ? dialog.querySelector(`label[for="${CSS.escape(el.id)}"]`)?.innerText : ""]),
+        el.id ? el.getRootNode().querySelector?.(`label[for="${CSS.escape(el.id)}"]`)?.innerText : ""]),
     kind,
   });
-  const fieldCount = Array.from(dialog.querySelectorAll("input, select, textarea"))
+  const fieldCount = deepAll("input, select, textarea", dialog)
     .filter((el) => !el.disabled && (visible(el) || el.type === "file") && !["hidden", "submit", "button"].includes(el.type)).length;
-  const labelledBy = (el) => (el.getAttribute("aria-labelledby") || "").split(/\s+/).filter(Boolean)
-    .map((id) => document.getElementById(id)?.innerText || "").join(" ").trim();
-  const fieldLabel = (el) => (el.id && dialog.querySelector(`label[for="${CSS.escape(el.id)}"]`)?.innerText) ||
-    el.closest("label")?.innerText || labelledBy(el) || el.getAttribute("aria-label") || el.name || "Unnamed field";
+  const fieldLabel = (el) => (el.id && el.getRootNode().querySelector?.(`label[for="${CSS.escape(el.id)}"]`)?.innerText) ||
+    el.closest("label")?.innerText || byIds(el, "aria-labelledby") || el.getAttribute("aria-label") || el.name || "Unnamed field";
   const isRequired = (el) => el.required || el.getAttribute("aria-required") === "true" ||
     /\*\s*$/.test(fieldLabel(el).trim());
-  const missingStarred = Array.from(dialog.querySelectorAll("input, select, textarea"))
+  const missingStarred = deepAll("input, select, textarea", dialog)
     .filter(visible)
     .filter((el) => {
       if (!isRequired(el)) return false;
@@ -1552,16 +1567,17 @@ function linkedInEasyApply(action) {
     });
   if (action === "inspect") return { ok: true, kind, signature, fieldCount };
   if (action === "diagnose") {
-    const feedback = Array.from(dialog.querySelectorAll(
+    const feedback = deepAll(
       '.artdeco-inline-feedback--error, .fb-dash-form-element__error-field, [role="alert"]',
-    )).filter(visible).map((el) => label(el)).filter(Boolean);
-    const invalid = Array.from(dialog.querySelectorAll('input, select, textarea, [role="combobox"]'))
+      dialog,
+    ).filter(visible).map((el) => label(el)).filter(Boolean);
+    const invalid = deepAll('input, select, textarea, [role="combobox"]', dialog)
       .filter((el) => visible(el) && (el.getAttribute("aria-invalid") === "true" ||
         (el.willValidate && !el.checkValidity())))
       .map((el) => el.getAttribute("aria-label") ||
-        (el.id && dialog.querySelector(`label[for="${CSS.escape(el.id)}"]`)?.innerText) ||
+        (el.id && el.getRootNode().querySelector?.(`label[for="${CSS.escape(el.id)}"]`)?.innerText) ||
         el.closest("label")?.innerText || el.name || "Unnamed field");
-    const fields = Array.from(dialog.querySelectorAll("input, select, textarea"))
+    const fields = deepAll("input, select, textarea", dialog)
       .filter((el) => visible(el) && !["hidden", "submit", "button"].includes(el.type))
       .map((el) => {
         const value = el.tagName === "SELECT" ? el.selectedOptions[0]?.textContent.trim() || "" :
@@ -1580,7 +1596,7 @@ function linkedInEasyApply(action) {
   if (choices.length !== 1) return { ok: false, reason: `Found ${choices.length} ${kind} buttons in Easy Apply` };
   if (action !== kind) return { ok: false, reason: `Expected ${action}, found ${kind}` };
   if (missingStarred.length) return { ok: false, reason: `Answer required field${missingStarred.length === 1 ? "" : "s"}: ${missingStarred.map(fieldLabel).join("; ").slice(0, 300)}` };
-  const invalid = Array.from(dialog.querySelectorAll("input, select, textarea"))
+  const invalid = deepAll("input, select, textarea", dialog)
     .filter((el) => visible(el) && el.willValidate && !el.checkValidity());
   if (invalid.length) return { ok: false, reason: `${invalid.length} required or invalid fields remain` };
   choices[0].click();
@@ -1607,6 +1623,7 @@ async function waitForLinkedInStep(tabId, previousSignature) {
     candidate = state.signature;
   }
   const diagnosis = await linkedInStep(tabId, "diagnose").catch(() => null);
+  if (diagnosis && !diagnosis.ok) throw new Error(`Easy Apply did not advance: ${diagnosis.reason}`);
   const fieldState = diagnosis?.fields?.length ? ` Field state: ${diagnosis.fields.join("; ").slice(0, 600)}` : "";
   if (diagnosis?.issues?.length) {
     throw new Error(`Easy Apply did not advance: ${diagnosis.issues.join("; ").slice(0, 400)}.${fieldState}`);
@@ -1617,12 +1634,21 @@ async function waitForLinkedInStep(tabId, previousSignature) {
 // Runs in a scanned frame after filling. A skipped required field may already
 // have an answer supplied by the applicant or their saved LinkedIn profile.
 function unansweredLinkedInFields(refs) {
+  const deepAll = (selector, root = document) => {
+    const out = [];
+    const visit = (node) => {
+      out.push(...node.querySelectorAll(selector));
+      node.querySelectorAll("*").forEach((el) => el.shadowRoot && visit(el.shadowRoot));
+    };
+    visit(root);
+    return out;
+  };
   return refs.filter((ref) => {
-    const el = document.querySelector(`[data-jf-ref="${CSS.escape(ref)}"]`);
+    const el = deepAll(`[data-jf-ref="${CSS.escape(ref)}"]`)[0];
     if (!el) return true;
     if (el.type === "radio") {
       if (!el.name) return !el.checked;
-      return !Array.from(document.querySelectorAll(`input[type="radio"][name="${CSS.escape(el.name)}"]`))
+      return !Array.from(el.getRootNode().querySelectorAll(`input[type="radio"][name="${CSS.escape(el.name)}"]`))
         .some((option) => option.checked);
     }
     if (el.type === "checkbox") return !el.checked;

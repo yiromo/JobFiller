@@ -237,6 +237,31 @@ async function main() {
     assert.match(clearedByRerender.message, /answer required field: Phone/);
     assert.deepEqual(clearedByRerender.logLines, ["Step 1: Filled 1 field"]);
 
+    await page.setContent('<div id="outlet"></div>');
+    const shadowDialog = await page.evaluate(() => {
+      const root = document.querySelector("#outlet").attachShadow({ mode: "open" });
+      root.innerHTML = '<div role="dialog" aria-labelledby="t"><h2 id="t">Apply to Medix Technology</h2>' +
+        '<label for="m">Mobile phone number*</label><input id="m" type="tel" data-jf-ref="m">' +
+        '<button>Next</button></div>';
+      const inspect = window.jfStep("inspect");
+      const blocked = window.jfStep("next");
+      const missing = window.jfUnanswered(["m"]);
+      root.querySelector("#m").value = "7071234567";
+      return { inspect, blocked, missing, answered: window.jfUnanswered(["m"]), diagnosis: window.jfStep("diagnose") };
+    });
+    assert.equal(shadowDialog.inspect.kind, "next");
+    assert.equal(shadowDialog.inspect.fieldCount, 1);
+    assert.match(shadowDialog.blocked.reason, /Answer required field: Mobile phone number/);
+    assert.deepEqual(shadowDialog.missing, ["m"]);
+    assert.deepEqual(shadowDialog.answered, []);
+    assert.deepEqual(shadowDialog.diagnosis.fields, ['Mobile phone number*="7071234567" (required)']);
+    const unnamedDialog = await page.evaluate(() => {
+      document.querySelector("#outlet").shadowRoot.innerHTML = '<div role="dialog"><span>Apply to Medix</span>' +
+        '<h3>Contact info</h3><label for="e">Email*</label><input id="e" value="a@b.c"><button>Next</button></div>';
+      return window.jfStep("inspect");
+    });
+    assert.equal(unnamedDialog.kind, "next");
+
     await page.goto("https://www.linkedin.com/jobs/view/123");
     const routed = await page.evaluate(async (script) => {
       window.eval(`async function runLinkedInSteps() { window.easyApplyCalled = true; }\n${script}\nwindow.jfMainFill = runFill;`);

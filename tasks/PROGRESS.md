@@ -1,5 +1,18 @@
 # Progress log
 
+- **LinkedIn Easy Apply steps never filled the contact page** — with build 15 the stall error
+  carried no field-state line. That line is only omitted when the step code cannot find the
+  dialog, so every "did not advance" on this page meant the dialog was never found. No field was
+  filled at all. The Scan button kept working because `scanPage` descends into open shadow
+  roots, while `linkedInEasyApply` and `unansweredLinkedInFields` used plain
+  `document.querySelector*` and required LinkedIn's old modal classes or an `aria-label`. Both
+  now search shadow roots, resolve labels inside the element's own root, and accept a dialog
+  named "Apply to …" via `aria-labelledby` or its first heading, or one containing a visible
+  Next/Continue/Review/Submit application button. A missing dialog is now reported
+  as such instead of as a generic stall. The fixture covers a shadow-rooted, classless dialog.
+  Whether live LinkedIn uses a shadow root or only dropped the old classes is still unconfirmed;
+  the change handles both.
+
 - **LinkedIn "did not advance" gave no clue while the mobile number was blank** — the v0.5.2-14
   run filled the contact step, passed the post-fill required check, clicked Next, and then the
   diagnosis reported nothing even though a required field was visibly empty. The Easy Apply
