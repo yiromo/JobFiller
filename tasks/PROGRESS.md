@@ -1,5 +1,15 @@
 # Progress log
 
+- **LinkedIn Next could time out without explaining the form error** — the saved Medix scan had
+  three required contact fields plus an unrelated iframe input. The selected CV has no phone
+  number, and the country-code select lists Andorra first. A skipped select could therefore look
+  answered merely because its default option had a non-empty value. Easy Apply scans now ignore
+  unrelated iframe fields; a skipped select's unchosen first option counts as unanswered. When a
+  click does not advance, the extension reports visible LinkedIn validation messages and invalid
+  field labels. Settings dropdown failures also name the field whose answer did not match an
+  option. The exact live validation failure was not captured, so the default-option explanation
+  remains an inference until rerun.
+
 - **LinkedIn's ordinary Fill button stopped after one page** — a live screenshot showed the
   extension's one-page "Done — review before submitting" status at step 3/5, with Python and AWS
   experience questions unanswered. The ordinary Fill button now invokes the same multi-step Easy

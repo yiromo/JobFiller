@@ -9,12 +9,21 @@ const start = source.indexOf("function linkedInEasyApply(action)");
 const end = source.indexOf("\nfunction submitJobForm()", start);
 const stepsSource = source.slice(start, end);
 const scanSource = source.slice(source.indexOf("function scanPage(scanId)"), source.indexOf("\nfunction attachGenerateButtons("));
+const framesSource = source.slice(
+  source.indexOf("function framesWithApplicationFields(injectionResults)"),
+  source.indexOf("\nasync function handleScan(message, tabId)"),
+);
 const mainFillSource = panelSource.slice(
   panelSource.indexOf("async function runFill()"),
   panelSource.indexOf('    $("jf-scan-btn").addEventListener("click"'),
 );
 
 async function main() {
+  const pickFrames = new Function(`${framesSource}\nreturn framesWithApplicationFields;`)();
+  assert.deepEqual(pickFrames([
+    { frameId: 0, result: { easy_apply_modal: true, form_snapshot: [{ ref: "phone" }] } },
+    { frameId: 123, result: { easy_apply_modal: false, form_snapshot: [{ ref: "unrelated" }] } },
+  ]).map((frame) => frame.frameId), [0]);
   const browser = await firefox.launch({ headless: true, executablePath: process.env.FIREFOX_PATH });
   const page = await browser.newPage();
   try {
@@ -51,9 +60,10 @@ async function main() {
     assert.equal(result.fieldCount, 1);
     const scanned = await page.evaluate((script) => {
       window.eval(`${script}\nwindow.jfScan = scanPage;`);
-      return window.jfScan("test").form_snapshot;
+      return window.jfScan("test");
     }, scanSource);
-    assert.deepEqual(scanned.map((field) => field.id), ["phone"]);
+    assert.equal(scanned.easy_apply_modal, true);
+    assert.deepEqual(scanned.form_snapshot.map((field) => field.id), ["phone"]);
 
     result = await page.evaluate(() => window.jfStep("next"));
     assert.equal(result.ok, false);
@@ -145,6 +155,18 @@ async function main() {
     });
     assert.deepEqual(applicantAnswer.missing, ["0:manual"]);
     assert.deepEqual(applicantAnswer.answered, []);
+    const defaultCountry = await page.evaluate(() => {
+      const dialog = document.querySelector('[role="dialog"]');
+      dialog.insertAdjacentHTML("beforeend", '<select data-jf-ref="country"><option value="ad">Andorra (+376)</option><option value="kz">Kazakhstan (+7)</option></select><div class="artdeco-inline-feedback--error">Choose a valid phone country code</div>');
+      const before = window.jfUnanswered(["country"]);
+      dialog.querySelector("select").value = "kz";
+      const after = window.jfUnanswered(["country"]);
+      const diagnosis = window.jfStep("diagnose");
+      return { before, after, diagnosis };
+    });
+    assert.deepEqual(defaultCountry.before, ["country"]);
+    assert.deepEqual(defaultCountry.after, []);
+    assert.match(defaultCountry.diagnosis.issues.join(" "), /valid phone country code/);
 
     await page.route("https://www.linkedin.com/**", (route) => route.fulfill({
       status: 200, contentType: "text/html", body: "<html><body>LinkedIn fixture</body></html>",

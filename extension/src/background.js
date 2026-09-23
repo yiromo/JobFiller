@@ -155,9 +155,15 @@ function scanPage(scanId) {
     return [document];
   }
 
+  const roots = scanRoots();
+  const easyApplyModal = roots.some((root) => root !== document && (
+    root.matches?.(".jobs-easy-apply-modal") ||
+    root.querySelector?.(".jobs-easy-apply-content, .jobs-easy-apply-form-section__grouping") ||
+    /easy apply|application/i.test(root.getAttribute?.("aria-label") || "")
+  ));
   const candidates = [];
   const seen = new Set();
-  scanRoots().forEach((root) => {
+  roots.forEach((root) => {
     deepQueryAll("input, select, textarea", root).forEach((el) => {
       if (seen.has(el)) return;
       seen.add(el);
@@ -232,6 +238,7 @@ function scanPage(scanId) {
   // questions, not to reproduce the page.
   return {
     url: window.location.href,
+    easy_apply_modal: Boolean(easyApplyModal),
     form_snapshot: fields,
     page_text: fullBodyText.slice(0, 15000),
     about_text: extractAboutText(fullBodyText),
@@ -965,7 +972,7 @@ function applyEeoSettings(formSnapshot, fieldMapping, eeoSettings, logLines) {
   if (!eeoSettings.length) return fieldMapping;
   const fieldsByRef = Object.fromEntries(formSnapshot.map((f) => [f.ref, f]));
   let filled = 0;
-  let unmatched = 0;
+  const unmatchedLabels = [];
 
   const result = fieldMapping.map((mapping) => {
     if (mapping.action !== "skip") return mapping;
@@ -981,7 +988,7 @@ function applyEeoSettings(formSnapshot, fieldMapping, eeoSettings, logLines) {
     if (field.tag === "select" && field.options.length) {
       const match = bestOptionMatch(field.options, setting.answer);
       if (!match) {
-        unmatched++;
+        unmatchedLabels.push(field.label || field.section || field.name || "Unnamed field");
         return mapping;
       }
       filled++;
@@ -994,8 +1001,8 @@ function applyEeoSettings(formSnapshot, fieldMapping, eeoSettings, logLines) {
   });
 
   if (filled) logLines.push(`Filled ${filled} field(s) from your Settings answers.`);
-  if (unmatched) {
-    logLines.push(`${unmatched} Settings answer(s) matched a field but not any of its options —`);
+  if (unmatchedLabels.length) {
+    logLines.push(`Settings answer(s) did not match options for: ${unmatchedLabels.join("; ").slice(0, 250)} —`);
     logLines.push(`  adjust the answer's wording in Manage CVs > Settings to match this site.`);
   }
   return result;
@@ -1051,6 +1058,16 @@ async function buildFileMap(plan) {
   return fileByRef;
 }
 
+function framesWithApplicationFields(injectionResults) {
+  const frames = injectionResults.filter(
+    (r) => r.result && r.result.form_snapshot.length > 0,
+  );
+  // LinkedIn's job page can contain unrelated iframe inputs (ads/widgets).
+  // Once Easy Apply is open, only the top-frame dialog belongs to this step.
+  const topEasyApply = frames.find((r) => r.frameId === 0 && r.result.easy_apply_modal);
+  return topEasyApply ? [topEasyApply] : frames;
+}
+
 async function handleScan(message, tabId) {
   const logLines = [];
   // allFrames catches ATS forms embedded in a cross-origin iframe (e.g.
@@ -1075,9 +1092,7 @@ async function handleScan(message, tabId) {
     });
   }
 
-  const framesWithFields = injectionResults.filter(
-    (r) => r.result && r.result.form_snapshot.length > 0,
-  );
+  const framesWithFields = framesWithApplicationFields(injectionResults);
   const bestFrame = framesWithFields.reduce(
     (best, r) =>
       !best || r.result.form_snapshot.length > best.result.form_snapshot.length ? r : best,
@@ -1489,6 +1504,18 @@ function linkedInEasyApply(action) {
   const fieldCount = Array.from(dialog.querySelectorAll("input, select, textarea"))
     .filter((el) => !el.disabled && (visible(el) || el.type === "file") && !["hidden", "submit", "button"].includes(el.type)).length;
   if (action === "inspect") return { ok: true, kind, signature, fieldCount };
+  if (action === "diagnose") {
+    const feedback = Array.from(dialog.querySelectorAll(
+      '.artdeco-inline-feedback--error, .fb-dash-form-element__error-field, [role="alert"]',
+    )).filter(visible).map((el) => label(el)).filter(Boolean);
+    const invalid = Array.from(dialog.querySelectorAll('input, select, textarea, [role="combobox"]'))
+      .filter((el) => visible(el) && (el.getAttribute("aria-invalid") === "true" ||
+        (el.willValidate && !el.checkValidity())))
+      .map((el) => el.getAttribute("aria-label") ||
+        (el.id && dialog.querySelector(`label[for="${CSS.escape(el.id)}"]`)?.innerText) ||
+        el.closest("label")?.innerText || el.name || "Unnamed field");
+    return { ok: true, issues: [...new Set([...feedback, ...invalid])].slice(0, 8) };
+  }
   if (choices.length !== 1) return { ok: false, reason: `Found ${choices.length} ${kind} buttons in Easy Apply` };
   if (action !== kind) return { ok: false, reason: `Expected ${action}, found ${kind}` };
   const invalid = Array.from(dialog.querySelectorAll("input, select, textarea"))
@@ -1517,6 +1544,10 @@ async function waitForLinkedInStep(tabId, previousSignature) {
     if (candidate === state.signature) return state;
     candidate = state.signature;
   }
+  const diagnosis = await linkedInStep(tabId, "diagnose").catch(() => null);
+  if (diagnosis?.issues?.length) {
+    throw new Error(`Easy Apply did not advance: ${diagnosis.issues.join("; ").slice(0, 400)}`);
+  }
   throw new Error("Easy Apply did not advance; check the open dialog for validation errors");
 }
 
@@ -1533,6 +1564,10 @@ function unansweredLinkedInFields(refs) {
     }
     if (el.type === "checkbox") return !el.checked;
     if (el.type === "file") return !el.files?.length;
+    if (el.tagName === "SELECT") {
+      const option = el.selectedOptions[0];
+      return !option?.value || (el.options.length > 1 && el.selectedIndex === 0);
+    }
     return !String(el.value || "").trim();
   });
 }

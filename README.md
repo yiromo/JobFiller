@@ -57,7 +57,8 @@ presses Continue/Review until the final review page. It leaves **Submit applicat
 review and click. If the CV cannot support a required answer, it fills the other fields and pauses
 with the dialog open. Enter your answer and click **Continue Easy Apply** to resume. This flow has
 been checked against a multi-page Firefox fixture; it still needs a live LinkedIn run after
-reloading the extension.
+reloading the extension. If your CV omits a required contact number, enter the phone number and
+country code in LinkedIn before continuing.
 
 ### Generating a tailored CV
 
