@@ -1,5 +1,11 @@
 # Progress log
 
+- **LinkedIn step failures named no field** — build 16 found the dialog (a light-DOM
+  `<dialog open aria-labelledby="dialog-header">`, which the old `[role="dialog"]` selector never
+  matched) and typed the mobile number. It then stopped at "Step 1: 1 fields failed to fill",
+  because the flow threw before logging `handleFill`'s per-field reasons. `handleFill` now
+  returns `failures` with global refs, and the step error names each field's label and reason.
+
 - **LinkedIn Easy Apply steps never filled the contact page** — with build 15 the stall error
   carried no field-state line. That line is only omitted when the step code cannot find the
   dialog, so every "did not advance" on this page meant the dialog was never found. No field was

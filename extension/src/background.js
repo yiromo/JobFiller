@@ -1288,7 +1288,15 @@ async function handleFill(message, tabId) {
         : `Resolved ${picked}/${unresolvedByGlobalRef.size} dropdown(s) via core.`,
     );
   }
-  return { ok: true, logLines, entries, failedCount: failed.length };
+  const globalRef = (r) => Object.keys(message.refFrameMap || {}).find((ref) =>
+    message.refFrameMap[ref].frameId === r.frameId && message.refFrameMap[ref].localRef === r.ref) || r.ref;
+  return {
+    ok: true,
+    logLines,
+    entries,
+    failedCount: failed.length,
+    failures: failed.map((r) => ({ ref: globalRef(r), reason: r.reason })),
+  };
 }
 
 async function resolveUnmatchedDropdowns(tabId, applicationId, unresolvedByGlobalRef, allResults) {
@@ -1708,8 +1716,12 @@ async function fillLinkedInSteps(tabId, cvId, autoSubmit) {
         const requiredEntries = scan.formSnapshot.filter((field) => field.required)
           .map((field) => ({ ref: field.ref }));
         const filled = await handleFill(scan, tabId);
-        if (filled.failedCount) throw new Error(`Step ${step}: ${filled.failedCount} fields failed to fill`);
         logLines.push(`Step ${step}: ${filled.logLines[0]}`, ...filled.logLines.slice(1));
+        if (filled.failedCount) {
+          const labelsByRef = Object.fromEntries(scan.formSnapshot.map((field) => [field.ref, field.label]));
+          const reasons = filled.failures.map((failure) => `${labelsByRef[failure.ref] || failure.ref}: ${failure.reason}`);
+          throw new Error(`Step ${step}: ${filled.failedCount} field(s) failed to fill — ${reasons.join("; ").slice(0, 400)}`);
+        }
         // React may accept a value immediately and then clear it on rerender.
         // Verify every required field after the page has had time to settle.
         await new Promise((resolve) => setTimeout(resolve, 400));
