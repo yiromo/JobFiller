@@ -135,6 +135,7 @@ function scanPage(scanId) {
 
   function scanRoots() {
     const tiers = [
+      { selector: '.jobs-easy-apply-modal[role="dialog"], .jobs-easy-apply-modal[aria-modal="true"]', minControls: 1 },
       { selector: '[aria-modal="true"]', minControls: 1 },
       { selector: "dialog[open]", minControls: 1 },
       { selector: '[role="dialog"]', minControls: 2 },
@@ -382,8 +383,29 @@ async function applyFillPlan(plan, fileByRef) {
 
   function clickOption(optionEl) {
     if (!optionEl || isPageContainer(optionEl)) return false;
-    for (const type of ["pointerdown", "mousedown", "mouseup", "click"]) {
-      optionEl.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true }));
+    const rect = optionEl.getBoundingClientRect();
+    const init = {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: window,
+      clientX: rect.left + rect.width / 2,
+      clientY: rect.top + rect.height / 2,
+      button: 0,
+      detail: 1,
+    };
+    for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+      const down = type.endsWith("down");
+      const event = type.startsWith("pointer")
+        ? new PointerEvent(type, {
+            ...init,
+            pointerId: 1,
+            pointerType: "mouse",
+            isPrimary: true,
+            buttons: down ? 1 : 0,
+          })
+        : new MouseEvent(type, { ...init, buttons: down ? 1 : 0 });
+      optionEl.dispatchEvent(event);
     }
     return true;
   }
@@ -461,38 +483,76 @@ async function applyFillPlan(plan, fileByRef) {
 
   function findOptions(el, before) {
     const container = el.closest('[role="combobox"], [aria-haspopup="listbox"]') || el;
-    const controlsId = container.getAttribute("aria-controls") || container.getAttribute("aria-owns");
-    const scope = controlsId ? deepQueryOne(`#${CSS.escape(controlsId)}`) : null;
-    if (scope) {
-      return deepQueryAll('[role="option"]', scope).filter(isRendered);
+    const ids = [el, container].flatMap((node) =>
+      [node.getAttribute("aria-controls"), node.getAttribute("aria-owns")]
+        .filter(Boolean)
+        .flatMap((value) => value.split(/\s+/)),
+    );
+    const scopes = [...new Set(ids)]
+      .map((id) => el.getRootNode().getElementById?.(id) || deepQueryOne(`#${CSS.escape(id)}`))
+      .filter(Boolean);
+    const selectable = (option) =>
+      isRendered(option) &&
+      option.getAttribute("aria-disabled") !== "true" &&
+      !option.matches(":disabled");
+    if (scopes.length) {
+      return [...new Set(scopes.flatMap((scope) => deepQueryAll('[role="option"]', scope)))].filter(
+        selectable,
+      );
     }
 
     const prefix = widgetInstancePrefix(el);
     if (prefix) {
-      const scoped = deepQueryAll(`[id^="${prefix}-option"]`).filter(isRendered);
+      const scoped = deepQueryAll(`[id^="${prefix}-option-"]`).filter(selectable);
       if (scoped.length) return scoped;
     }
 
     return deepQueryAll('[role="option"]')
-      .filter(isRendered)
-      .filter((o) => !before.has(o));
+      .filter(selectable)
+      .filter((option) => !before.has(option));
   }
 
   function optionSnapshot() {
-    return new Set(deepQueryAll('[role="option"]'));
+    return new Set(deepQueryAll('[role="option"]').filter(isRendered));
   }
 
-  function selectedText(el) {
-    const control = el.closest('[role="combobox"]')?.parentElement || el.parentElement || el;
-    return `${el.value || ""} ${control.textContent || ""}`.toLowerCase();
+  function selectionLabels(el) {
+    let control = el;
+    for (let depth = 0; depth < 4; depth++) {
+      const parent = control.parentElement || control.getRootNode()?.host;
+      if (!parent || isPageContainer(parent)) break;
+      if (
+        deepQueryAll(
+          'input:not([type="hidden"]), select, textarea, [role="combobox"]',
+          parent,
+        ).some((node) => node !== el && !node.contains(el) && !el.contains(node))
+      )
+        break;
+      control = parent;
+    }
+    const labels = [];
+    const visit = (node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        if (node.textContent.trim()) labels.push(normalize(node.textContent));
+        return;
+      }
+      if (
+        node.nodeType !== Node.ELEMENT_NODE ||
+        node.matches(
+          'input, textarea, label, [role="listbox"], [role="option"], [aria-live], [aria-hidden="true"]',
+        ) ||
+        !isRendered(node)
+      )
+        return;
+      for (const child of node.childNodes) visit(child);
+      if (node.shadowRoot) for (const child of node.shadowRoot.childNodes) visit(child);
+    };
+    visit(control);
+    return labels;
   }
 
   function normalize(text) {
-    return (text || "")
-      .trim()
-      .toLowerCase()
-      .replace(/['’]/g, "")
-      .replace(/\s+/g, " ");
+    return (text || "").trim().toLowerCase().replace(/['’]/g, "").replace(/\s+/g, " ");
   }
 
   function bestMatch(options, value) {
@@ -503,14 +563,24 @@ async function applyFillPlan(plan, fileByRef) {
     const exact = texts.indexOf(target);
     if (exact !== -1) return options[exact];
 
-    const prefix = texts.findIndex(
-      (t) => t.startsWith(target) && /[^a-z0-9]/.test(t.charAt(target.length)),
-    );
-    if (prefix !== -1) return options[prefix];
+    const boundary = (character) => !/[\p{L}\p{N}]/u.test(character);
+    const prefixes = texts
+      .map((text, index) => ({ text, index }))
+      .filter(({ text }) => text.startsWith(target) && boundary(text.charAt(target.length)));
+    if (prefixes.length === 1) return options[prefixes[0].index];
 
     if (target.length >= 4) {
-      const contains = texts.findIndex((t) => t.includes(target));
-      if (contains !== -1) return options[contains];
+      const containing = texts
+        .map((text, index) => ({ text, index }))
+        .filter(({ text }) => {
+          const start = text.indexOf(target);
+          return (
+            start >= 0 &&
+            boundary(text.charAt(start - 1)) &&
+            boundary(text.charAt(start + target.length))
+          );
+        });
+      if (containing.length === 1) return options[containing[0].index];
     }
     return null;
   }
@@ -566,117 +636,180 @@ async function applyFillPlan(plan, fileByRef) {
 
   async function selectValue(el, value) {
     if (el.tagName === "SELECT") {
-      const options = Array.from(el.options);
-      const match = bestMatch(options, value);
+      const options = Array.from(el.options).filter((option) => !option.matches(":disabled"));
+      const match = bestMatch(options, value) || options.find((option) => option.value === value);
       if (!match) {
         return { status: "no-match", wanted: value, options: options.map((o) => o.text.trim()) };
       }
-      el.value = match.value;
-      if (el.value !== match.value) nativeSelectSetter.call(el, match.value);
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      el.dispatchEvent(new Event("change", { bubbles: true }));
-      return el.value === match.value
+      nativeSelectSetter.call(el, match.value);
+      el.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      return match.selected && el.value === match.value
         ? { status: "selected", via: "native-select" }
-        : { status: "unverified", wanted: value, selected: match.text.trim(), via: "native-select" };
+        : {
+            status: "unverified",
+            wanted: value,
+            selected: match.text.trim(),
+            via: "native-select",
+          };
     }
 
     if (document.activeElement && document.activeElement !== el) {
       closeWidget(document.activeElement);
     }
     const before = optionSnapshot();
+    const originalValue = el.value || "";
+    const originalLabels = selectionLabels(el);
+    const searchable = el.tagName === "INPUT" && !el.readOnly && !el.disabled;
+    let typed = false;
+    const seen = new Set();
+    const readOptions = () => {
+      const options = findOptions(el, before);
+      options.forEach((option) => {
+        const text = option.textContent.trim();
+        if (text) seen.add(text);
+      });
+      return options;
+    };
     const waitForOptions = (timeoutMs) =>
       waitFor(() => {
-        const found = findOptions(el, before);
-        return found.length > 0 ? found : null;
+        const options = readOptions();
+        return options.length ? options : null;
       }, timeoutMs);
-
+    const typeSearch = (text) => {
+      typed = true;
+      el.focus();
+      nativeInputSetter.call(el, text);
+      el.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          composed: true,
+          data: text,
+          inputType: "insertText",
+        }),
+      );
+    };
     const target = sizedTarget(el);
     target.scrollIntoView({ block: "center" });
     el.focus();
-
+    const isExpanded = () =>
+      (el.closest('[role="combobox"], [aria-haspopup="listbox"]') || el).getAttribute(
+        "aria-expanded",
+      ) === "true" || el.getAttribute("aria-expanded") === "true";
+    let via = "already-open";
+    let options = isExpanded() ? await waitForOptions(900) : null;
     const openTactics = [
       ["click", () => clickOption(el)],
       ["click-box", () => target !== el && clickOption(target)],
       ["arrow", () => pressKey(el, "ArrowDown")],
       ["alt-arrow", () => pressKey(el, "ArrowDown", { altKey: true })],
-      ["space", () => pressKey(el, " ")],
-      ["typing", () => setValue(el, value.slice(0, 4))],
+      ["space", () => !searchable && pressKey(el, " ")],
     ];
-
-    const isExpanded = () =>
-      (el.closest('[role="combobox"], [aria-haspopup="listbox"]') || el).getAttribute(
-        "aria-expanded",
-      ) === "true" || el.getAttribute("aria-expanded") === "true";
-
-    let via = null;
-    let options = null;
-    let opened = null;
     for (const [name, open] of openTactics) {
-      if (isExpanded()) {
-        options = await waitForOptions(1200);
-        if (options) via = opened || name;
-        break;
-      }
+      if (options || isExpanded()) break;
       open();
-      opened = name;
+      via = name;
       options = await waitForOptions(900);
-      if (options) {
-        via = name;
-        break;
+    }
+    let match = bestMatch(options || [], value);
+    if (!match && searchable) {
+      typeSearch(value);
+      via += "+search";
+      match = await waitFor(() => bestMatch(readOptions(), value), 2500);
+      if (!match) {
+        typeSearch("");
+        options = await waitForOptions(1500);
+        match = bestMatch(options || [], value);
       }
     }
-    if (!options) return { status: "no-options", wanted: value, expanded: isExpanded() };
-
-    let match = bestMatch(options, value);
     if (!match) {
-      for (let round = 0; round < 16 && !match; round++) {
-        const box = scrollParent(findOptions(el, before)[0]);
-        if (!box) break;
+      for (let round = 0; round < 32 && !match; round++) {
+        const current = readOptions();
+        match = bestMatch(current, value);
+        if (match) break;
+        const box = scrollParent(current[0]);
+        if (!box || isPageContainer(box)) break;
         const top = box.scrollTop;
-        box.scrollTop = top + box.clientHeight;
+        box.scrollTop = round === 0 ? 0 : top + Math.max(1, box.clientHeight * 0.8);
+        box.dispatchEvent(new Event("scroll"));
         await new Promise((resolve) => setTimeout(resolve, 140));
-        if (box.scrollTop <= top) break;
-        match = bestMatch(findOptions(el, before), value);
+        match = bestMatch(readOptions(), value);
+        if (round > 0 && box.scrollTop <= top) break;
       }
-      if (match) via = `${via}+scroll`;
+      if (match) via += "+scroll";
     }
-
     if (!match) {
-      setValue(el, "");
+      if (typed) typeSearch(originalValue);
+      const expanded = isExpanded();
       closeWidget(el);
-      return {
-        status: "no-match",
-        wanted: value,
-        options: options.map((o) => o.textContent.trim()),
-        via,
-      };
+      return seen.size
+        ? { status: "no-match", wanted: value, options: [...seen], via }
+        : { status: "no-options", wanted: value, expanded };
     }
 
     const wantedText = match.textContent.trim();
-    match.scrollIntoView({ block: "center" });
-    const commitTactics = [
-      ["click", () => clickOption(match)],
-      ["native-click", () => match.click?.()],
-      ["enter", () => pressKey(el, "Enter")],
-      [
-        "type-enter",
-        () => {
-          setValue(el, wantedText);
-          pressKey(el, "Enter");
-        },
-      ],
-    ];
-
-    for (const [name, commit] of commitTactics) {
-      commit();
-      const settled = await waitFor(() => {
-        if (findOptions(el, before).length > 0) return null;
-        return selectedText(el).includes(wantedText.toLowerCase()) || null;
-      }, 700);
-      if (settled) return { status: "selected", via: `${via}+${name}` };
+    const wanted = normalize(wantedText);
+    let committedInput = false;
+    let clicked = false;
+    let closing = false;
+    const onCommit = () => {
+      committedInput = true;
+    };
+    const confirmed = () => {
+      const current = readOptions().find((option) => normalize(option.textContent) === wanted);
+      if (
+        current?.getAttribute("aria-selected") === "true" ||
+        current?.getAttribute("aria-checked") === "true"
+      ) return "option";
+      const labels = selectionLabels(el);
+      if (labels.includes(wanted) && (!originalLabels.includes(wanted) || !isExpanded())) {
+        return "label";
+      }
+      if (
+        (!typed || committedInput || (clicked && !closing)) &&
+        normalize(el.value) === wanted &&
+        (el.value !== originalValue || committedInput) &&
+        !isExpanded() && readOptions().length === 0
+      ) return "input";
+      return null;
+    };
+    if (confirmed()) {
+      closeWidget(el);
+      return { status: "selected", via: `${via}+already-selected` };
     }
-
-    closeWidget(el);
+    match.scrollIntoView({ block: "nearest" });
+    el.addEventListener("input", onCommit);
+    el.addEventListener("change", onCommit);
+    let settled = false;
+    try {
+      clicked = clickOption(match);
+      settled = await waitFor(confirmed, 1000);
+      if (!settled) {
+        const activeId = el.getAttribute("aria-activedescendant");
+        const active =
+          activeId &&
+          (el.getRootNode().getElementById?.(activeId) || deepQueryOne(`#${CSS.escape(activeId)}`));
+        if (active && readOptions().includes(active) && normalize(active.textContent) === wanted) {
+          pressKey(el, "Enter");
+          settled = await waitFor(confirmed, 700);
+        }
+      }
+      closing = true;
+      closeWidget(el);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      settled = settled === "input" ? normalize(el.value) === wanted : settled || confirmed();
+    } finally {
+      el.removeEventListener("input", onCommit);
+      el.removeEventListener("change", onCommit);
+    }
+    if (settled) {
+      return { status: "selected", via: `${via}+commit` };
+    }
+    if (typed) {
+      typeSearch(originalValue);
+      closeWidget(el);
+    }
     return { status: "unverified", wanted: value, selected: wantedText, via };
   }
 
@@ -738,7 +871,11 @@ async function applyFillPlan(plan, fileByRef) {
             results.push(
               tactic
                 ? { ref: item.ref, ok: true }
-                : { ref: item.ref, ok: false, reason: `value-did-not-stick wanted="${item.value}"` },
+                : {
+                    ref: item.ref,
+                    ok: false,
+                    reason: `value-did-not-stick wanted="${item.value}"`,
+                  },
             );
           }
           break;
@@ -965,6 +1102,18 @@ async function handleScan(message, tabId) {
 
   const pageText = bestFrame ? bestFrame.result.page_text : "";
   const aboutText = aboutFrame ? aboutFrame.result.about_text : "";
+  let screenshot = "";
+  if (formSnapshot.length) {
+    try {
+      screenshot = await browser.tabs.captureTab(tabId, { format: "jpeg", quality: 65 });
+      if (screenshot.length > 1900000) {
+        screenshot = "";
+        logLines.push("Vision screenshot was too large; continuing with text fields.");
+      }
+    } catch (err) {
+      logLines.push(`Vision screenshot unavailable: ${err.message || err}`);
+    }
+  }
   const eeoSettings = await loadEeoSettings();
   const response = await fetch(`${CORE_URL}/api/v1/applications/scan/`, {
     method: "POST",
@@ -973,6 +1122,7 @@ async function handleScan(message, tabId) {
       url: message.url,
       page_text: pageText,
       about_text: aboutText,
+      screenshot,
       form_snapshot: formSnapshot,
       cv_id: message.cvId,
       eeo_answers: eeoSettings,
@@ -1014,6 +1164,7 @@ async function handleScan(message, tabId) {
   return {
     ok: true,
     applicationId: data.id,
+    formSnapshot,
     fieldMapping,
     refFrameMap,
     pageText,
@@ -1092,7 +1243,7 @@ async function handleFill(message, tabId) {
         : `Resolved ${picked}/${unresolvedByGlobalRef.size} dropdown(s) via core.`,
     );
   }
-  return { ok: true, logLines, entries };
+  return { ok: true, logLines, entries, failedCount: failed.length };
 }
 
 async function resolveUnmatchedDropdowns(tabId, applicationId, unresolvedByGlobalRef, allResults) {
@@ -1242,6 +1393,8 @@ browser.runtime.onMessage.addListener((message, sender) => {
       return respond(handleScan(message, tabId).catch((err) => reportError("scan", err)));
     case "fill":
       return respond(handleFill(message, tabId).catch((err) => reportError("fill", err)));
+    case "fillLinkedInSteps":
+      return respond(fillLinkedInSteps(tabId, message.cvId, false).catch((err) => reportError("fillLinkedInSteps", err)));
     case "generateCoverLetter":
       return respond(handleGenerateCoverLetter(message).catch((err) => reportError("generateCoverLetter", err)));
     case "analyze":
@@ -1260,3 +1413,271 @@ browser.runtime.onMessage.addListener((message, sender) => {
       return undefined;
   }
 });
+
+// The extension uses the same scan/fill path as the manual panel. A browser
+// must be open for this worker to process the server's daily queue.
+async function waitForTab(tabId) {
+  const current = await browser.tabs.get(tabId);
+  if (current.status === "complete") return;
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      browser.tabs.onUpdated.removeListener(onUpdated);
+      reject(new Error("Job page did not finish loading"));
+    }, 30000);
+    function onUpdated(id, change) {
+      if (id !== tabId || change.status !== "complete") return;
+      clearTimeout(timer);
+      browser.tabs.onUpdated.removeListener(onUpdated);
+      resolve();
+    }
+    browser.tabs.onUpdated.addListener(onUpdated);
+  });
+}
+
+function findApplyLink() {
+  const links = Array.from(document.querySelectorAll("a[href]"));
+  const matches = links.filter((a) => {
+    const label = (a.innerText || a.getAttribute("aria-label") || "").trim();
+    return /^(apply|apply now|apply for this job|apply to this job)$/i.test(label);
+  });
+  if (matches.length !== 1) return null;
+  const url = new URL(matches[0].href, location.href);
+  return ["http:", "https:"].includes(url.protocol) ? url.href : null;
+}
+
+// Runs in the page. Only controls in LinkedIn's visible Easy Apply dialog are
+// eligible; search filters and the JobFiller panel must never be treated as steps.
+function linkedInEasyApply(action) {
+  const visible = (el) => {
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+  };
+  const label = (el) => (el.innerText || el.value || el.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim();
+  if (action === "open") {
+    const candidates = Array.from(document.querySelectorAll("button.jobs-apply-button, button[aria-label*='Easy Apply' i]"))
+      .filter((el) => !el.disabled && visible(el) && /easy apply/i.test(`${label(el)} ${el.getAttribute("aria-label") || ""}`));
+    if (candidates.length !== 1) return { ok: false, reason: `Found ${candidates.length} Easy Apply buttons` };
+    candidates[0].click();
+    return { ok: true };
+  }
+  const dialogs = Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"]'))
+    .filter((el) => visible(el) && (el.matches(".jobs-easy-apply-modal") || el.querySelector(".jobs-easy-apply-content, .jobs-easy-apply-form-section__grouping") || /easy apply|application/i.test(el.getAttribute("aria-label") || "")));
+  const dialog = dialogs.find((el) => !dialogs.some((other) => other !== el && other.contains(el)));
+  if (!dialog) return { ok: false, reason: "LinkedIn Easy Apply dialog is not open" };
+  const buttons = Array.from(dialog.querySelectorAll("button, input[type='submit']"))
+    .filter((el) => !el.disabled && visible(el));
+  const pick = (pattern) => buttons.filter((el) => pattern.test(label(el)));
+  const submit = pick(/^submit( application)?$/i);
+  const review = pick(/^review( your)? application$|^review$/i);
+  const next = pick(/^(continue( to next step)?|next)$/i)
+    .concat(buttons.filter((el) => el.hasAttribute("data-easy-apply-next-button")))
+    .filter((el, i, all) => all.indexOf(el) === i);
+  const choices = submit.length ? submit : review.length ? review : next;
+  const kind = submit.length ? "submit" : review.length ? "review" : next.length ? "next" : "unknown";
+  const text = (dialog.innerText || "").replace(/\s+/g, " ").slice(0, 5000);
+  const signature = JSON.stringify({
+    text,
+    fields: Array.from(dialog.querySelectorAll("input, select, textarea"))
+      .filter(visible).map((el) => [el.id, el.name, el.type, el.getAttribute("aria-label")]),
+    kind,
+  });
+  const fieldCount = Array.from(dialog.querySelectorAll("input, select, textarea"))
+    .filter((el) => !el.disabled && (visible(el) || el.type === "file") && !["hidden", "submit", "button"].includes(el.type)).length;
+  if (action === "inspect") return { ok: true, kind, signature, fieldCount };
+  if (choices.length !== 1) return { ok: false, reason: `Found ${choices.length} ${kind} buttons in Easy Apply` };
+  if (action !== kind) return { ok: false, reason: `Expected ${action}, found ${kind}` };
+  const invalid = Array.from(dialog.querySelectorAll("input, select, textarea"))
+    .filter((el) => visible(el) && el.willValidate && !el.checkValidity());
+  if (invalid.length) return { ok: false, reason: `${invalid.length} required or invalid fields remain` };
+  choices[0].click();
+  return { ok: true, signature };
+}
+
+async function linkedInStep(tabId, action) {
+  const [{ result }] = await browser.scripting.executeScript({
+    target: { tabId }, func: linkedInEasyApply, args: [action],
+  });
+  return result;
+}
+
+async function waitForLinkedInStep(tabId, previousSignature) {
+  let candidate = "";
+  for (let attempt = 0; attempt < 40; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const state = await linkedInStep(tabId, "inspect");
+    if (!state.ok || state.kind === "unknown" || state.signature === previousSignature) {
+      candidate = "";
+      continue;
+    }
+    if (candidate === state.signature) return state;
+    candidate = state.signature;
+  }
+  throw new Error("Easy Apply did not advance; check the open dialog for validation errors");
+}
+
+async function fillLinkedInSteps(tabId, cvId, autoSubmit) {
+  const tab = await browser.tabs.get(tabId);
+  if (new URL(tab.url).hostname !== "www.linkedin.com") throw new Error("This is not a LinkedIn page");
+  if (!cvId) throw new Error("Select a CV first");
+  let state = await linkedInStep(tabId, "inspect");
+  if (!state.ok) {
+    const opened = await linkedInStep(tabId, "open");
+    if (!opened.ok) throw new Error(opened.reason);
+    state = await waitForLinkedInStep(tabId, "");
+  }
+  const logLines = [];
+  for (let step = 1; step <= 12; step++) {
+    if (!state.ok) throw new Error(state.reason);
+    if (state.kind === "unknown") throw new Error("No recognized Easy Apply step button");
+    // The final review page can have no fields. Do not scan the search form
+    // behind the dialog in that case.
+    if (state.fieldCount) {
+      const scan = await handleScan({ url: tab.url, cvId }, tabId);
+      if (!scan.formSnapshot.length) throw new Error(`Step ${step}: visible fields were not scanned`);
+      const requiredRefs = new Set(scan.formSnapshot.filter((field) => field.required).map((field) => field.ref));
+      const requiredSkipped = scan.fieldMapping.filter(
+        (entry) => requiredRefs.has(entry.ref) && entry.action === "skip",
+      );
+      if (requiredSkipped.length) throw new Error(`Step ${step}: ${requiredSkipped.length} required fields need an answer`);
+      const filled = await handleFill(scan, tabId);
+      if (filled.failedCount) throw new Error(`Step ${step}: ${filled.failedCount} fields failed to fill`);
+      logLines.push(`Step ${step}: ${filled.logLines[0]}`);
+    }
+    // A human-initiated run leaves the final submission to the applicant.
+    if (state.kind === "submit" && !autoSubmit) {
+      return { ok: true, status: "ready_to_submit", logLines };
+    }
+    if (state.kind === "submit") {
+      const before = await browser.scripting.executeScript({
+        target: { tabId, allFrames: true }, func: submittedConfirmation,
+      });
+      if (before.some((frame) => frame.result)) throw new Error("Submission confirmation was already visible");
+      const submitted = await linkedInStep(tabId, "submit");
+      if (!submitted.ok) throw new Error(submitted.reason);
+      await new Promise((resolve) => setTimeout(resolve, 4000));
+      const confirmation = await browser.scripting.executeScript({
+        target: { tabId, allFrames: true }, func: submittedConfirmation,
+      });
+      if (!confirmation.some((frame) => frame.result)) throw new Error("Submit clicked, but no confirmation was detected");
+      return { ok: true, status: "applied", logLines };
+    }
+    const advanced = await linkedInStep(tabId, state.kind);
+    if (!advanced.ok) throw new Error(`Step ${step}: ${advanced.reason}`);
+    state = await waitForLinkedInStep(tabId, advanced.signature);
+  }
+  throw new Error("Easy Apply exceeded 12 steps; inspect the open dialog");
+}
+
+function submitJobForm() {
+  const visible = (el) => {
+    const box = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return box.width > 0 && box.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+  };
+  const buttons = Array.from(document.querySelectorAll('button, input[type="submit"]'))
+    .filter((el) => !el.disabled && visible(el))
+    .filter((el) => /^(submit( application)?|send application|apply now)$/i.test(
+      (el.innerText || el.value || el.getAttribute("aria-label") || "").trim(),
+    ));
+  if (buttons.length !== 1) return { clicked: false, reason: `Found ${buttons.length} final submit buttons` };
+  const form = buttons[0].closest("form");
+  if (form && !form.checkValidity()) return { clicked: false, reason: "The form has invalid required fields" };
+  buttons[0].click();
+  return { clicked: true };
+}
+
+function submittedConfirmation() {
+  const text = (document.body?.innerText || "").slice(0, 10000);
+  return /application (has been )?(submitted|received|sent)|thank you for applying|we (have )?received your application/i.test(text)
+    || /\/(thank-you|application-submitted)(\/|\?|$)/i.test(location.pathname);
+}
+
+async function finishOpportunity(item, status, note) {
+  await fetch(`${CORE_URL}/api/v1/opportunities/${item.id}/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status, note }),
+  });
+}
+
+async function applyOpportunity(item) {
+  let tab;
+  try {
+    tab = await browser.tabs.create({ url: item.url, active: false });
+    await waitForTab(tab.id);
+    if (new URL(item.url).hostname === "www.linkedin.com") {
+      const result = await fillLinkedInSteps(tab.id, item.cv_id, true);
+      await finishOpportunity(item, "applied", `LinkedIn Easy Apply: ${result.logLines.join("; ")}`);
+      return;
+    }
+    let scan = await handleScan({ url: item.url, cvId: item.cv_id }, tab.id);
+    if (!scan.fieldMapping?.length) {
+      const [{ result: applyUrl }] = await browser.scripting.executeScript({
+        target: { tabId: tab.id }, func: findApplyLink,
+      });
+      if (!applyUrl) throw new Error("No application form or single Apply link was found");
+      await browser.tabs.update(tab.id, { url: applyUrl });
+      await waitForTab(tab.id);
+      scan = await handleScan({ url: applyUrl, cvId: item.cv_id }, tab.id);
+    }
+    if (!scan.fieldMapping?.length) throw new Error("No application fields were found");
+    const requiredRefs = new Set(scan.formSnapshot.filter((field) => field.required).map((field) => field.ref));
+    const requiredSkipped = scan.fieldMapping.filter(
+      (entry) => requiredRefs.has(entry.ref) && entry.action === "skip",
+    );
+    // A skipped answer can contain consent or logistics the applicant has to
+    // decide. Never submit a form with any such unanswered field.
+    if (requiredSkipped.length) throw new Error(`${requiredSkipped.length} fields need an answer`);
+    const filled = await handleFill(scan, tab.id);
+    if (filled.failedCount) throw new Error(`${filled.failedCount} fields failed to fill`);
+    const frameCounts = new Map();
+    for (const frame of Object.values(scan.refFrameMap)) {
+      frameCounts.set(frame.frameId, (frameCounts.get(frame.frameId) || 0) + 1);
+    }
+    const frameId = [...frameCounts].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 0;
+    const before = await browser.scripting.executeScript({
+      target: { tabId: tab.id, allFrames: true }, func: submittedConfirmation,
+    });
+    if (before.some((frame) => frame.result)) {
+      throw new Error("The page already shows a submission confirmation");
+    }
+    const [{ result }] = await browser.scripting.executeScript({
+      target: { tabId: tab.id, frameIds: [frameId] }, func: submitJobForm,
+    });
+    if (!result.clicked) throw new Error(result.reason);
+    await new Promise((resolve) => setTimeout(resolve, 4000));
+    const confirmation = await browser.scripting.executeScript({
+      target: { tabId: tab.id, allFrames: true }, func: submittedConfirmation,
+    });
+    if (!confirmation.some((frame) => frame.result)) {
+      throw new Error("Submit was clicked, but no confirmation was detected; inspect the open tab");
+    }
+    await finishOpportunity(item, "applied", "Confirmation detected after submission");
+  } catch (err) {
+    logBg("AUTO_APPLY_REVIEW", { id: item.id, error: String(err) });
+    await finishOpportunity(item, "needs_review", String(err));
+  }
+}
+
+let opportunityPollRunning = false;
+async function processOpportunityQueue() {
+  if (opportunityPollRunning) return;
+  opportunityPollRunning = true;
+  try {
+    const response = await fetch(`${CORE_URL}/api/v1/opportunities/next/`, { method: "POST" });
+    if (response.status === 204) return;
+    if (!response.ok) throw new Error(`core returned ${response.status}`);
+    await applyOpportunity(await response.json());
+  } catch (err) {
+    logBg("OPPORTUNITY_POLL_FAILED", { error: String(err) });
+  } finally {
+    opportunityPollRunning = false;
+  }
+}
+
+browser.alarms.create("job-filler-opportunities", { periodInMinutes: 30 });
+browser.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === "job-filler-opportunities") processOpportunityQueue();
+});
+processOpportunityQueue();

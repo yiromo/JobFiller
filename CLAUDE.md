@@ -19,11 +19,11 @@ fix — that context belongs in the PROGRESS entry, not the source.
   field-mapping (deciding what value goes in which form field). All AI/agent logic lives
   behind this API — the extension never calls an LLM directly.
 - `extension/` — Firefox (Zen) WebExtension (Manifest V3). Manually triggered per page: user
-  clicks "Scan" to read the form, then "Fill" to apply the plan `core` returns. No crawling,
-  no auto-apply, no background activity.
+  clicks "Scan" to read the form, then "Fill" to apply the plan `core` returns. The optional
+  Telegram opportunity queue can also drive its scan/fill path and attempt a final submit.
 
-The proactive/background app (auto-scroll job boards, apply across many sites unattended) is
-explicitly **not** built yet — see `tasks/BACKLOG.md`. Do not start it without being asked.
+The Telegram channel workflow lives in `apps.opportunities`; see `tasks/BACKLOG.md` for remaining
+multi-step ATS and Telegram bot-link coverage. It was explicitly requested by the user.
 
 Progress and what's next live in `tasks/` — read `tasks/PROGRESS.md` before starting work, and
 add an entry there (plus `tasks/BACKLOG.md` if scope shifts) when a feature lands, in the same
@@ -48,7 +48,9 @@ Extension: no build step (plain WebExtension JS, no bundler). Load unpacked via
 `about:debugging#/runtime/this-firefox` → "Load Temporary Add-on…" → `extension/manifest.json`.
 `npx web-ext lint --source-dir extension` catches manifest errors before loading.
 
-There is no automated test suite. "Verify" means: backend `manage.py check` + `ruff check` +
+Dropdown regression checks run in headless Firefox via `extension/tests/select-fill.cjs`; see
+`extension/tests/README.md` for setup. They test DOM filling, not the installed extension's full
+Scan/Fill workflow. Other verification: backend `manage.py check` + `ruff check` +
 curl the endpoint with a real request; extension `web-ext lint` + manual load-and-click in
 Zen/Firefox (an agent without a real browser cannot claim the extension "works" — only that it
 lints clean and the DOM-fill logic was reviewed).
@@ -208,11 +210,13 @@ which splices them into the in-memory plan so a second Fill click doesn't repeat
   this from the live element at fill time (`isDropdownLike` — role, `aria-haspopup`,
   `aria-autocomplete`, or `aria-controls`/`aria-owns`), not from the action core/Settings
   assigned, since different ATSs mark up dropdowns differently and an upstream guess can be
-  wrong. `selectValue` types the value, polls for `[role="option"]` elements (inside
-  `aria-controls`/`aria-owns` if given, else the whole document), and if none appear, clears the
-  input and opens the widget by focus+click instead before matching against the unfiltered list
-  — falling back to leaving the typed text in place only if no option list ever appears. Fills
-  are sequential (`async`, not parallel) because opening one combobox can close another.
+  wrong. `selectValue` opens the widget and searches when its options do not match, including
+  an expanded but empty menu, then clears the search and scans the unfiltered/virtualized list.
+  ARIA option scopes resolve inside the field's own shadow root first; unscoped fallback excludes
+  options that were already visible before this widget opened. A selected option or chip confirms
+  a multi-select without requiring its menu to close. Input-only autocomplete values must survive
+  blur after a commit event or an option click that closes the menu; typed text alone is not success.
+  Fills are sequential (`async`, not parallel) because opening one combobox can close another.
 - **ATS forms embedded in a cross-origin iframe** (Newton/gnewton career pages are the known
   case) are invisible to a same-frame-only scan — `background.js`'s scan handler injects
   `scanPage` with `target: { tabId, allFrames: true }` and merges every frame's fields, prefixing

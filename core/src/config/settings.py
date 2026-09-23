@@ -29,6 +29,7 @@ INSTALLED_APPS = [
     "apps.core",
     "apps.cvs",
     "apps.applications",
+    "apps.opportunities",
 ]
 
 MIDDLEWARE = [
@@ -124,5 +125,12 @@ REST_FRAMEWORK = {
 # ---------------------------------------------------------------------------
 MIMO_API_KEY = config("MIMO_API_KEY", default="")
 MIMO_BASE_URL = config("MIMO_BASE_URL", default="https://api.xiaomimimo.com/v1")
-MIMO_MODEL = config("MIMO_MODEL", default="mimo-v2.5")
+MIMO_MODEL = config("MIMO_MODEL", default="mimo-v2.6-flash")
+MIMO_VISION_MODEL = config("MIMO_VISION_MODEL", default="mimo-v2.6-flash")
 TAVILY_API_KEY = config("TAVILY_API_KEY", default="")
+TELEGRAM_API_ID = config("TELEGRAM_API_ID", default=0, cast=int)
+TELEGRAM_API_HASH = config("TELEGRAM_API_HASH", default="")
+TELEGRAM_CHANNEL_TITLE = config(
+    "TELEGRAM_CHANNEL_TITLE", default="Digital nomads. Work from anywhere"
+)
+OPPORTUNITY_MIN_SCORE = config("OPPORTUNITY_MIN_SCORE", default=75, cast=int)

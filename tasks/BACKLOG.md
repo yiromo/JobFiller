@@ -3,8 +3,8 @@
 Roughly in order. Not started unless noted in `PROGRESS.md`.
 
 1. ~~**MiMo LLM integration**~~ — done, see `tasks/PROGRESS.md`. Remaining under this heading:
-   - Confirm the exact `image_url` payload shape against the real API before using vision
-     (docs didn't show an example at plan time) — needed for backlog item 6.
+   - Confirm the vision call against the real account; the official MiMo-V2.6 docs now specify
+     `image_url: {url: data:image/jpeg;base64,...}` and the scan sends this shape.
    - A user-answers profile (salary expectations, relocation, visa sponsorship, notice period)
      so `llm_mapper`'s logistics hard-skips can eventually be answered instead of always skipped.
 2. **CV structuring** — parse CV raw text into structured JSON (skills, experience, education)
@@ -19,10 +19,9 @@ Roughly in order. Not started unless noted in `PROGRESS.md`.
    - The one-page fit is prompt-enforced (bullet/section caps), not measured. If a generated CV
      ever spills to two pages, the check belongs server-side after the render, with one retry at
      a tighter cap — `pdfinfo` isn't guaranteed present, so count pages from the PDF itself.
-6. **Vision fallback** — when the heuristic/LLM mapper has low confidence on a field, send a
-   screenshot (`tabs.captureVisibleTab`, `activeTab` permission) alongside the HTML for that
-   one field. This is the one part of the pipeline that's a real LangGraph graph (confidence
-   branch + retry); everything before it is a plain pipeline.
+6. **Vision fallback** — scanned form fields now include a screenshot via Firefox `tabs.captureTab`
+   and MiMo-V2.6 vision when a field needs LLM mapping. Remaining: targeted retry on low confidence,
+   and DOM support for controls the scanner cannot see at all.
 7. ~~**Custom combobox filling**~~ — done, see `tasks/PROGRESS.md` (type + poll for
    `[role="option"]` + click best match, in `popup.js`'s `applyFillPlan`).
 8. **EEO settings: radio-group support** — `applyEeoSettings` (`popup.js`) only handles native
@@ -32,8 +31,11 @@ Roughly in order. Not started unless noted in `PROGRESS.md`.
    user's answer against each radio's own label, not the group's).
 9. **Application submit tracking** — record scan → fill → submitted status once there's a
    reason to (nothing writes a status today, so no `status` field exists yet either).
-10. **Proactive/workflow app** — explicitly out of scope until the extension is proven on all 5
-   test sites. Background crawling/auto-scroll/multi-site queueing lives here, not before.
+10. **Proactive/workflow app** — the Telegram channel ingestion, Telegraph job parser, CV match
+    queue, and conservative extension submit path are implemented. Remaining: verify live ATS
+    submissions and support Telegram Mini App jobs and multi-step applications outside LinkedIn
+    Easy Apply. A stale `applying`
+    job moves to `needs_review` after two hours so it is never submitted twice automatically.
 11. **Yes/No button-pair widgets** — a real ATS form (screenshot) has "Are you 18 or older?"
    etc. as two styled Yes/No buttons per question, not a native `<input type="radio">` group or
    `<select>` — `scanPage` only scans `input, select, textarea`, so these are currently invisible

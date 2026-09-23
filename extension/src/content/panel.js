@@ -557,6 +557,11 @@
     scanBtn.textContent = "Scan & Fill";
     const rescanBtn = h("button", { type: "button", id: "jf-rescan-btn", class: "jf-link-btn", hidden: "" });
     rescanBtn.textContent = "Re-scan";
+    const linkedInStepsBtn = h("button", {
+      type: "button", id: "jf-linkedin-steps-btn", class: "jf-btn jf-big-btn",
+      hidden: "", disabled: "",
+    });
+    linkedInStepsBtn.textContent = "Fill Easy Apply steps";
 
     const generateClBtn = h("button", {
       type: "button",
@@ -573,6 +578,7 @@
     const panelScan = h("div", { id: "jf-panel-scan", class: "jf-tab-panel", role: "tabpanel" }, [
       scanBtn,
       rescanBtn,
+      linkedInStepsBtn,
       generateClBtn,
       coverLetterPreview,
       scanLogEl,
@@ -700,12 +706,14 @@
     shadow.appendChild(style);
     for (const node of buildPanel()) shadow.appendChild(node);
     wireUp();
+    $("jf-linkedin-steps-btn").hidden = window.location.hostname !== "www.linkedin.com";
     log(`BOOT version=${JF_VERSION} url=${window.location.href}`);
     loadCvs()
       .then(() => {
         if ($("jf-scan-btn").dataset.mode === "scan") {
           $("jf-scan-btn").disabled = !$("jf-cv-select").value;
         }
+        $("jf-linkedin-steps-btn").disabled = !$("jf-cv-select").value;
       })
       .catch((err) => {
         setStatus("Could not reach core API.");
@@ -1009,6 +1017,7 @@
       if ($("jf-scan-btn").dataset.mode === "scan") {
         $("jf-scan-btn").disabled = !e.target.value;
       }
+      $("jf-linkedin-steps-btn").disabled = !e.target.value;
     });
 
     function switchTab(tab, sourceId) {
@@ -1155,6 +1164,37 @@
     $("jf-rescan-btn").addEventListener("click", () => {
       logEvent("CLICK", { id: "rescan-btn" });
       runScan();
+    });
+    $("jf-linkedin-steps-btn").addEventListener("click", async () => {
+      const btn = $("jf-linkedin-steps-btn");
+      const cvId = Number($("jf-cv-select").value);
+      if (!cvId) return;
+      btn.disabled = true;
+      btn.textContent = "Filling Easy Apply...";
+      setStatus("Filling Easy Apply steps...");
+      lastFieldMapping = null;
+      lastApplicationId = null;
+      lastPageText = "";
+      lastAboutText = "";
+      refFrameMap = {};
+      $("jf-scan-btn").dataset.mode = "scan";
+      $("jf-scan-btn").textContent = "Scan & Fill";
+      $("jf-rescan-btn").hidden = true;
+      $("jf-generate-cl-btn").disabled = true;
+      $("jf-analyze-btn").disabled = true;
+      try {
+        const result = await send("fillLinkedInSteps", { cvId });
+        if (!result.ok) throw new Error(result.error);
+        result.logLines.forEach((line) => log(line, "jf-scan-log"));
+        setStatus("Easy Apply filled — review and submit in LinkedIn.");
+        await saveScanState();
+      } catch (err) {
+        setStatus("Easy Apply stopped — review the open dialog.");
+        log(String(err), "jf-scan-log");
+      } finally {
+        btn.textContent = "Fill Easy Apply steps";
+        btn.disabled = false;
+      }
     });
 
     $("jf-generate-cl-btn").addEventListener("click", async () => {

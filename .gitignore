@@ -5,6 +5,8 @@ __pycache__/
 *.egg-info/
 core/src/staticfiles/
 core/src/data/
+*.session
+*.session-journal
 .ruff_cache/
 
 ## Env

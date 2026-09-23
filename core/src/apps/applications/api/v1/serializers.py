@@ -10,7 +10,9 @@ class FormFieldSerializer(serializers.Serializer):
     label = serializers.CharField(required=False, allow_blank=True, default="")
     section = serializers.CharField(required=False, allow_blank=True, default="")
     placeholder = serializers.CharField(required=False, allow_blank=True, default="")
-    options = serializers.ListField(child=serializers.CharField(), required=False, default=list)
+    options = serializers.ListField(
+        child=serializers.CharField(allow_blank=True), required=False, default=list
+    )
     required = serializers.BooleanField(required=False, default=False)
     role = serializers.CharField(required=False, allow_blank=True, default="")
     aria_haspopup = serializers.CharField(required=False, allow_blank=True, default="")
@@ -28,6 +30,13 @@ class ScanRequestSerializer(serializers.Serializer):
     cv_id = serializers.IntegerField(required=False, allow_null=True, default=None)
     page_text = serializers.CharField(required=False, allow_blank=True, default="")
     about_text = serializers.CharField(required=False, allow_blank=True, default="")
+    screenshot = serializers.RegexField(
+        regex=r"^data:image/(jpeg|png);base64,[A-Za-z0-9+/=]+$",
+        required=False,
+        allow_blank=True,
+        max_length=2_000_000,
+        default="",
+    )
     eeo_answers = EeoAnswerSerializer(many=True, required=False, default=list)
 
 

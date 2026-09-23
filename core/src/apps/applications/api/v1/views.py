@@ -41,6 +41,7 @@ class ApplicationScanView(APIView):
             cv_id=serializer.validated_data["cv_id"],
             page_text=serializer.validated_data["page_text"],
             about_text=serializer.validated_data["about_text"],
+            screenshot=serializer.validated_data["screenshot"],
             eeo_answers=[dict(row) for row in serializer.validated_data["eeo_answers"]],
         )
         service = ApplicationsContainer.application_service()

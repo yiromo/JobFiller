@@ -10,6 +10,7 @@ class ScanRequestDTO:
     page_text: str = ""
     about_text: str = ""
     eeo_answers: list[dict] = field(default_factory=list)
+    screenshot: str = ""
 
 
 @dataclass(frozen=True)

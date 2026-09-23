@@ -1,8 +1,67 @@
 # Progress log
 
+- **LinkedIn Easy Apply multi-step filling** — the panel now offers Fill Easy Apply steps with a
+  selected CV. It opens the modal, scopes scans to its visible fields, fills each step, and advances
+  through Continue and Review. A manual run stops at final Submit for review. The proactive queue
+  uses the same step flow and submits only after successful fills and field validation; missing
+  required answers or unrecognized controls leave the tab open for review. An isolated Firefox
+  fixture covers a three-page flow, required-field blocking, modal-only scanning, and the manual
+  stop. The supplied live LinkedIn job still needs an account-side run after extension reload.
+
+- **Private Telegram channel opportunity queue** — added an authenticated Telethon session,
+  periodic channel sync, Telegraph category and individual job parsing, durable deduplication by
+  post and URL, batched MiMo matching across uploaded CVs,
+  and a claim/result API. The extension polls ready jobs, reuses its existing scan/fill path, and
+  attempts a final submit only when required fields and fill results permit it. Unconfirmed submits,
+  unsupported forms, and channel posts without direct external links stay visible for review.
+  Rich text and button links are preserved. MiMo-V2.6 vision now receives a page screenshot alongside
+  scanned fields for visual label context; it does not create missing DOM controls. Live channel
+  ingestion was verified against the logged-in channel: the September 23 roundup yielded three
+  matched jobs (two ready, one below threshold); the September 22 roundup also completed with
+  batched scoring. Real ATS submission still needs an end-to-end
+  browser run; local tests cover ingestion and queue state changes. The API and six-hour Telegram
+  worker are running in Docker against a shared volume. Before switching, the volume's three CVs
+  were backed up and five unique host CVs imported, leaving eight; the logged-in Telegram session
+  was copied into that volume. The container sync processed five jobs successfully. The temporary
+  host systemd services were disabled and removed.
+
 Roughly newest first, one entry per feature/fix commit, added when it lands. Entries keep the root
 cause and the constraint that made the fix non-obvious — the stuff a future agent needs to not
 repeat a mistake. Everything else (what was curled, what lint said, which build number) is in git.
+
+- **Dropdown fills now finish the selection instead of stopping at an open menu** — reviewed
+  `CLAUDE.md` and Simplify 3.1.6's installed XPI from the Zen profile as a reference for native
+  setters and complete pointer sequences. The filler used a `MouseEvent` for `pointerdown`, never
+  sent `pointerup`, stopped before searching when `aria-expanded` was true but options were empty,
+  and retried successful multi-select clicks because it required the listbox to disappear. It now
+  dispatches real pointer events, searches even an already-open empty list, and recognizes selected
+  options/chips while a multi-select stays open. Input-only autocompletes need a commit event or
+  the option click to close the menu, and their value must survive blur; typed search text alone
+  is not success. Removed blind repeated clicks and Enter on an unrelated highlighted option.
+  Option lookup resolves multiple ARIA IDs inside the field's own shadow root first, excludes
+  disabled options, and snapshots only initially visible options so hidden pre-rendered menus
+  remain discoverable. Virtualized scrolling accumulates all observed labels for the existing
+  resolver round trip. Native selects use the prototype setter directly. Partial text matches
+  require word boundaries and a unique match, preventing `Male` from matching `Female`.
+  Firefox fixture regressions live in `extension/tests/select-fill.cjs`; setup is documented in
+  `extension/tests/README.md`. These exercise actual browser DOM events, not a live ATS application
+  or the installed extension's full Scan/Fill pipeline.
+
+- **A `<select>` with an empty placeholder option made the whole scan 400** — LinkedIn Easy Apply
+  renders `<option value="" disabled hidden></option>` as the first entry of its "How did you learn
+  about this job?" dropdown, so `scanPage` sent `options: ["", "Recommendation from a friend", ...]`.
+  `FormFieldSerializer.options` used a bare `serializers.CharField()` child, which rejects `""`
+  (`allow_blank` defaults to False), and DRF fails the entire request body on one bad list item — so
+  a single cosmetic placeholder option killed the scan for every field on the page, with only
+  "core returned 400" reaching the panel. The child is now `allow_blank=True`, matching
+  `ResolveOptionSerializer.options`, which already allowed it. The blank is kept rather than stripped
+  extension-side: `form_snapshot` is meant to be what the DOM actually contains, and a blank option
+  cannot win `validate_override`'s snap, since the `not value` guard above it already skips an empty
+  value and `value_lower in ""` is never true for a non-empty value —
+  whereas stripping it client-side would leave the next serializer field that forgets `allow_blank`
+  as the same latent trap. Worth remembering the shape: every optional string on
+  `FormFieldSerializer` carries `allow_blank=True` for exactly this reason; a real page will
+  eventually put an empty string in any of them.
 
 - **Shadow DOM: the scan could not see a web-component form at all** — a SmartRecruiters
   `oneclick-ui` page scanned to exactly one field, a `file` input labelled "Upload profile image",

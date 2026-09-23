@@ -1,7 +1,8 @@
 # job-filler
 
-An agent that fills job applications from your own CVs. You open a posting, click Scan, check what
-it plans to write, click Fill. It never crawls, never auto-applies, and never submits a form.
+An agent that fills job applications from your own CVs. You can open a posting, click Scan, check
+what it plans to write, and click Fill. An optional Telegram service also finds and applies to
+matching jobs from a private channel.
 
 - `core/` — Django 5 + DRF API. CV storage and parsing, the job-posting scan, and every AI call.
   The extension never talks to a model directly.
@@ -41,7 +42,7 @@ Extension, with `core` on `localhost:8000`:
    pick a CV and click **Scan & Fill** — the same button reads **Fill application** once the scan
    comes back, so filling is a second, deliberate click.
 4. Read the Logs tab for what was skipped and why, and check the form yourself before submitting.
-   Nothing here submits anything for you.
+   The manual Scan & Fill flow does not submit the form.
 
 There's no toolbar icon and no per-site permission prompt: the panel is a content script and
 `<all_urls>` is a required host permission, so installing asks for "Access your data for all
@@ -49,6 +50,12 @@ websites" once.
 
 Greenhouse, Ashby and LinkedIn Easy Apply have all been driven by hand; `tasks/PROGRESS.md` marks
 what's confirmed live versus only reviewed.
+
+On LinkedIn, select a CV in the panel and click **Fill Easy Apply steps**. The extension opens
+Easy Apply if needed, fills each page, and presses Continue/Review until the final review page.
+It leaves **Submit application** for you to review and click. If a required answer is missing or
+LinkedIn rejects a step, it stops with the dialog open. This flow has been checked against a
+multi-page Firefox fixture; it still needs a live LinkedIn run after reloading the extension.
 
 ### Generating a tailored CV
 
@@ -102,5 +109,40 @@ internet would simply invent them.
 Generated CVs list back every technology that wasn't already in your source CV, so you can confirm
 each one is true before sending it anywhere.
 
-No proactive/background app: no crawling job boards, no unattended applying. That's deliberate and
-out of scope.
+## Telegram opportunity agent
+
+The proactive service reads the private **Digital nomads. Work from anywhere** channel from a
+Telegram account that has already joined it. Get an API ID and hash at
+[my.telegram.org](https://my.telegram.org), set `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` in
+`core/.env`, and log in locally (enter the phone, code, and any 2FA password in the terminal):
+
+```bash
+cd core/src
+uv run python manage.py migrate
+uv run python manage.py telegram_login
+uv run python manage.py sync_telegram_jobs
+```
+
+Do not paste Telegram secrets or login codes into chat. The account session is stored in
+`core/src/data/telegram.session`; keep this file private and back it up with the data directory.
+The running installation uses Docker: `core` serves the API on localhost, and `telegram-sync`
+checks for new posts every six hours. Both share the `core_data` volume. For a fresh Docker setup,
+run `docker compose run --rm --no-deps telegram-sync uv run --no-sync python manage.py telegram_login`
+once, then `docker compose up -d --build`. The Docker volume's CV database and Telegram session are
+separate from the host `core/src/data`; upload CVs to the running Docker API or migrate them first.
+
+The service follows each post's Telegraph category links to individual job descriptions and final
+application links. MiMo first selects promising job titles, then compares their descriptions with
+uploaded CVs in one batch. Set `MIMO_API_KEY` to enable this matching. The default `MIMO_MODEL` and
+`MIMO_VISION_MODEL` are `mimo-v2.6-flash`. The extension sends a screenshot with scanned form fields
+so the vision model can read visual labels; unsupported controls still need DOM support to be filled.
+Matches above `OPPORTUNITY_MIN_SCORE` (default 75) enter a queue. While Firefox/Zen
+and the extension are running, it polls this queue every 30 minutes, opens one job at a time,
+scans and fills its form with the selected CV, and submits only when required fields are answered,
+filling succeeds, and a single final submit button is found. It marks the job **applied** only
+after detecting a confirmation; otherwise it leaves the tab open and marks it **needs review**.
+For LinkedIn Easy Apply links, the queue worker uses the same multi-page flow and submits after
+the final review page only if every step succeeds.
+Reload the Firefox/Zen extension after updating it. See Manage CVs → Telegram opportunities,
+`GET /api/v1/opportunities/`, or Django admin for the queue
+and reasons. Posts without an individual application link stay available for review.

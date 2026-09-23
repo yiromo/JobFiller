@@ -58,6 +58,8 @@ _ACTION_ECHO_RE = re.compile(r"^(type|select)\s*:?\s+", re.IGNORECASE)
 
 _SYSTEM_PROMPT = """You fill in job application form fields using ONLY facts grounded in the \
 candidate's CV (and, for context, the job posting text). Rules:
+- A screenshot may show the form's visual labels and layout. Use it to understand which given \
+field asks which question; do not invent fields or candidate facts from the image.
 - A field's "section" is the heading or question text rendered next to it on the page. When \
 "label" is empty or generic, "section" is what the field is actually asking — answer that.
 - Never invent employers, dates, numbers, or skills that are not in the CV.
@@ -98,6 +100,7 @@ def augment_skipped_fields(
     field_mapping: list[dict],
     cv_raw_text: str,
     page_text: str,
+    screenshot: str = "",
 ) -> list[dict]:
     if not settings.MIMO_API_KEY:
         return field_mapping
@@ -114,7 +117,7 @@ def augment_skipped_fields(
         return field_mapping
 
     try:
-        overrides = {o["ref"]: o for o in _call_llm(candidates, cv_raw_text, page_text)}
+        overrides = {o["ref"]: o for o in _call_llm(candidates, cv_raw_text, page_text, screenshot)}
     except Exception:
         # A flaky/misconfigured LLM call must degrade to the heuristic's plan,
         # never crash the scan.
@@ -129,7 +132,9 @@ def augment_skipped_fields(
     ]
 
 
-def _call_llm(candidates: list[dict], cv_raw_text: str, page_text: str) -> list[dict]:
+def _call_llm(
+    candidates: list[dict], cv_raw_text: str, page_text: str, screenshot: str = ""
+) -> list[dict]:
     client = OpenAI(api_key=settings.MIMO_API_KEY, base_url=settings.MIMO_BASE_URL)
     user_content = json.dumps(
         {
@@ -150,11 +155,19 @@ def _call_llm(candidates: list[dict], cv_raw_text: str, page_text: str) -> list[
             ],
         }
     )
+    user_message = (
+        [
+            {"type": "text", "text": user_content},
+            {"type": "image_url", "image_url": {"url": screenshot}},
+        ]
+        if screenshot
+        else user_content
+    )
     response = client.chat.completions.create(
-        model=settings.MIMO_MODEL,
+        model=settings.MIMO_VISION_MODEL if screenshot else settings.MIMO_MODEL,
         messages=[
             {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
+            {"role": "user", "content": user_message},
         ],
         response_format={"type": "json_object"},
         timeout=45,

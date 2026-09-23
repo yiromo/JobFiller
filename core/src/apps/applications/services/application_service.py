@@ -68,6 +68,7 @@ class ApplicationService:
                         field_mapping=base_plan,
                         cv_raw_text=cv.raw_text,
                         page_text=payload.page_text,
+                        screenshot=payload.screenshot,
                     ),
                 )
             )

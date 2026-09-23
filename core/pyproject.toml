@@ -13,6 +13,7 @@ dependencies = [
     "python-docx",
     "gunicorn",
     "openai",
+    "telethon>=1.36,<2",
 ]
 
 [dependency-groups]

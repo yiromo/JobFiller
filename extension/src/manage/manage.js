@@ -6,6 +6,38 @@ const statusEl = document.getElementById("status");
 const cvListEl = document.getElementById("cv-list");
 const cvFileInput = document.getElementById("cv-file-input");
 const cvUploadBtn = document.getElementById("cv-upload-btn");
+const opportunitiesList = document.getElementById("opportunities-list");
+const opportunitiesStatus = document.getElementById("opportunities-status");
+
+async function loadOpportunities() {
+  opportunitiesStatus.textContent = "Loading opportunities...";
+  try {
+    const response = await fetch(`${CORE_URL}/api/v1/opportunities/`);
+    if (!response.ok) throw new Error(`core returned ${response.status}`);
+    const items = await response.json();
+    opportunitiesList.replaceChildren();
+    for (const item of items) {
+      const row = document.createElement("li");
+      const link = document.createElement("a");
+      link.href = item.url || item.source_links?.[0] || "#";
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = item.title || "Channel post";
+      const info = document.createElement("span");
+      info.textContent = ` — ${item.status.replaceAll("_", " ")}${item.match_score == null ? "" : ` · ${item.match_score}% fit`}`;
+      const note = document.createElement("small");
+      note.textContent = item.attempt_note || item.match_reason || "";
+      row.append(link, info, document.createElement("br"), note);
+      opportunitiesList.appendChild(row);
+    }
+    opportunitiesStatus.textContent = `${items.length} recent opportunity record(s).`;
+  } catch (err) {
+    opportunitiesStatus.textContent = `Could not load opportunities: ${err.message || err}`;
+  }
+}
+
+document.getElementById("opportunities-refresh").addEventListener("click", loadOpportunities);
+loadOpportunities();
 
 function setStatus(message) {
   statusEl.textContent = message;
