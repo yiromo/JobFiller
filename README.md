@@ -1,16 +1,38 @@
-# job-filler
+# JobFiller
 
-An agent that fills job applications from your own CVs. You can open a posting, click Scan, check
-what it plans to write, and click Fill. An optional Telegram service also finds and applies to
-matching jobs from a private channel.
+**Fill job applications from your own CV, without letting an AI make things up.**
 
-- `core/` — Django 5 + DRF API. CV storage and parsing, the job-posting scan, and every AI call.
-  The extension never talks to a model directly.
-- `extension/` — Firefox (Zen) WebExtension, Manifest V3. Reads the form on the page you're on,
-  sends it to `core`, applies the plan that comes back.
+JobFiller is a self-hosted Firefox extension and a small Django API. Open a job posting, click
+**Scan**, check what it plans to write in each field, then click **Fill**. It handles the fiddly
+parts: custom dropdowns, forms inside iframes, React-controlled inputs, résumé uploads, cover
+letters, and multi-page LinkedIn Easy Apply.
 
-`CLAUDE.md` has the architecture and the traps; `tasks/PROGRESS.md` is what's built and why,
-`tasks/BACKLOG.md` what's next.
+### Why use it
+
+- **Built on your own data.** Every answer comes from your CV, the job posting, or a Settings
+  answer you typed. If it can't back up an answer, it skips the field and tells you why.
+- **It won't click some things for you.** It never auto-fills legal attestations, EEO/demographic
+  questions it has no typed answer for, or logistics a CV can't answer (salary, visa, notice
+  period, relocation).
+- **You check it before sending.** Scan and Fill are two separate clicks, and the manual flow
+  never submits the form.
+- **Works on real ATSs.** Tested by hand on Greenhouse, Ashby and LinkedIn Easy Apply.
+- **Self-hosted.** Your CVs stay in a local SQLite database. The extension talks only to your own
+  `core` instance, never to an AI model directly.
+- **Extras:** tailored CV generation (rendered to PDF with LaTeX), per-scan cover letters, a job
+  fit analysis backed by web search with sources, and an optional Telegram job-channel agent.
+
+### How it's built
+
+- `core/`: Django 5 + DRF API. CV storage and parsing, the job-posting scan, and every AI call.
+  AI calls go through the OpenAI SDK to [Xiaomi MiMo](https://api.xiaomimimo.com) by default.
+  You can set `MIMO_BASE_URL` to another OpenAI-compatible endpoint, but only MiMo has been
+  tested. Without a key, it runs on heuristics alone.
+- `extension/`: Firefox (Zen) WebExtension, Manifest V3. Reads the form on the current page,
+  sends it to `core`, and applies the plan that comes back.
+
+`CLAUDE.md` covers the architecture and the traps. `tasks/PROGRESS.md` lists what's built and why,
+and `tasks/BACKLOG.md` lists what's next.
 
 ## Quick start
 
@@ -116,8 +138,8 @@ each one is true before sending it anywhere.
 
 ## Telegram opportunity agent
 
-The proactive service reads the private **Digital nomads. Work from anywhere** channel from a
-Telegram account that has already joined it. Get an API ID and hash at
+The proactive service reads a Telegram job channel (set `TELEGRAM_CHANNEL_TITLE`; the default is
+**Digital nomads. Work from anywhere**) from a Telegram account that has already joined it. Get an API ID and hash at
 [my.telegram.org](https://my.telegram.org), set `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` in
 `core/.env`, and log in locally (enter the phone, code, and any 2FA password in the terminal):
 
