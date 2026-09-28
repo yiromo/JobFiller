@@ -37,6 +37,7 @@ uv sync
 cd src && uv run python manage.py migrate
 uv run python manage.py runserver 0.0.0.0:8000
 uv run python manage.py check      # quick sanity check
+uv run python manage.py test       # applications + opportunities tests
 uv run ruff check .                # lint (line length 100, py3.12)
 uv run ruff format .
 ```
@@ -48,22 +49,26 @@ Extension: no build step (plain WebExtension JS, no bundler). Load unpacked via
 `about:debugging#/runtime/this-firefox` → "Load Temporary Add-on…" → `extension/manifest.json`.
 `npx web-ext lint --source-dir extension` catches manifest errors before loading.
 
-Dropdown regression checks run in headless Firefox via `extension/tests/select-fill.cjs`; see
-`extension/tests/README.md` for setup. They test DOM filling, not the installed extension's full
-Scan/Fill workflow. Other verification: backend `manage.py check` + `ruff check` +
-curl the endpoint with a real request; extension `web-ext lint` + manual load-and-click in
-Zen/Firefox (an agent without a real browser cannot claim the extension "works" — only that it
-lints clean and the DOM-fill logic was reviewed).
+Extension regression checks run in headless Firefox: `select-fill.cjs` (dropdown filling),
+`auto-apply.cjs` (final submit) and `linkedin-easy-apply.cjs` (Easy Apply modal) in
+`extension/tests/`; see `extension/tests/README.md` for setup. They test page logic against
+fixtures, not the installed extension's full Scan/Fill workflow. Other verification: backend
+`manage.py check` + `manage.py test` + `ruff check` + curl the endpoint with a real request;
+extension `web-ext lint` + manual load-and-click in Zen/Firefox (an agent without a real browser
+cannot claim the extension "works" — only that it lints clean and the DOM-fill logic was
+reviewed).
 
 ## Backend architecture (`core/src/apps/<app>/`)
 
-Layered, same shape for every app, wired with `dependency-injector` (`container.py` per app):
+Layered, wired with `dependency-injector` (`container.py` per app):
 
 ```
 models → dto → repositories (interface + impl) → services → api/v1 (serializers, views, urls)
 ```
 
-Don't put DB queries or business logic in views — mirror an existing app. Apps:
+Don't put DB queries or business logic in views — mirror `cvs` or `applications`. `opportunities`
+is the one flat exception (`models.py`, `service.py`, `views.py`, no DI container); don't copy
+its shape into a new app. Apps:
 
 - `core` — `/health/`
 - `cvs` — CV upload/list/file-download. Regex-based email/phone extraction lives here for now
@@ -79,6 +84,16 @@ Don't put DB queries or business logic in views — mirror an existing app. Apps
   scan, not the general LLM pass) — a paste-style field gets the letter as plain text (`action:
   "type"`), a file-upload field gets it rendered to `.docx` and attached inline via the field
   mapping's `file` object, same as the résumé upload but without a stored CV row behind it.
+  Also, all keyed by `application_id` from a prior scan: `generate-cover-letter/` (regenerate
+  the letter and rewrite its entries), `generate-answer/` (`agent/question_answer.py`, one
+  open-ended question) and `analyze/` (`agent/analyzer.py`: MiMo extracts two search queries,
+  Tavily runs them, MiMo scores CV fit and summarizes company/market findings; 503 without
+  `TAVILY_API_KEY`). `resolve-options/` is described below.
+- `opportunities` — Telegram job queue at `/api/v1/opportunities/` (list, `next/`, detail).
+  `manage.py telegram_login` creates the Telethon session in `core/src/data/`;
+  `sync_telegram_jobs` reads the channel, follows Telegraph job pages, and scores each job
+  against every CV with MiMo (prompts inline in `service.py`); jobs at or above
+  `OPPORTUNITY_MIN_SCORE` (default 75) are queued for the extension to scan and fill.
 
 `agent/` (`core/src/agent/`) is a **plain module, not a Django app** — it has no models. Its
 functions are called directly from `applications`/`cvs` services (not DI-injected — there's
@@ -96,7 +111,10 @@ candidate field with a `data-jf-ref` attribute (existing `id` reused when presen
 ```json
 {
   "url": "...",
+  "cv_id": 1,
   "page_text": "...",
+  "about_text": "...",
+  "screenshot": "data:image/png;base64,...",
   "form_snapshot": [
     {"ref": "...", "tag": "input", "type": "text", "name": "...", "id": "...",
      "label": "...", "section": "...", "placeholder": "...", "options": [...], "required": true,
@@ -110,9 +128,11 @@ candidate field with a `data-jf-ref` attribute (existing `id` reused when presen
 rendered beside it — see the "accessible name is often junk" bullet below for why both are
 needed. Both feed `field_haystack`, so every keyword rule (EEO, attestation, logistics, resume,
 cover letter) sees them, and both are sent to every LLM pass. `page_text` (job posting text,
-truncated) and `role`/`aria_haspopup`/`aria_controls` exist only to give the LLM pass context and
-to tell a custom combobox apart from a plain text input — the heuristic pass ignores them. Core
-returns:
+truncated), `about_text` (the posting's "About" section, cover letter only) and
+`role`/`aria_haspopup`/`aria_controls` exist only to give the LLM passes context and to tell a
+custom combobox apart from a plain text input — the heuristic pass ignores them. `screenshot`
+(optional JPEG/PNG data URL) switches the CV-grounded pass to `MIMO_VISION_MODEL`. All of
+`page_text`, `about_text` and `screenshot` are attacker-controllable page content. Core returns:
 
 ```json
 [{"ref": "...", "value": "...", "action": "type|select|check|upload|skip", "confidence": 0.0,
@@ -172,17 +192,13 @@ which splices them into the in-memory plan so a second Fill click doesn't repeat
   label or value), steps *over* control-bearing siblings rather than giving up — a phone widget's
   country picker sits between the number input and their shared "Phone number" heading — and caps
   the walk at 8 ancestors, a `<form>`, and 200 characters. Loosen any of those and it finds a
-  page-level container, the same failure mode `findToggleControl` had. It also skips
-  screen-reader-only siblings: those are clipped, not `display:none`, so they still paint a box
-  and still yield `innerText` — a "Total 0 file selected" node sits directly above Rippling's
-  résumé dropzone and was winning over the "Résumé" heading one level further up. Some headings
-  are simply out of reach (that phone country picker's own heading is 11 ancestors up, past two
-  nested field wrappers); the answer is the structural guard in the next bullet, not a bigger cap.
+  page-level container. It also skips screen-reader-only siblings: those are clipped, not
+  `display:none`, so they still yield `innerText` and outrank the real heading. Some headings are
+  simply out of reach; the answer is the structural guard in the next bullet, not a bigger cap.
 - **Skipping a field in the heuristic does not keep the LLM away from it.**
   `augment_skipped_fields` treats every `skip` as an unanswered candidate, so a heuristic skip is
-  a suggestion, not a decision. A phone country picker proved this: `field_mapper` skipped it for
-  want of a country, and the LLM pass — seeing a combobox under a "Phone number" heading — typed
-  the phone number into it. Anything the heuristic skips *on purpose* must also fail
+  a suggestion, not a decision (a skipped phone country picker once got the phone number typed
+  into it by the LLM pass). Anything the heuristic skips *on purpose* must also fail
   `_is_llm_eligible`, which is why `PHONE_KEYWORDS` is public alongside `EEO_KEYWORDS`. A keyword
   guard only holds where a keyword actually reaches the haystack, though, so the general rule is
   structural: a dropdown-like field with no label, no section and no options is unguessable and
@@ -193,15 +209,15 @@ which splices them into the in-memory plan so a second Fill click doesn't repeat
   alike): that was tried, and it broke `"email"` against `"e-mail"`.
 - **UI lives in a content script, not a toolbar popup.** `extension/src/content/panel.js` injects
   on every page (`<all_urls>`, a required permission) and mounts a closed shadow DOM host with a
-  corner tab + slide-out panel — this replaced the old `action.default_popup`
-  (`popup.html`/`popup.js`) because a browser popup is destroyed on every close, including a tab
-  switch, wiping its UI state. A content-script-injected DOM node persists across tab switches for
-  free (it's just hidden, not destroyed); `browser.storage.session` (keyed `scan:<tabId>`) still
+  corner tab + slide-out panel, because a browser popup is destroyed on every close, including a
+  tab switch, wiping its UI state. Don't reintroduce `action.default_popup`. The injected node
+  persists across tab switches; `browser.storage.session` (keyed `scan:<tabId>`) still
   covers the one case that does reset it — a full page reload/navigation. `extension/src/
   background.js` owns everything that needs privileged APIs unavailable to content scripts: all
   `fetch` calls to core, and every `scripting.executeScript` injection (`scanPage`,
   `applyFillPlan`) — `panel.js` talks to it via `browser.runtime.sendMessage`/`onMessage`, never
-  calls core or `scripting.*` directly.
+  calls core or `scripting.*` directly. `extension/src/manage/` is the Manage CVs page (CV
+  upload/generation and the Settings tab where EEO answers are typed).
 - **React-controlled inputs** don't pick up `el.value = x`. Use the native property setter
   (`Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set`) then
   dispatch `input`/`change` events. See `applyFillPlan` in `extension/src/background.js`.
@@ -222,9 +238,7 @@ which splices them into the in-memory plan so a second Fill click doesn't repeat
   `scanPage` with `target: { tabId, allFrames: true }` and merges every frame's fields, prefixing
   each `ref` with its `frameId` (`refFrameMap`, built in `background.js` and handed back to
   `panel.js` to store, maps the prefixed ref back to `{frameId, localRef}` for Fill, since a ref
-  only resolves inside the frame it was scanned from). Firefox returns partial results for frames
-  the extension lacks permission for instead of failing the whole call; this now always has
-  access since `<all_urls>` is a required host permission (no more per-site opt-in flow).
+  only resolves inside the frame it was scanned from).
 - **Legal attestations are never auto-filled by core**, even if a mapper could guess an answer —
   that's the applicant's own click to make. Hard rule in `agent/llm_mapper.py`
   (`_ATTESTATION_KEYWORDS`), not a confidence threshold — never relax this via prompting alone.
@@ -240,16 +254,11 @@ which splices them into the in-memory plan so a second Fill click doesn't repeat
   with no matching row, an empty row, or an unconfigured/failed MiMo call resolves to `skip`
   (`agent/eeo_mapper.py`'s `resolve_eeo_fields` degrades to all-skip in every one of those cases,
   same never-crash-the-scan pattern as `llm_mapper`/`cover_letter`). `background.js`'s
-  `applyEeoSettings` still runs afterward as a client-side verbatim fallback for anything core
-  still returned `skip` on. An `eeo_pending` field must stay out of `augment_skipped_fields`'s
-  `action == "skip"` candidate filter so it's never sent to the CV-grounded LLM pass at all —
-  that holds because every pass reads the same heuristic plan (see the parallel-passes bullet
-  below), where an EEO field's action is `eeo_pending` and never `skip`.
-  Resolved EEO values are persisted in `Application.field_mapping` in SQLite like every other
-  answer (same as the cover-letter text) — they no longer stay entirely client-side. Radio-button-
-  rendered EEO questions aren't handled by either path yet
-  (not seen on any test site so far); don't build that blind — confirm the actual markup on a
-  real ATS first.
+  `applyEeoSettings` runs afterward as a client-side verbatim fallback for anything core still
+  returned `skip` on. An `eeo_pending` field must never reach the CV-grounded LLM pass; that holds
+  only because its action is `eeo_pending`, never `skip` (see the parallel-passes bullet below).
+  Radio-button EEO questions aren't handled by either path; confirm the markup on a real ATS
+  before building that.
 - **A scan's three AI passes run in parallel threads, not in sequence.**
   `ApplicationService._run_resolution_passes` forks `augment_skipped_fields`, `_resolve_cover_letter`
   and `_resolve_eeo` off the same `build_fill_plan` output in a `ThreadPoolExecutor` and merges
@@ -260,7 +269,6 @@ which splices them into the in-memory plan so a second Fill click doesn't repeat
   owned-action set in `scan()` exactly matched to what the pass actually changes. The passes touch
   no ORM object (they take plain dicts, a `CvDTO` and strings; the only DB write is `_repo.create`
   after the join), which is what makes running them off the request thread safe.
-
 - **Refs don't survive a full re-render.** If the SPA re-renders the form between Scan and
   Fill, the stamped `data-jf-ref` attributes are gone — the fix is re-scanning, not retrying.
 - **`agent/option_resolver.py`'s EEO-safety is entirely because it never sees CV or page text** —
@@ -270,28 +278,23 @@ which splices them into the in-memory plan so a second Fill click doesn't repeat
   e.g. to help it resolve an ambiguous label — would silently break that guarantee for EEO fields
   routed through it; if that's ever needed, EEO refs must be excluded from this endpoint's input,
   not just trusted to behave.
-- **A combobox's real options don't exist in the DOM until it's opened** — `form_snapshot`'s
-  `options` is `[]` for these at scan time, so both mappers guess blind. `background.js`'s
-  `applyFillPlan` finds the actual options at fill time and, on a mismatch, opens the round trip
-  described above instead of leaving a wrong guess typed in. Also: never locate a field's own
-  toggle/menu by walking up to the nearest ancestor matching a loose class-name pattern (e.g.
-  `[class*="control" i]`) — on a real ATS this walked past the field's own wrapper to a shared
-  page-level container, so every combobox on the page ended up clicking and reading one single
-  unrelated field's menu. Click the exact `data-jf-ref`-stamped element itself instead; it's
-  guaranteed correctly scoped.
+- **Never locate a combobox's toggle/menu by walking up to a loose class-name ancestor** (e.g.
+  `[class*="control" i]`) — on a real ATS this reached a shared page-level container, so every
+  combobox clicked and read one unrelated field's menu. Click the exact `data-jf-ref`-stamped
+  element itself; it's guaranteed correctly scoped.
 - **A generated CV's "added skills" list is computed in Python, not taken from the model.**
   `cv_writer.rewrite` asks the model to report every technology it added, and then re-derives the
   list by diffing the rendered skills against the source CV's raw text — because the model does
   miss some (an observed run added "Docker" and reported only "Temporal"). The union is what the
   UI shows. That list is the entire safety story for the "apply a modern 2026 stack" feature, so
   never replace it with the model's own `added_skills`.
-- Only `core/.env` (git-ignored) holds secrets — `MIMO_API_KEY` included. Never put a key in a
-  commit or `docker-compose.yml`. An empty `MIMO_API_KEY` is a valid, supported state:
-  `llm_mapper.augment_skipped_fields` no-ops and the heuristic-only plan is returned as-is.
+- Only `core/.env` (git-ignored, template in `core/.env.example`) holds secrets: `MIMO_API_KEY`,
+  `TAVILY_API_KEY`, `TELEGRAM_API_ID`/`TELEGRAM_API_HASH`, plus the Telethon session file in
+  `core/src/data/`. Never put a key in a commit or `docker-compose.yml`. Every key is optional:
+  an empty `MIMO_API_KEY` makes `llm_mapper.augment_skipped_fields` no-op and returns the
+  heuristic-only plan; an empty `TAVILY_API_KEY` makes `analyze/` return 503.
 
 ## Conventions
 
-- Comments: do not write comments in code. Do not add them for new/edited code, and do not
-  restate what the code does.
 - Commit messages: single line, `<prefix>: <description>` (`feat:`, `fix:`, `chore:`), no body,
   no attribution trailers.
