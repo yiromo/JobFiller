@@ -241,7 +241,8 @@ def apply_one(page, adapter, vacancy, titles, log, summary, headed) -> bool | No
     except CaptchaError:
         vacancy.status = Vacancy.Status.NEEDS_REVIEW
         vacancy.note = (
-            "hh.kz asked for a captcha before sending; nothing was submitted. Send it with "
+            "hh.kz asked for a captcha before sending; nothing was submitted. Stop the service "
+            "(`systemctl --user stop job-filler-hunter`), then send it with "
             f"`hunt --apply --headed --vacancy {vacancy.external_id}`."
         )
         vacancy.save()

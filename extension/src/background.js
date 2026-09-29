@@ -1420,7 +1420,8 @@ function startKeepalive() {
 async function fetchHunterStatus() {
   const response = await fetch(`${CORE_URL}/api/v1/hunter/`);
   if (!response.ok) return { up: false };
-  return response.json();
+  const { vacancies, ...status } = await response.json();
+  return status;
 }
 
 browser.runtime.onMessage.addListener((message, sender) => {

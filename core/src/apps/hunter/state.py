@@ -173,7 +173,7 @@ class Tracker:
             pass
 
     def log(self, line: str) -> None:
-        stamp = timezone.localtime().strftime("%Y-%m-%d %H:%M:%S")
+        stamp = timezone.now().strftime("%Y-%m-%d %H:%M:%S UTC")
         self.agent["recent_log"] = [*self.agent["recent_log"], f"{stamp} {line}"][-LOG_LINES:]
         self.publish()
 
