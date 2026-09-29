@@ -54,6 +54,6 @@ Roughly in order. Not started unless noted in `PROGRESS.md`.
      did not render while non-GET requests were blocked during exploration.
    - Docker: the image lacks Camoufox and Xvfb, so there is no `hunter` compose service yet.
    - More sources behind `apps/hunter/sources/` (the registry already dispatches by hostname).
-   - A vacancy saved by `discover` but never scored (MiMo error, captcha mid-crawl) stays
-     `below_threshold` and is skipped as known on the next run; add a `--rescore`.
+   - A scheduler: a systemd user unit (or compose service once the image has Camoufox + Xvfb)
+     running `hunt --apply --loop 60` from `core/src`.
    - `hunt --loop` holds the Firefox profile lock, so `hh_login`/`hh_resumes` fail while it runs.

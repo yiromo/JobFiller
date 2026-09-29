@@ -1,9 +1,11 @@
 import random
 import re
 import time
+from dataclasses import dataclass, field
 from datetime import timedelta
 
 from django.conf import settings
+from django.db.models import Q
 from django.utils import timezone
 from openai import OpenAIError
 
@@ -17,6 +19,17 @@ from .sources import adapter_for
 from .sources.hh import CaptchaError
 
 SCORE_BATCH = 8
+UNSCORED_PREFIXES = ("Not scored", "Scoring failed")
+
+
+@dataclass
+class RunSummary:
+    discovered: int = 0
+    applied: list = field(default_factory=list)
+    review: list = field(default_factory=list)
+    daily_cap_reached: bool = False
+
+
 CYRILLIC_RE = re.compile(r"[а-яё]", re.IGNORECASE)
 LATIN_RE = re.compile(r"[a-z]", re.IGNORECASE)
 
@@ -44,10 +57,26 @@ def score_vacancies(vacancies: list[Vacancy], links: list[ResumeLink]) -> None:
             vacancy.cv = cv
             vacancy.resume_id = resume_for.get(cv.id, "") if cv else ""
             vacancy.match_score = score
-            vacancy.match_reason = reason or "Not scored; is MIMO_API_KEY set?"
+            vacancy.match_reason = reason or f"{UNSCORED_PREFIXES[0]}; is MIMO_API_KEY set?"
             ready = score is not None and score >= settings.HUNTER_MIN_SCORE
-            vacancy.status = Vacancy.Status.READY if ready else Vacancy.Status.BELOW_THRESHOLD
+            if not ready:
+                vacancy.status = Vacancy.Status.BELOW_THRESHOLD
+            elif vacancy.note:
+                vacancy.status = Vacancy.Status.NEEDS_REVIEW
+            else:
+                vacancy.status = Vacancy.Status.READY
             vacancy.save()
+
+
+def unscored() -> list[Vacancy]:
+    reason_filter = Q(match_reason="")
+    for prefix in UNSCORED_PREFIXES:
+        reason_filter |= Q(match_reason__startswith=prefix)
+    return list(
+        Vacancy.objects.filter(
+            reason_filter, status=Vacancy.Status.BELOW_THRESHOLD, match_score__isnull=True
+        )
+    )
 
 
 def discover(page, adapter, search_url: str, max_pages: int, log) -> list[Vacancy]:
@@ -90,16 +119,33 @@ def discover(page, adapter, search_url: str, max_pages: int, log) -> list[Vacanc
             vacancy.note = "No hh.kz response button; the employer takes applications elsewhere."
         elif status.has_test:
             vacancy.note = "Employer questionnaire required; answer it manually."
+        elif status.relocation_warning:
+            vacancy.note = "hh.kz warns this vacancy is in another region; check before applying."
         vacancy.save()
         created.append(vacancy)
         adapter.pause(page, 1.5, 4.0)
     return created
 
 
+def sent_last_day() -> int:
+    return Vacancy.objects.filter(applied_at__gte=timezone.now() - timedelta(days=1)).count()
+
+
 def apply_ready(
-    page, limit: int, links: list[ResumeLink], log, only: str = "", headed: bool = False
+    page,
+    limit: int,
+    links: list[ResumeLink],
+    log,
+    summary: RunSummary,
+    only: str = "",
+    headed: bool = False,
 ) -> None:
     titles = {link.resume_id: link.title for link in links}
+    remaining = max(0, settings.HUNTER_MAX_APPLIES_PER_DAY - sent_last_day())
+    if remaining < limit:
+        summary.daily_cap_reached = True
+        limit = remaining
+        log(f"Daily cap: {remaining} more responses allowed in the last 24 hours.")
     queue = Vacancy.objects.filter(status=Vacancy.Status.READY).select_related("cv")
     if only:
         queue = queue.filter(external_id=only)
@@ -124,7 +170,9 @@ def apply_ready(
                 else "The linked hh résumé is not offered for this vacancy."
             )
             done = bool(status and status.already_applied)
-            finish(vacancy, done, reason)
+            finish(vacancy, done, reason, sent=False)
+            if not done:
+                summary.review.append(vacancy)
             log(f"  {vacancy.title}: {reason}")
             continue
         letter = vacancy.cover_letter
@@ -156,22 +204,32 @@ def apply_ready(
                 f"`hunt --apply --headed --vacancy {vacancy.external_id}`."
             )
             vacancy.save()
+            summary.review.append(vacancy)
             raise
         finish(vacancy, applied, note)
+        (summary.applied if applied else summary.review).append(vacancy)
         log(f"  {'APPLIED' if applied else 'REVIEW '} {vacancy.title}: {note}")
 
 
-def finish(vacancy: Vacancy, applied: bool, note: str) -> None:
+def finish(vacancy: Vacancy, applied: bool, note: str, sent: bool = True) -> None:
     vacancy.status = Vacancy.Status.APPLIED if applied else Vacancy.Status.NEEDS_REVIEW
     vacancy.note = note[:2000]
-    if applied:
+    if applied and sent:
         vacancy.applied_at = timezone.now()
     vacancy.save()
 
 
 def run_once(
-    *, apply: bool, limit: int, max_pages: int, log, only: str = "", headed: bool = False
-) -> None:
+    *,
+    apply: bool,
+    limit: int,
+    max_pages: int,
+    log,
+    only: str = "",
+    headed: bool = False,
+    summary: RunSummary | None = None,
+) -> RunSummary:
+    summary = summary if summary is not None else RunSummary()
     links = list(ResumeLink.objects.select_related("cv").filter(source="hh"))
     if not links:
         raise RuntimeError("Link at least one CV to an hh résumé first (hh_resumes --link).")
@@ -187,21 +245,23 @@ def run_once(
         page.goto(adapter_for(sources[0]).origin(sources[0]), wait_until="domcontentloaded")
         if not adapter_for(sources[0]).is_logged_in(page):
             raise RuntimeError("The hh.kz profile is not logged in; run hh_login.")
+        resume_hashes = [link.resume_id for link in links]
         created = []
         for url in sources:
-            created += discover(page, adapter_for(url), url, max_pages, log)
-        pending = [v for v in created if v.status == Vacancy.Status.BELOW_THRESHOLD]
+            adapter = adapter_for(url)
+            for search_url in adapter.expand_source(url, resume_hashes):
+                created += discover(page, adapter, search_url, max_pages, log)
+        summary.discovered = len(created)
+        pending = unscored()
         score_vacancies(pending, links)
-        for vacancy in pending:
-            if vacancy.status == Vacancy.Status.READY and vacancy.note.startswith("Employer"):
-                vacancy.status = Vacancy.Status.NEEDS_REVIEW
-                vacancy.save(update_fields=["status", "updated_at"])
-        report(created, log)
+        summary.review += [v for v in pending if v.status == Vacancy.Status.NEEDS_REVIEW]
+        report(list(Vacancy.objects.filter(pk__in=[v.pk for v in created])), log)
         if apply:
-            apply_ready(page, limit, links, log, only, headed)
+            apply_ready(page, limit, links, log, summary, only, headed)
         else:
             ready = Vacancy.objects.filter(status=Vacancy.Status.READY).count()
             log(f"Dry run: {ready} vacancies ready; rerun with --apply to send responses.")
+    return summary
 
 
 def report(vacancies: list[Vacancy], log) -> None:

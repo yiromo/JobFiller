@@ -96,7 +96,9 @@ Don't put DB queries or business logic in views — mirror an existing app. Apps
 - `hunter` — proactive hh.kz agent driven by Camoufox (Playwright Firefox), no API, flat layout.
   `browser.py` owns the shared profile (`data/browser/<site>/`: Firefox profile, pinned
   `fingerprint.json`, `session.json` cookie snapshot); `sources/` holds one adapter per job site,
-  picked by hostname from `JOB_SOURCE_URLS`; `service.py` runs crawl → score → apply. It is fully
+  picked by hostname from `JOB_SOURCE_URLS` (an hh homepage URL expands to per-résumé
+  recommendation searches); `service.py` runs crawl → score → apply under a daily cap, and
+  `notify.py` posts run summaries to Telegram Saved Messages. It is fully
   separate from `opportunities` on purpose: the extension polls `/opportunities/next/` and would
   claim hh rows.
 

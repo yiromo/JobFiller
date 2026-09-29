@@ -1,6 +1,9 @@
+from types import SimpleNamespace
+
 from django.test import SimpleTestCase
 
-from apps.hunter.service import letter_language
+from apps.hunter import notify
+from apps.hunter.service import RunSummary, letter_language
 from apps.hunter.sources import adapter_for, hh
 
 
@@ -42,3 +45,37 @@ class HhParsingTests(SimpleTestCase):
     def test_letter_language_follows_the_posting(self):
         self.assertEqual(letter_language("Ищем Python разработчика в команду"), "Russian")
         self.assertEqual(letter_language("We are hiring a Python developer"), "")
+
+
+class HunterWorkflowTests(SimpleTestCase):
+    def test_homepage_expands_to_recommendations_per_resume(self):
+        urls = hh.expand_source(
+            "https://astana.hh.kz/?hhtmFromLabel=header&hhtmFrom=vacancy_response",
+            ["abc", "abc", "def"],
+        )
+        self.assertEqual(
+            urls,
+            [
+                "https://astana.hh.kz/search/vacancy?resume=abc",
+                "https://astana.hh.kz/search/vacancy?resume=def",
+            ],
+        )
+
+    def test_search_url_is_kept_as_is(self):
+        url = "https://astana.hh.kz/search/vacancy?text=go&area=159"
+        self.assertEqual(hh.expand_source(url, ["abc"]), [url])
+
+    def test_relocation_warning_comes_from_the_top_level_payload(self):
+        self.assertTrue(hh.parse_status({}, {"show": True}).relocation_warning)
+        self.assertFalse(hh.parse_status({}, {"show": False}).relocation_warning)
+
+    def test_summary_text_is_empty_when_nothing_happened(self):
+        self.assertEqual(notify.summary_text(RunSummary()), "")
+
+    def test_summary_text_lists_applied_and_review(self):
+        applied = SimpleNamespace(title="Dev", employer="Acme", url="https://x/1", note="")
+        review = SimpleNamespace(title="Ops", employer="B", url="https://x/2", note="captcha")
+        text = notify.summary_text(RunSummary(applied=[applied], review=[review]), "logged out")
+        self.assertIn("applied to 1", text)
+        self.assertIn("Ops — captcha", text)
+        self.assertIn("logged out", text)

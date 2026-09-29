@@ -70,11 +70,22 @@ class ResponseStatus:
     has_test: bool
     letter_max_length: int
     resume_hashes: set[str] = field(default_factory=set)
+    relocation_warning: bool = False
 
 
 def handles(url: str) -> bool:
     host = (urlparse(url).hostname or "").lower()
     return host == "hh.kz" or host.endswith(".hh.kz")
+
+
+def expand_source(url: str, resume_hashes: list[str]) -> list[str]:
+    if urlparse(url).path not in {"", "/"}:
+        return [url]
+    base = origin(url)
+    return [
+        f"{base}/search/vacancy?{urlencode({'resume': resume_hash})}"
+        for resume_hash in dict.fromkeys(resume_hashes)
+    ]
 
 
 def origin(url: str) -> str:
@@ -172,12 +183,13 @@ def response_status(page, base: str, external_id: str) -> ResponseStatus | None:
     if response.status != 200:
         return None
     try:
-        return parse_status(response.json().get("responseStatus") or {})
+        payload = response.json()
     except json.JSONDecodeError:
         return None
+    return parse_status(payload.get("responseStatus") or {}, payload.get("relocationWarning"))
 
 
-def parse_status(status: dict) -> ResponseStatus:
+def parse_status(status: dict, relocation: dict | None = None) -> ResponseStatus:
     vacancy = status.get("shortVacancy") or {}
     resumes = status.get("resumes") or {}
     return ResponseStatus(
@@ -195,6 +207,7 @@ def parse_status(status: dict) -> ResponseStatus:
             for resume in resumes.values()
             if isinstance(resume, dict)
         },
+        relocation_warning=bool((relocation or {}).get("show")),
     )
 
 

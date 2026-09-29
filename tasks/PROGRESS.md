@@ -1,5 +1,20 @@
 # Progress log
 
+- **hh.kz agent runs unattended** — `JOB_SOURCE_URLS` accepts the logged-in hh homepage: its feed
+  is the "For you" page, `/search/vacancy?resume=<hash>`, so `hh.expand_source` turns a `/` URL
+  into one recommendation search per linked résumé hash (only Backend today; the homepage itself
+  defaults to the DevOps résumé, which no CV is linked to). `hunt --apply --loop MIN` is now the
+  whole workflow: crawl, re-score anything left unscored by an earlier failure, apply up to
+  `HUNTER_MAX_APPLIES_PER_DAY` (counted from `applied_at` over 24 hours), and report. Vacancies whose
+  popup JSON carries `relocationWarning.show` (recommendations include Russia and Uzbekistan) and
+  those with employer questionnaires go to `needs_review` instead of being sent. With
+  `HUNTER_NOTIFY_TELEGRAM` on, each `--apply` cycle that sends, flags or fails posts a summary to
+  the user's Saved Messages through the existing Telethon session; a repeated error (still
+  logged out) is only announced once. `HUNTER_HEADLESS=virtual` (Xvfb) is the unattended mode:
+  its first cycle sent two responses (BTS Digital "Backend-разработчик", "AI Agent Developer")
+  with no captcha, where the one plain-headless submit had hit one. No scheduler unit is in the
+  repo yet; the loop is started by hand.
+
 - **Proactive hh.kz agent (`apps.hunter`)** — a Camoufox-driven agent that crawls the search URLs in
   `JOB_SOURCE_URLS`, reads each vacancy, scores it against the CVs linked to an hh résumé (reusing
   `opportunities.service.rank_jobs`), and with `--apply` sends the hh response with a MiMo cover

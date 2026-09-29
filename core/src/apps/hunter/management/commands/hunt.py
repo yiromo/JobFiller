@@ -1,10 +1,12 @@
 import os
+import random
 import time
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
-from apps.hunter.service import run_once
+from apps.hunter import notify
+from apps.hunter.service import RunSummary, run_once
 from apps.hunter.sources.hh import CaptchaError
 
 
@@ -25,7 +27,10 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         os.environ.setdefault("DJANGO_ALLOW_ASYNC_UNSAFE", "true")
+        last_error = ""
         while True:
+            summary = RunSummary()
+            error = ""
             try:
                 run_once(
                     apply=options["apply"],
@@ -34,11 +39,18 @@ class Command(BaseCommand):
                     log=self.stdout.write,
                     only=options["vacancy"],
                     headed=options["headed"],
+                    summary=summary,
                 )
-            except (CaptchaError, RuntimeError) as error:
-                if not options["loop"]:
-                    raise CommandError(str(error)) from error
-                self.stderr.write(str(error))
+            except (CaptchaError, RuntimeError) as error_raised:
+                error = str(error_raised)
+                self.stderr.write(error)
+            repeated = bool(error) and error == last_error
+            text = notify.summary_text(summary, "" if repeated else error)
+            if options["apply"] and notify.send(text):
+                self.stdout.write("Sent the run summary to Telegram Saved Messages.")
+            last_error = error
             if not options["loop"]:
+                if error:
+                    raise CommandError(error)
                 return
-            time.sleep(options["loop"] * 60)
+            time.sleep(options["loop"] * 60 * random.uniform(0.85, 1.15))
