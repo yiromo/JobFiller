@@ -39,6 +39,9 @@ uv run python manage.py runserver 0.0.0.0:8000
 uv run python manage.py check      # quick sanity check
 uv run ruff check .                # lint (line length 100, py3.12)
 uv run ruff format .
+uv run python manage.py test                                   # all Django tests
+uv run python manage.py test apps.opportunities.tests          # one module (or add .Class.test_name)
+uv run python manage.py sync_telegram_jobs [--days N]          # ingest the Telegram channel
 ```
 
 Docker: `docker compose up --build` (from repo root) — runs `core` on `:8000` with a SQLite
@@ -48,8 +51,9 @@ Extension: no build step (plain WebExtension JS, no bundler). Load unpacked via
 `about:debugging#/runtime/this-firefox` → "Load Temporary Add-on…" → `extension/manifest.json`.
 `npx web-ext lint --source-dir extension` catches manifest errors before loading.
 
-Dropdown regression checks run in headless Firefox via `extension/tests/select-fill.cjs`; see
-`extension/tests/README.md` for setup. They test DOM filling, not the installed extension's full
+Browser regression checks run in headless Firefox (`extension/tests/select-fill.cjs`,
+`auto-apply.cjs`, `linkedin-easy-apply.cjs`); see `extension/tests/README.md` for setup and run
+commands. They test DOM filling, not the installed extension's full
 Scan/Fill workflow. Other verification: backend `manage.py check` + `ruff check` +
 curl the endpoint with a real request; extension `web-ext lint` + manual load-and-click in
 Zen/Firefox (an agent without a real browser cannot claim the extension "works" — only that it
@@ -79,6 +83,13 @@ Don't put DB queries or business logic in views — mirror an existing app. Apps
   scan, not the general LLM pass) — a paste-style field gets the letter as plain text (`action:
   "type"`), a file-upload field gets it rendered to `.docx` and attached inline via the field
   mapping's `file` object, same as the résumé upload but without a stored CV row behind it.
+  Sibling endpoints: `generate-cover-letter/`, `generate-answer/` (`agent/question_answer.py`,
+  the per-textarea "Generate with AI" button), `analyze/` (`agent/analyzer.py`, job fit analysis
+  with Tavily web search; needs `TAVILY_API_KEY`) and `resolve-options/` (below).
+- `opportunities` — Telegram job-channel queue under `/api/v1/opportunities/`. Flat module layout
+  (`service.py`, `telegram.py`, `telegraph.py`, `models.py`), not the layered shape above; fed by
+  the `telegram_login` and `sync_telegram_jobs` management commands. Needs `TELEGRAM_API_ID`/
+  `TELEGRAM_API_HASH`; `OPPORTUNITY_MIN_SCORE` gates which jobs get queued.
 
 `agent/` (`core/src/agent/`) is a **plain module, not a Django app** — it has no models. Its
 functions are called directly from `applications`/`cvs` services (not DI-injected — there's
