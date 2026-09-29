@@ -15,6 +15,7 @@ RESPOND = '[data-qa="vacancy-response-link-top"]'
 RESUME_TITLE = '[data-qa="resume-title"]'
 HIDDEN_RESUME_WARNING = '[data-qa="hidden-resume-warning"]'
 CAPTCHA = '[data-qa^="account-captcha"]'
+RELOCATION_CONFIRM = '[data-qa="relocation-warning-confirm"]'
 HUMAN_CAPTCHA_WAIT_MS = 10 * 60 * 1000
 
 SERP_JS = """
@@ -71,6 +72,11 @@ class ResponseStatus:
     letter_max_length: int
     resume_hashes: set[str] = field(default_factory=set)
     relocation_warning: bool = False
+    remote: bool = False
+
+    @property
+    def needs_relocation(self) -> bool:
+        return self.relocation_warning and not self.remote
 
 
 def handles(url: str) -> bool:
@@ -208,6 +214,11 @@ def parse_status(status: dict, relocation: dict | None = None) -> ResponseStatus
             if isinstance(resume, dict)
         },
         relocation_warning=bool((relocation or {}).get("show")),
+        remote=any(
+            "REMOTE" in (entry.get("workFormatsElement") or [])
+            for entry in vacancy.get("workFormats") or []
+            if isinstance(entry, dict)
+        ),
     )
 
 
@@ -262,7 +273,13 @@ def apply(
     pause(page)
     button.first.click()
     try:
-        page.wait_for_selector(SUBMIT, timeout=20000)
+        page.wait_for_selector(f"{SUBMIT}, {RELOCATION_CONFIRM}", timeout=20000)
+        if page.locator(RELOCATION_CONFIRM).count():
+            if status.needs_relocation:
+                return False, "hh.kz asks to confirm applying from another region to an office job."
+            pause(page)
+            page.locator(RELOCATION_CONFIRM).first.click()
+            page.wait_for_selector(SUBMIT, timeout=20000)
     except PlaywrightTimeout:
         check_captcha(page)
         if "/applicant/vacancy_response" in page.url:

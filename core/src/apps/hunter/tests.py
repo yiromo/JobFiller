@@ -69,6 +69,13 @@ class HunterWorkflowTests(SimpleTestCase):
         self.assertTrue(hh.parse_status({}, {"show": True}).relocation_warning)
         self.assertFalse(hh.parse_status({}, {"show": False}).relocation_warning)
 
+    def test_remote_vacancy_in_another_region_needs_no_relocation(self):
+        remote = {"shortVacancy": {"workFormats": [{"workFormatsElement": ["ON_SITE", "REMOTE"]}]}}
+        office = {"shortVacancy": {"workFormats": [{"workFormatsElement": ["ON_SITE"]}]}}
+        self.assertFalse(hh.parse_status(remote, {"show": True}).needs_relocation)
+        self.assertTrue(hh.parse_status(office, {"show": True}).needs_relocation)
+        self.assertFalse(hh.parse_status(office, {"show": False}).needs_relocation)
+
     def test_summary_text_is_empty_when_nothing_happened(self):
         self.assertEqual(notify.summary_text(RunSummary()), "")
 

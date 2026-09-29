@@ -1,5 +1,15 @@
 # Progress log
 
+- **hh.kz agent applies to remote jobs in other regions** — hh recommends vacancies in Russia,
+  Georgia and Uzbekistan, and its popup JSON flags them with `relocationWarning.show`. That alone
+  sent 12 good matches (75–88) to `needs_review`. All 12 list `REMOTE` in
+  `shortVacancy.workFormats`, so `ResponseStatus.needs_relocation` is now "warning and not remote":
+  remote ones are applied to, office-only ones in another region still wait for review. Applying
+  to them opens a "You are applying from another country" dialog before the form;
+  `apply` clicks `relocation-warning-confirm` only when the vacancy is remote. The 12 held rows were
+  moved back to `ready`, and the first of them (Senior AI Engineer, Moscow, remote) was sent and
+  confirmed through that dialog.
+
 - **hh.kz agent runs unattended** — `JOB_SOURCE_URLS` accepts the logged-in hh homepage: its feed
   is the "For you" page, `/search/vacancy?resume=<hash>`, so `hh.expand_source` turns a `/` URL
   into one recommendation search per linked résumé hash (only Backend today; the homepage itself

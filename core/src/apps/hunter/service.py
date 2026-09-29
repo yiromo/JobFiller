@@ -119,8 +119,8 @@ def discover(page, adapter, search_url: str, max_pages: int, log) -> list[Vacanc
             vacancy.note = "No hh.kz response button; the employer takes applications elsewhere."
         elif status.has_test:
             vacancy.note = "Employer questionnaire required; answer it manually."
-        elif status.relocation_warning:
-            vacancy.note = "hh.kz warns this vacancy is in another region; check before applying."
+        elif status.needs_relocation:
+            vacancy.note = "Office job in another region; hh.kz warns about relocation."
         vacancy.save()
         created.append(vacancy)
         adapter.pause(page, 1.5, 4.0)
