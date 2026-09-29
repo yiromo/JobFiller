@@ -12,8 +12,9 @@
   the user's Saved Messages through the existing Telethon session; a repeated error (still
   logged out) is only announced once. `HUNTER_HEADLESS=virtual` (Xvfb) is the unattended mode:
   its first cycle sent two responses (BTS Digital "Backend-разработчик", "AI Agent Developer")
-  with no captcha, where the one plain-headless submit had hit one. No scheduler unit is in the
-  repo yet; the loop is started by hand.
+  with no captcha, where the one plain-headless submit had hit one. `deploy/systemd/
+  job-filler-hunter.service` is a user unit running that loop hourly; it is symlinked into
+  `~/.config/systemd/user/` and enabled. Stop it before `hh_login`/`hh_resumes` (profile lock).
 
 - **Proactive hh.kz agent (`apps.hunter`)** — a Camoufox-driven agent that crawls the search URLs in
   `JOB_SOURCE_URLS`, reads each vacancy, scores it against the CVs linked to an hh résumé (reusing

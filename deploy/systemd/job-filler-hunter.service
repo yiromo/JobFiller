@@ -1,0 +1,15 @@
+[Unit]
+Description=job-filler hh.kz hunter agent
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Documents/VSCode/job-filler/core/src
+Environment=PYTHONUNBUFFERED=1
+ExecStart=%h/.local/bin/uv run python manage.py hunt --apply --loop 60
+Restart=on-failure
+RestartSec=600
+
+[Install]
+WantedBy=default.target
