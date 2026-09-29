@@ -1,5 +1,26 @@
 # Progress log
 
+- **Proactive hh.kz agent (`apps.hunter`)** — a Camoufox-driven agent that crawls the search URLs in
+  `JOB_SOURCE_URLS`, reads each vacancy, scores it against the CVs linked to an hh résumé (reusing
+  `opportunities.service.rank_jobs`), and with `--apply` sends the hh response with a MiMo cover
+  letter. hh sends its own hosted résumé, not a PDF, so `ResumeLink` maps job-filler CVs to hh
+  résumé hashes (`hh_resumes --link CV_ID=HASH`); CVs 4, 5 and 9 point at "Backend (Python/Go)".
+  The login lives in one persistent Camoufox profile under `data/browser/hh/` with a pinned
+  fingerprint preset (`fingerprint.json`) and a cookie snapshot (`session.json`, restored into an
+  empty profile), so one `hh_login` survives restarts and can be copied to another machine.
+  Everything the agent needs to decide on a vacancy comes from a GET to
+  `/applicant/vacancy_response/popup`, so the dry run never clicks Respond. `alreadyApplied` in
+  that JSON stays false after a successful send while another résumé could still be used; a sent
+  response shows up as `negotiations.topicList`/`usedResumeIds`, which is what `parse_status`
+  checks. Headless submits hit a 403 plus text captcha; the agent does not solve captchas — a
+  headless run stops and returns the vacancy to `ready`, and `--headed` waits for the user to
+  solve it. The first headed submit (BI Group "Разработчик", 133866105) needed no captcha and was
+  confirmed in the hh responses list. `cover_letter.generate` gained a `language` argument and a
+  rule against stating availability, work format or relocation the CV does not state, after a
+  Russian letter promised full-time office work. Playwright's sync API runs an event loop, so
+  `hunt` sets `DJANGO_ALLOW_ASYNC_UNSAFE`. Employer questionnaires (`hasTests`) go to
+  `needs_review` untouched.
+
 - **LinkedIn step failures named no field** — build 16 found the dialog (a light-DOM
   `<dialog open aria-labelledby="dialog-header">`, which the old `[role="dialog"]` selector never
   matched) and typed the mobile number. It then stopped at "Step 1: 1 fields failed to fill",

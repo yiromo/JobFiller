@@ -11,6 +11,8 @@ _SYSTEM_PROMPT = """You write professional cover letters using ONLY facts ground
 candidate's CV, for the specific job posting given. Rules:
 - 250-400 words, three or four paragraphs.
 - Never invent employers, dates, numbers, or skills that are not in the CV.
+- Never state availability, start date, salary, work format (office/remote/hybrid), relocation, \
+or schedule commitments unless the CV states them explicitly.
 - Write in first person, as the candidate.
 - Open with "Dear Hiring Team," unless the job posting names a specific person to address.
 - Identify the company and role from the job posting text and reference them naturally.
@@ -24,7 +26,13 @@ overly polished transitions.
 Respond with the letter's plain text only — no subject line, no markdown, no commentary."""
 
 
-def generate(cv_raw_text: str, page_text: str, applicant_name: str, about_text: str = "") -> str:
+def generate(
+    cv_raw_text: str,
+    page_text: str,
+    applicant_name: str,
+    about_text: str = "",
+    language: str = "",
+) -> str:
     client = OpenAI(api_key=settings.MIMO_API_KEY, base_url=settings.MIMO_BASE_URL)
     about_block = (
         f'\n\nAbout the company/role (from the posting\'s "About" section):\n{about_text[:2000]}'
@@ -40,7 +48,16 @@ def generate(cv_raw_text: str, page_text: str, applicant_name: str, about_text: 
     response = client.chat.completions.create(
         model=settings.MIMO_MODEL,
         messages=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {
+                "role": "system",
+                "content": _SYSTEM_PROMPT
+                + (
+                    f"\nWrite the whole letter in {language}, including the greeting, "
+                    'which replaces "Dear Hiring Team,".'
+                    if language
+                    else ""
+                ),
+            },
             {"role": "user", "content": user_content},
         ],
         timeout=45,

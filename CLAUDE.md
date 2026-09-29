@@ -42,6 +42,9 @@ uv run ruff format .
 uv run python manage.py test                                   # all Django tests
 uv run python manage.py test apps.opportunities.tests          # one module (or add .Class.test_name)
 uv run python manage.py sync_telegram_jobs [--days N]          # ingest the Telegram channel
+uv run python manage.py hh_login                               # visible browser: log in to hh.kz once
+uv run python manage.py hh_resumes [--link CV_ID=HASH]         # list/link hh résumés
+uv run python manage.py hunt [--apply] [--headed] [--loop MIN] # hh.kz agent (dry run by default)
 ```
 
 Docker: `docker compose up --build` (from repo root) — runs `core` on `:8000` with a SQLite
@@ -90,6 +93,12 @@ Don't put DB queries or business logic in views — mirror an existing app. Apps
   (`service.py`, `telegram.py`, `telegraph.py`, `models.py`), not the layered shape above; fed by
   the `telegram_login` and `sync_telegram_jobs` management commands. Needs `TELEGRAM_API_ID`/
   `TELEGRAM_API_HASH`; `OPPORTUNITY_MIN_SCORE` gates which jobs get queued.
+- `hunter` — proactive hh.kz agent driven by Camoufox (Playwright Firefox), no API, flat layout.
+  `browser.py` owns the shared profile (`data/browser/<site>/`: Firefox profile, pinned
+  `fingerprint.json`, `session.json` cookie snapshot); `sources/` holds one adapter per job site,
+  picked by hostname from `JOB_SOURCE_URLS`; `service.py` runs crawl → score → apply. It is fully
+  separate from `opportunities` on purpose: the extension polls `/opportunities/next/` and would
+  claim hh rows.
 
 `agent/` (`core/src/agent/`) is a **plain module, not a Django app** — it has no models. Its
 functions are called directly from `applications`/`cvs` services (not DI-injected — there's
@@ -272,6 +281,13 @@ which splices them into the in-memory plan so a second Fill click doesn't repeat
   no ORM object (they take plain dicts, a `CvDTO` and strings; the only DB write is `_repo.create`
   after the join), which is what makes running them off the request thread safe.
 
+- **hh.kz: decide from the popup JSON, confirm from negotiations, never solve captchas.**
+  `GET /applicant/vacancy_response/popup?vacancyId=` returns résumés, letter requirement,
+  questionnaire flag and prior responses, so discovery never opens the response modal.
+  `alreadyApplied` there stays false after a successful send while another résumé could still be
+  used — a sent response is `negotiations.topicList`/`usedResumeIds`. A headless submit can get a
+  403 plus captcha; the agent stops (headless) or waits for the user (`--headed`), and captcha
+  solving must not be automated.
 - **Refs don't survive a full re-render.** If the SPA re-renders the form between Scan and
   Fill, the stamped `data-jf-ref` attributes are gone — the fix is re-scanning, not retrying.
 - **`agent/option_resolver.py`'s EEO-safety is entirely because it never sees CV or page text** —

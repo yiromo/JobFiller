@@ -46,3 +46,11 @@ Roughly in order. Not started unless noted in `PROGRESS.md`.
    `tasks/PROGRESS.md`) is attached to every scanned textarea on every page unconditionally, no
    opt-out. Simplify Copilot ships exactly this as a settings toggle. Not built now — no reason
    to believe it's intrusive yet, add it if a real site makes it feel that way.
+13. **hh.kz agent follow-ups** (`apps.hunter`, see `tasks/PROGRESS.md`):
+   - Employer questionnaires (`hasTests`) are routed to `needs_review`. Answer them via
+     `agent/question_answer.py` with Russian logistics/attestation/EEO hard-skips, once the real
+     questionnaire markup has been captured.
+   - Picking a non-default hh résumé in the response modal is written but unverified; its options
+     did not render while non-GET requests were blocked during exploration.
+   - Docker: the image lacks Camoufox and Xvfb, so there is no `hunter` compose service yet.
+   - More sources behind `apps/hunter/sources/` (the registry already dispatches by hostname).

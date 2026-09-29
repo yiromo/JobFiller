@@ -14,6 +14,7 @@ dependencies = [
     "gunicorn",
     "openai",
     "telethon>=1.36,<2",
+    "camoufox[geoip]>=0.5.6",
 ]
 
 [dependency-groups]
