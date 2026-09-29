@@ -35,9 +35,7 @@ class Command(BaseCommand):
                     only=options["vacancy"],
                     headed=options["headed"],
                 )
-            except CaptchaError as error:
-                raise CommandError(str(error)) from error
-            except RuntimeError as error:
+            except (CaptchaError, RuntimeError) as error:
                 if not options["loop"]:
                     raise CommandError(str(error)) from error
                 self.stderr.write(str(error))

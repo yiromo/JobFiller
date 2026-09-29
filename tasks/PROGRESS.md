@@ -7,14 +7,17 @@
   résumé hashes (`hh_resumes --link CV_ID=HASH`); CVs 4, 5 and 9 point at "Backend (Python/Go)".
   The login lives in one persistent Camoufox profile under `data/browser/hh/` with a pinned
   fingerprint preset (`fingerprint.json`) and a cookie snapshot (`session.json`, restored into an
-  empty profile), so one `hh_login` survives restarts and can be copied to another machine.
+  empty profile), so one `hh_login` survives restarts. Copying just those two files into an
+  empty `data/browser/hh/` on another machine was tested: the copy came up logged in.
   Everything the agent needs to decide on a vacancy comes from a GET to
   `/applicant/vacancy_response/popup`, so the dry run never clicks Respond. `alreadyApplied` in
   that JSON stays false after a successful send while another résumé could still be used; a sent
   response shows up as `negotiations.topicList`/`usedResumeIds`, which is what `parse_status`
   checks. Headless submits hit a 403 plus text captcha; the agent does not solve captchas — a
   headless run stops and returns the vacancy to `ready`, and `--headed` waits for the user to
-  solve it. The first headed submit (BI Group "Разработчик", 133866105) needed no captcha and was
+  solve it. In `--loop` mode a captcha no longer ends the loop; the vacancy goes to
+  `needs_review` with the exact `--headed --vacancy` command, so the loop does not retry it into
+  more 403s. One headless submit has been tried (captcha) and one headed (sent). The first headed submit (BI Group "Разработчик", 133866105) needed no captcha and was
   confirmed in the hh responses list. `cover_letter.generate` gained a `language` argument and a
   rule against stating availability, work format or relocation the CV does not state, after a
   Russian letter promised full-time office work. Playwright's sync API runs an event loop, so

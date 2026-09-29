@@ -150,8 +150,11 @@ def apply_ready(
                 notify=log if headed else None,
             )
         except CaptchaError:
-            vacancy.status = Vacancy.Status.READY
-            vacancy.note = "Stopped by an hh.kz captcha before sending; nothing was submitted."
+            vacancy.status = Vacancy.Status.NEEDS_REVIEW
+            vacancy.note = (
+                "hh.kz asked for a captcha before sending; nothing was submitted. Send it with "
+                f"`hunt --apply --headed --vacancy {vacancy.external_id}`."
+            )
             vacancy.save()
             raise
         finish(vacancy, applied, note)
