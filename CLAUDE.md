@@ -93,14 +93,18 @@ Don't put DB queries or business logic in views — mirror an existing app. Apps
   (`service.py`, `telegram.py`, `telegraph.py`, `models.py`), not the layered shape above; fed by
   the `telegram_login` and `sync_telegram_jobs` management commands. Needs `TELEGRAM_API_ID`/
   `TELEGRAM_API_HASH`; `OPPORTUNITY_MIN_SCORE` gates which jobs get queued.
-- `hunter` — proactive hh.kz agent driven by Camoufox (Playwright Firefox), no API, flat layout.
+- `hunter` — proactive hh.kz agent driven by Camoufox (Playwright Firefox), flat layout.
   `browser.py` owns the shared profile (`data/browser/<site>/`: Firefox profile, pinned
   `fingerprint.json`, `session.json` cookie snapshot); `sources/` holds one adapter per job site,
   picked by hostname from `JOB_SOURCE_URLS` (an hh homepage URL expands to per-résumé
   recommendation searches); `service.py` runs crawl → score → apply under a daily cap, and
   `notify.py` posts run summaries to Telegram Saved Messages. It is fully
   separate from `opportunities` on purpose: the extension polls `/opportunities/next/` and would
-  claim hh rows.
+  claim hh rows. `state.py` makes `hunt --loop` publish `data/hunter/status.json`, and
+  `GET /api/v1/hunter/` serves only that file (plus `up`), never the DB: the Docker `core` the
+  extension calls has its own volume database, and compose bind-mounts just that directory
+  read-only. The Manage page section and panel "hh agent" tab stay hidden unless `up`. Keep the
+  endpoint read-only.
 
 `agent/` (`core/src/agent/`) is a **plain module, not a Django app** — it has no models. Its
 functions are called directly from `applications`/`cvs` services (not DI-injected — there's

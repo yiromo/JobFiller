@@ -57,3 +57,9 @@ Roughly in order. Not started unless noted in `PROGRESS.md`.
    - A compose service once the image has Camoufox + Xvfb; on the host the systemd user unit in
      `deploy/systemd/` covers scheduling.
    - `hunt --loop` holds the Firefox profile lock, so `hh_login`/`hh_resumes` fail while it runs.
+   - Two databases: the Docker `core` (extension's CVs, applications, opportunities) and the host
+     `core/src/data/db.sqlite3` the systemd hunter uses have diverged; the extension only sees the
+     hunter through `status.json`. Unify them (hunter in compose, or one bind-mounted data dir with
+     a merge) before the extension can act on hh rows.
+   - `save_session` overwrites the cookie snapshot even when the profile has been logged out, so the
+     snapshot only rescues a fresh profile, not an expired one.

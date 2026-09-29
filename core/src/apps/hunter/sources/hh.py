@@ -252,6 +252,19 @@ def _select_resume(page, title: str) -> bool:
     return page.locator(RESUME_TITLE).first.inner_text().strip() == title
 
 
+def _captcha_gate(page, notify) -> None:
+    if notify is None or not page.locator('[data-qa*="captcha"]').count():
+        check_captcha(page)
+        return
+    notify("hh.kz is showing a captcha: solve it in the browser window to continue.")
+    try:
+        page.locator('[data-qa*="captcha"]').first.wait_for(
+            state="detached", timeout=HUMAN_CAPTCHA_WAIT_MS
+        )
+    except PlaywrightTimeout as error:
+        raise CaptchaError("The captcha was not solved within 10 minutes.") from error
+
+
 def _wait_after_submit(page, timeout_ms: int) -> str:
     for _ in range(timeout_ms // 500):
         if not page.locator(SUBMIT).count():
@@ -263,10 +276,16 @@ def _wait_after_submit(page, timeout_ms: int) -> str:
 
 
 def apply(
-    page, url: str, resume_title: str, letter: str, status: ResponseStatus, notify=None
+    page,
+    url: str,
+    resume_title: str,
+    letter: str,
+    status: ResponseStatus,
+    notify=None,
+    on_submit=None,
 ) -> tuple:
     page.goto(url, wait_until="domcontentloaded")
-    check_captcha(page)
+    _captcha_gate(page, notify)
     button = page.locator(RESPOND)
     if not button.count():
         return False, "No hh.kz response button; the employer may take applications elsewhere."
@@ -297,6 +316,8 @@ def apply(
         pause(page)
     elif status.letter_required:
         return False, "This vacancy requires a cover letter and none was generated."
+    if on_submit:
+        on_submit()
     page.locator(SUBMIT).first.click()
     outcome = _wait_after_submit(page, 20000)
     if outcome == "captcha":

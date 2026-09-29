@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 
 from django.conf import settings
 from telethon.errors import RPCError
@@ -23,11 +24,11 @@ def send(text: str) -> bool:
 
     try:
         return asyncio.run(deliver())
-    except (OSError, RPCError, RuntimeError):
+    except (OSError, RPCError, RuntimeError, sqlite3.Error):
         return False
 
 
-def summary_text(summary, error: str = "") -> str:
+def summary_text(summary, error: str = "", show_cap: bool = True) -> str:
     lines = []
     if summary.applied:
         lines.append(f"✅ hh.kz: applied to {len(summary.applied)}")
@@ -35,7 +36,7 @@ def summary_text(summary, error: str = "") -> str:
     if summary.review:
         lines.append(f"👀 Needs your review: {len(summary.review)}")
         lines += [f"• {v.title} — {v.note or v.match_reason}\n  {v.url}" for v in summary.review]
-    if summary.daily_cap_reached:
+    if summary.daily_cap_reached and show_cap:
         lines.append(f"⏸ Daily cap of {settings.HUNTER_MAX_APPLIES_PER_DAY} responses reached.")
     if error:
         lines.append(f"⚠️ {error}")

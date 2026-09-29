@@ -1417,6 +1417,12 @@ function startKeepalive() {
   return () => clearInterval(interval);
 }
 
+async function fetchHunterStatus() {
+  const response = await fetch(`${CORE_URL}/api/v1/hunter/`);
+  if (!response.ok) return { up: false };
+  return response.json();
+}
+
 browser.runtime.onMessage.addListener((message, sender) => {
   const tabId = sender.tab?.id;
   logBg("RECEIVE", { type: message.type, tabId, frameId: sender.frameId });
@@ -1458,6 +1464,8 @@ browser.runtime.onMessage.addListener((message, sender) => {
       return respond(handleAnalyze(message).catch((err) => reportError("analyze", err)));
     case "generateAnswer":
       return respond(handleGenerateAnswer(message).catch((err) => reportError("generateAnswer", err)));
+    case "hunterStatus":
+      return fetchHunterStatus().then((status) => ({ ok: true, status }), (err) => ({ ok: false, error: String(err) }));
     case "openManage":
       return respond(
         browser.tabs

@@ -1,13 +1,18 @@
 import os
 import random
+import signal
+import sys
 import time
+from datetime import timedelta
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
+from django.utils import timezone
 
 from apps.hunter import notify
-from apps.hunter.service import RunSummary, run_once
+from apps.hunter.service import RunSummary, first_line, run_once
 from apps.hunter.sources.hh import CaptchaError
+from apps.hunter.state import Tracker
 
 
 class Command(BaseCommand):
@@ -27,8 +32,28 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         os.environ.setdefault("DJANGO_ALLOW_ASYNC_UNSAFE", "true")
+        signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+        tracker = None
+        if options["loop"]:
+            tracker = Tracker(apply=options["apply"], loop_minutes=options["loop"])
+
+        def log(line: str) -> None:
+            self.stdout.write(line)
+            if tracker:
+                tracker.log(line)
+
+        try:
+            self.run_loop(options, tracker, log)
+        finally:
+            if tracker:
+                tracker.stopped()
+
+    def run_loop(self, options, tracker, log) -> None:
         last_error = ""
+        last_capped = False
         while True:
+            if tracker:
+                tracker.cycle_started()
             summary = RunSummary()
             error = ""
             try:
@@ -36,21 +61,36 @@ class Command(BaseCommand):
                     apply=options["apply"],
                     limit=options["limit"],
                     max_pages=options["max_pages"],
-                    log=self.stdout.write,
+                    log=log,
                     only=options["vacancy"],
                     headed=options["headed"],
                     summary=summary,
                 )
             except (CaptchaError, RuntimeError) as error_raised:
                 error = str(error_raised)
+            except Exception as error_raised:
+                if not options["loop"]:
+                    raise
+                error = f"{type(error_raised).__name__}: {first_line(error_raised)}"
+            if error:
                 self.stderr.write(error)
+                if tracker:
+                    tracker.log(f"ERROR {error}")
             repeated = bool(error) and error == last_error
-            text = notify.summary_text(summary, "" if repeated else error)
+            text = notify.summary_text(
+                summary,
+                "" if repeated else error,
+                show_cap=summary.daily_cap_reached and not last_capped,
+            )
             if options["apply"] and notify.send(text):
-                self.stdout.write("Sent the run summary to Telegram Saved Messages.")
+                log("Sent the run summary to Telegram Saved Messages.")
             last_error = error
+            last_capped = summary.daily_cap_reached
             if not options["loop"]:
                 if error:
                     raise CommandError(error)
                 return
-            time.sleep(options["loop"] * 60 * random.uniform(0.85, 1.15))
+            delay = options["loop"] * 60 * random.uniform(0.85, 1.15)
+            if tracker:
+                tracker.cycle_finished(summary, error, timezone.now() + timedelta(seconds=delay))
+            time.sleep(delay)

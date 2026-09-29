@@ -185,8 +185,36 @@
   border-bottom-color: #ffffff;
 }
 
-.jf-tab-panel[hidden] {
+.jf-tab-panel[hidden],
+.jf-tab[hidden] {
   display: none;
+}
+
+.jf-agent-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.jf-agent-stat {
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  padding: 8px 10px;
+}
+
+.jf-agent-stat strong {
+  display: block;
+  font-size: 18px;
+}
+
+.jf-agent-stat span {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.jf-agent-error {
+  color: #f87171;
 }
 
 .jf-tab-panel {
@@ -545,7 +573,16 @@
       "aria-selected": "false",
     });
     tabLogs.textContent = "Logs";
-    const tabs = h("div", { class: "jf-tabs", role: "tablist" }, [tabScan, tabAnalyze, tabLogs]);
+    const tabAgent = h("button", {
+      type: "button",
+      id: "jf-tab-agent",
+      class: "jf-tab",
+      role: "tab",
+      "aria-selected": "false",
+      hidden: "",
+    });
+    tabAgent.textContent = "hh agent";
+    const tabs = h("div", { class: "jf-tabs", role: "tablist" }, [tabScan, tabAnalyze, tabLogs, tabAgent]);
 
     const scanBtn = h("button", {
       type: "button",
@@ -616,7 +653,22 @@
       logEl,
     ]);
 
-    const body = h("div", { class: "jf-body" }, [row, status, tabs, panelScan, panelAnalyze, panelLogs]);
+    const agentStatus = h("p", { id: "jf-agent-status", class: "jf-hint" });
+    const agentStats = h("div", { id: "jf-agent-stats", class: "jf-agent-stats" });
+    const agentError = h("p", { id: "jf-agent-error", class: "jf-hint jf-agent-error", hidden: "" });
+    const agentLast = h("div", { id: "jf-agent-last", class: "jf-section" });
+    const agentOpenBtn = h("button", { type: "button", id: "jf-agent-open-btn", class: "jf-btn" });
+    agentOpenBtn.textContent = "Open full agent dashboard";
+
+    const panelAgent = h("div", { id: "jf-panel-agent", class: "jf-tab-panel", role: "tabpanel", hidden: "" }, [
+      agentStatus,
+      agentStats,
+      agentError,
+      agentLast,
+      agentOpenBtn,
+    ]);
+
+    const body = h("div", { class: "jf-body" }, [row, status, tabs, panelScan, panelAnalyze, panelLogs, panelAgent]);
 
     const panel = h("div", { id: "jf-panel", class: "jf-panel", hidden: "" }, [header, body]);
 
@@ -719,7 +771,10 @@
         setStatus("Could not reach core API.");
         log(String(err));
       });
-    restoreScanState();
+    refreshAgent().finally(() => restoreScanState());
+    setInterval(() => {
+      if (!$("jf-panel").hidden) refreshAgent();
+    }, 60000);
   }
 
   function timestamp() {
@@ -795,16 +850,18 @@
     btn.classList.remove("jf-progress-done");
   }
 
+  const TAB_NAMES = ["scan", "analyze", "logs", "agent"];
+
   function setActiveTab(tab) {
-    const target = ["scan", "analyze", "logs"].includes(tab) ? tab : "scan";
-    for (const name of ["scan", "analyze", "logs"]) {
+    const target = TAB_NAMES.includes(tab) && !$(`jf-tab-${tab}`).hidden ? tab : "scan";
+    for (const name of TAB_NAMES) {
       $(`jf-tab-${name}`).setAttribute("aria-selected", String(name === target));
       $(`jf-panel-${name}`).hidden = name !== target;
     }
   }
 
   function getActiveTab() {
-    for (const name of ["scan", "analyze", "logs"]) {
+    for (const name of TAB_NAMES) {
       if ($(`jf-tab-${name}`).getAttribute("aria-selected") === "true") return name;
     }
     return "scan";
@@ -880,6 +937,93 @@
     $("jf-panel").hidden = false;
     $("jf-corner-tab").hidden = true;
     saveScanState();
+    refreshAgent();
+  }
+
+  function formatAgentTime(value) {
+    if (!value) return "—";
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+  }
+
+  function renderAgent(data) {
+    const agent = data.agent || {};
+    const phase = agent.phase === "sleeping"
+      ? `Sleeping until ${formatAgentTime(agent.next_cycle_at)}`
+      : `Running a cycle since ${formatAgentTime(agent.cycle_started_at)}`;
+    $("jf-agent-status").textContent =
+      `${phase}${agent.apply ? "" : " (dry run)"} · ${agent.cycles ?? 0} cycle(s) · heartbeat ${formatAgentTime(agent.heartbeat_at)}`;
+
+    const cap = data.config?.max_applies_per_day;
+    const stats = [
+      [`${data.sent_last_day ?? 0}${cap ? `/${cap}` : ""}`, "Sent 24h"],
+      [data.counts?.applied ?? 0, "Applied"],
+      [data.counts?.ready ?? 0, "Ready"],
+      [data.counts?.needs_review ?? 0, "Review"],
+      [data.counts?.below_threshold ?? 0, "Below"],
+      [data.total ?? 0, "Seen"],
+    ];
+    const statsEl = $("jf-agent-stats");
+    while (statsEl.firstChild) statsEl.removeChild(statsEl.firstChild);
+    for (const [value, label] of stats) {
+      const card = document.createElement("div");
+      card.className = "jf-agent-stat";
+      const strong = document.createElement("strong");
+      strong.textContent = String(value);
+      const span = document.createElement("span");
+      span.textContent = label;
+      card.append(strong, span);
+      statsEl.appendChild(card);
+    }
+
+    $("jf-agent-error").textContent = agent.last_error ? `Last error: ${agent.last_error}` : "";
+    $("jf-agent-error").hidden = !agent.last_error;
+
+    const last = $("jf-agent-last");
+    while (last.firstChild) last.removeChild(last.firstChild);
+    const summary = agent.last_summary || {};
+    const heading = document.createElement("h2");
+    heading.textContent = `Last cycle: ${summary.discovered ?? 0} new${summary.daily_cap_reached ? " · daily cap reached" : ""}`;
+    last.appendChild(heading);
+    const list = document.createElement("ul");
+    for (const [kind, items] of [["Applied", summary.applied || []], ["Review", summary.review || []]]) {
+      for (const item of items) {
+        const li = document.createElement("li");
+        const url = safeExternalUrl(item.url);
+        const title = document.createElement(url ? "a" : "span");
+        if (url) {
+          title.href = url;
+          title.target = "_blank";
+          title.rel = "noopener noreferrer";
+        }
+        title.textContent = item.title || item.external_id;
+        li.append(`${kind}: `, title);
+        if (item.employer) li.append(` — ${item.employer}`);
+        list.appendChild(li);
+      }
+    }
+    if (!list.children.length) {
+      const li = document.createElement("li");
+      li.textContent = "Nothing sent or held.";
+      list.appendChild(li);
+    }
+    last.appendChild(list);
+  }
+
+  let agentRefreshRunning = false;
+  async function refreshAgent() {
+    if (agentRefreshRunning) return;
+    agentRefreshRunning = true;
+    try {
+      const result = await browser.runtime.sendMessage({ type: "hunterStatus" }).catch(() => null);
+      const data = result?.ok ? result.status : null;
+      const up = Boolean(data?.up);
+      $("jf-tab-agent").hidden = !up;
+      if (up) renderAgent(data);
+      else if (getActiveTab() === "agent") setActiveTab("scan");
+    } finally {
+      agentRefreshRunning = false;
+    }
   }
 
   function closePanel() {
@@ -1030,6 +1174,11 @@
     $("jf-tab-scan").addEventListener("click", () => switchTab("scan", "tab-scan"));
     $("jf-tab-analyze").addEventListener("click", () => switchTab("analyze", "tab-analyze"));
     $("jf-tab-logs").addEventListener("click", () => switchTab("logs", "tab-logs"));
+    $("jf-tab-agent").addEventListener("click", () => switchTab("agent", "tab-agent"));
+    $("jf-agent-open-btn").addEventListener("click", () => {
+      logEvent("CLICK", { id: "agent-open-btn" });
+      send("openManage", {});
+    });
 
     $("jf-copy-logs-btn").addEventListener("click", async () => {
       logEvent("CLICK", { id: "copy-logs-btn" });

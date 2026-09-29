@@ -1,5 +1,30 @@
 # Progress log
 
+- **hh.kz agent status in the extension, plus an adversarial-review hardening pass** — `hunt
+  --loop` now publishes `data/hunter/status.json` (agent phase, pid/host, heartbeat, cycle times,
+  next cycle, last error, last-cycle applied/held lists, last 150 log lines, config, status counts,
+  24h sends vs the cap, linked résumés, session age, the 500 most recently updated vacancies with
+  score, reason, note and cover letter). `GET /api/v1/hunter/` serves that file read-only and adds
+  `up`. It is a file, not a table, because the extension talks to the Docker `core` whose SQLite
+  lives in the `core_data` volume, while the systemd hunter writes the host `core/src/data`
+  database — compose bind-mounts only `core/src/data/hunter` (read-only, `z` for SELinux). "Up"
+  means running with a heartbeat under 15 minutes old (every log line is a heartbeat) or sleeping
+  with the next cycle due less than 10 minutes ago; SIGTERM now exits through `finally`, so
+  `systemctl stop` marks it stopped at once. The Manage page gets an "hh.kz agent" section and the
+  panel a "hh agent" tab; both stay hidden unless `up`, including against an older core that 404s.
+  Review fixes: Playwright errors no longer escape a cycle (an unreadable vacancy is skipped and
+  retried next run; an error after Submit goes to review saying so), and the loop survives any
+  exception; a missing popup JSON is a transient failure (discovery retries, applying re-queues and
+  stops, an expired session raises) instead of a permanent `skipped`/misleading review note; rows
+  without a CV are never claimed; `submitted_at` is stamped just before Submit and counts toward the
+  daily cap with `applied_at`, so unconfirmed sends are not free; `hunt --vacancy ID` now resends a
+  `needs_review` row and skips crawling (the captcha note's command used to do nothing); the
+  `HUNTER_MAX_NEW_PER_RUN` budget is shared across expanded searches; pacing sleeps only after a
+  real attempt and before claiming; "daily cap reached" is set only at zero remaining and announced
+  once; headed runs wait for the user on a page-load captcha too; model replies with no content no
+  longer crash scoring or letters; Telethon SQLite errors don't kill notify; `session.json` and
+  `fingerprint.json` are written atomically at 0600; `HUNTER_HEADLESS` defaults to `virtual`.
+
 - **hh.kz agent applies to remote jobs in other regions** — hh recommends vacancies in Russia,
   Georgia and Uzbekistan, and its popup JSON flags them with `relocationWarning.show`. That alone
   sent 12 good matches (75–88) to `needs_review`. All 12 list `REMOTE` in
@@ -40,7 +65,7 @@
   that JSON stays false after a successful send while another résumé could still be used; a sent
   response shows up as `negotiations.topicList`/`usedResumeIds`, which is what `parse_status`
   checks. Headless submits hit a 403 plus text captcha; the agent does not solve captchas — a
-  headless run stops and returns the vacancy to `ready`, and `--headed` waits for the user to
+  headless run stops and holds the vacancy in `needs_review`, and `--headed` waits for the user to
   solve it. In `--loop` mode a captcha no longer ends the loop; the vacancy goes to
   `needs_review` with the exact `--headed --vacancy` command, so the loop does not retry it into
   more 403s. One headless submit has been tried (captcha) and one headed (sent). The first headed submit (BI Group "Разработчик", 133866105) needed no captcha and was

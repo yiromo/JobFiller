@@ -18,6 +18,29 @@
 
     <hr />
 
+    <section id="hunter-section" hidden>
+      <h1>hh.kz agent <span id="hunter-phase" class="version"></span></h1>
+      <p id="hunter-summary" class="hint"></p>
+      <div id="hunter-stats" class="hunter-stats"></div>
+      <dl id="hunter-details" class="hunter-details"></dl>
+      <h2>Last cycle</h2>
+      <ul id="hunter-last" class="hunter-list"></ul>
+      <h2>Vacancies</h2>
+      <div class="actions">
+        <select id="hunter-filter">
+          <option value="">All statuses</option>
+        </select>
+        <button id="hunter-refresh" type="button">Refresh</button>
+      </div>
+      <p id="hunter-status"></p>
+      <ul id="hunter-vacancies" class="hunter-list"></ul>
+      <details class="hunter-log-wrap">
+        <summary>Agent log</summary>
+        <pre id="hunter-log" class="hunter-log"></pre>
+      </details>
+      <hr />
+    </section>
+
     <h1>Telegram opportunities</h1>
     <p class="hint">Matched jobs and application results from the subscribed channel.</p>
     <button id="opportunities-refresh" type="button">Refresh opportunities</button>

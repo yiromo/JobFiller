@@ -136,7 +136,7 @@ TELEGRAM_CHANNEL_TITLE = config(
 )
 OPPORTUNITY_MIN_SCORE = config("OPPORTUNITY_MIN_SCORE", default=75, cast=int)
 JOB_SOURCE_URLS = config("JOB_SOURCE_URLS", default="", cast=Csv())
-HUNTER_HEADLESS = config("HUNTER_HEADLESS", default="false")
+HUNTER_HEADLESS = config("HUNTER_HEADLESS", default="virtual")
 HUNTER_MIN_SCORE = config("HUNTER_MIN_SCORE", default=75, cast=int)
 HUNTER_MAX_APPLIES_PER_RUN = config("HUNTER_MAX_APPLIES_PER_RUN", default=10, cast=int)
 HUNTER_MAX_NEW_PER_RUN = config("HUNTER_MAX_NEW_PER_RUN", default=40, cast=int)

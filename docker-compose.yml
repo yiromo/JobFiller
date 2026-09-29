@@ -7,6 +7,7 @@ services:
       - ./core/.env
     volumes:
       - core_data:/app/data
+      - ./core/src/data/hunter:/app/data/hunter:ro,z
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8000/health/"]

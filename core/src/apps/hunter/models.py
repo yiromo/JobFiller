@@ -37,6 +37,7 @@ class Vacancy(models.Model):
     note = models.TextField(blank=True)
     cover_letter = models.TextField(blank=True)
     applied_at = models.DateTimeField(null=True, blank=True)
+    submitted_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

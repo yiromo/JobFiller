@@ -1,4 +1,5 @@
 import json
+import os
 import time
 from contextlib import contextmanager, suppress
 from pathlib import Path
@@ -19,6 +20,15 @@ def profile_dir(site: str) -> Path:
     return path
 
 
+def write_private(path: Path, text: str) -> None:
+    temporary = path.with_suffix(".tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w") as handle:
+        handle.write(text)
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
+
+
 def fingerprint_for(site: str) -> dict:
     path = profile_dir(site) / FINGERPRINT_FILE
     if path.exists():
@@ -26,14 +36,13 @@ def fingerprint_for(site: str) -> dict:
     preset = get_random_preset(os="linux", ff_version=installed_verstr().split(".", 1)[0])
     if not preset:
         raise RuntimeError("Camoufox has no fingerprint presets; run `camoufox fetch`.")
-    path.write_text(json.dumps(preset))
+    write_private(path, json.dumps(preset))
     return preset
 
 
 def save_session(site: str, context) -> None:
     path = profile_dir(site) / SESSION_FILE
-    path.write_text(json.dumps({"saved_at": int(time.time()), "cookies": context.cookies()}))
-    path.chmod(0o600)
+    write_private(path, json.dumps({"saved_at": int(time.time()), "cookies": context.cookies()}))
 
 
 def restore_session(site: str, context) -> bool:

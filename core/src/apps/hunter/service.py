@@ -8,6 +8,7 @@ from django.conf import settings
 from django.db.models import Q
 from django.utils import timezone
 from openai import OpenAIError
+from playwright.sync_api import Error as PlaywrightError
 
 from agent import cover_letter
 from apps.opportunities.service import rank_jobs
@@ -17,8 +18,10 @@ from .browser import open_browser
 from .models import ResumeLink, Vacancy
 from .sources import adapter_for
 from .sources.hh import CaptchaError
+from .state import sent_last_day
 
 SCORE_BATCH = 8
+MODEL_ERRORS = (OpenAIError, ValueError, TypeError, AttributeError, KeyError)
 UNSCORED_PREFIXES = ("Not scored", "Scoring failed")
 
 
@@ -32,6 +35,10 @@ class RunSummary:
 
 CYRILLIC_RE = re.compile(r"[а-яё]", re.IGNORECASE)
 LATIN_RE = re.compile(r"[a-z]", re.IGNORECASE)
+
+
+def first_line(error: BaseException) -> str:
+    return (str(error).strip().splitlines() or [type(error).__name__])[0]
 
 
 def letter_language(text: str) -> str:
@@ -48,7 +55,7 @@ def score_vacancies(vacancies: list[Vacancy], links: list[ResumeLink]) -> None:
                 [(str(v.id), TelegraphPage(title=v.title, text=v.text, links=[])) for v in batch],
                 cvs,
             )
-        except (OpenAIError, ValueError) as error:
+        except MODEL_ERRORS as error:
             ranked = {}
             for vacancy in batch:
                 vacancy.match_reason = f"Scoring failed: {error}"[:2000]
@@ -79,7 +86,9 @@ def unscored() -> list[Vacancy]:
     )
 
 
-def discover(page, adapter, search_url: str, max_pages: int, log) -> list[Vacancy]:
+def discover(page, adapter, search_url: str, max_pages: int, log, budget: int) -> list[Vacancy]:
+    if budget <= 0:
+        return []
     listings = adapter.crawl(page, search_url, max_pages)
     known = set(
         Vacancy.objects.filter(
@@ -90,9 +99,18 @@ def discover(page, adapter, search_url: str, max_pages: int, log) -> list[Vacanc
     log(f"{search_url}: {len(listings)} listed, {len(fresh)} new")
     base = adapter.origin(search_url)
     created = []
-    for item in fresh[: settings.HUNTER_MAX_NEW_PER_RUN]:
-        details = adapter.read_vacancy(page, item.url)
-        status = adapter.response_status(page, base, item.external_id)
+    for item in fresh[:budget]:
+        try:
+            details = adapter.read_vacancy(page, item.url)
+            status = adapter.response_status(page, base, item.external_id)
+        except PlaywrightError as error:
+            log(f"  could not read {item.url}: {first_line(error)}")
+            continue
+        if status is None:
+            if not adapter.is_logged_in(page):
+                raise RuntimeError("The hh.kz session expired; run hh_login.")
+            log(f"  no response info for {item.url}; retrying next run")
+            continue
         vacancy = Vacancy(
             source=adapter.SITE,
             external_id=item.external_id,
@@ -102,12 +120,7 @@ def discover(page, adapter, search_url: str, max_pages: int, log) -> list[Vacanc
             text=details.text,
             status=Vacancy.Status.BELOW_THRESHOLD,
         )
-        if status is None:
-            vacancy.status, vacancy.note = (
-                Vacancy.Status.SKIPPED,
-                "hh.kz response info unavailable.",
-            )
-        elif status.already_applied:
+        if status.already_applied:
             vacancy.status, vacancy.note = Vacancy.Status.APPLIED, "Already applied on hh.kz."
         elif status.impossible:
             vacancy.status, vacancy.note = (
@@ -127,10 +140,6 @@ def discover(page, adapter, search_url: str, max_pages: int, log) -> list[Vacanc
     return created
 
 
-def sent_last_day() -> int:
-    return Vacancy.objects.filter(applied_at__gte=timezone.now() - timedelta(days=1)).count()
-
-
 def apply_ready(
     page,
     limit: int,
@@ -143,72 +152,110 @@ def apply_ready(
     titles = {link.resume_id: link.title for link in links}
     remaining = max(0, settings.HUNTER_MAX_APPLIES_PER_DAY - sent_last_day())
     if remaining < limit:
-        summary.daily_cap_reached = True
+        summary.daily_cap_reached = remaining == 0
         limit = remaining
         log(f"Daily cap: {remaining} more responses allowed in the last 24 hours.")
-    queue = Vacancy.objects.filter(status=Vacancy.Status.READY).select_related("cv")
+    statuses = [Vacancy.Status.READY]
+    queue = Vacancy.objects.select_related("cv")
     if only:
+        statuses.append(Vacancy.Status.NEEDS_REVIEW)
         queue = queue.filter(external_id=only)
-    for index, vacancy in enumerate(queue.order_by("-match_score", "id")[:limit]):
+    queue = queue.filter(status__in=statuses).exclude(cv=None)
+    attempted = False
+    for vacancy in queue.order_by("-match_score", "id")[:limit]:
         adapter = adapter_for(vacancy.url)
-        claimed = Vacancy.objects.filter(pk=vacancy.pk, status=Vacancy.Status.READY).update(
+        if adapter is None:
+            continue
+        if attempted:
+            time.sleep(random.uniform(20, 60))
+        claimed = Vacancy.objects.filter(pk=vacancy.pk, status__in=statuses).update(
             status=Vacancy.Status.APPLYING, updated_at=timezone.now()
         )
-        if not claimed or adapter is None or vacancy.cv is None:
+        if not claimed:
             continue
-        if index:
-            time.sleep(random.uniform(20, 60))
-        status = adapter.response_status(page, adapter.origin(vacancy.url), vacancy.external_id)
-        if (
-            status is None
-            or status.already_applied
-            or vacancy.resume_id not in status.resume_hashes
-        ):
-            reason = (
-                "Already applied on hh.kz."
-                if status and status.already_applied
-                else "The linked hh résumé is not offered for this vacancy."
-            )
-            done = bool(status and status.already_applied)
-            finish(vacancy, done, reason, sent=False)
-            if not done:
-                summary.review.append(vacancy)
-            log(f"  {vacancy.title}: {reason}")
-            continue
-        letter = vacancy.cover_letter
-        if not letter and settings.MIMO_API_KEY:
-            try:
-                letter = cover_letter.generate(
-                    vacancy.cv.raw_text,
-                    vacancy.text,
-                    vacancy.cv.full_name or "",
-                    language=letter_language(vacancy.text),
-                )
-            except OpenAIError as error:
-                log(f"  cover letter failed for {vacancy.title}: {error}")
-                letter = ""
-            vacancy.cover_letter = letter
         try:
-            applied, note = adapter.apply(
-                page,
-                vacancy.url,
-                titles.get(vacancy.resume_id, ""),
-                letter,
-                status,
-                notify=log if headed else None,
+            result = apply_one(page, adapter, vacancy, titles, log, summary, headed)
+        except (KeyboardInterrupt, SystemExit):
+            finish(
+                vacancy, False, "The agent stopped while applying; check hh.kz before resending."
             )
-        except CaptchaError:
-            vacancy.status = Vacancy.Status.NEEDS_REVIEW
-            vacancy.note = (
-                "hh.kz asked for a captcha before sending; nothing was submitted. Send it with "
-                f"`hunt --apply --headed --vacancy {vacancy.external_id}`."
-            )
-            vacancy.save()
-            summary.review.append(vacancy)
             raise
-        finish(vacancy, applied, note)
-        (summary.applied if applied else summary.review).append(vacancy)
-        log(f"  {'APPLIED' if applied else 'REVIEW '} {vacancy.title}: {note}")
+        if result is None:
+            break
+        attempted = attempted or result
+
+
+def apply_one(page, adapter, vacancy, titles, log, summary, headed) -> bool | None:
+    try:
+        status = adapter.response_status(page, adapter.origin(vacancy.url), vacancy.external_id)
+    except PlaywrightError as error:
+        status = None
+        log(f"  response info failed for {vacancy.title}: {first_line(error)}")
+    if status is None:
+        Vacancy.objects.filter(pk=vacancy.pk).update(status=Vacancy.Status.READY)
+        log("  hh.kz returned no response info; stopping sends until the next run.")
+        return None
+    if status.already_applied or vacancy.resume_id not in status.resume_hashes:
+        done = status.already_applied
+        reason = (
+            "Already applied on hh.kz."
+            if done
+            else "The linked hh résumé is not offered for this vacancy."
+        )
+        finish(vacancy, done, reason, sent=False)
+        if not done:
+            summary.review.append(vacancy)
+        log(f"  {vacancy.title}: {reason}")
+        return False
+    letter = vacancy.cover_letter
+    if not letter and settings.MIMO_API_KEY:
+        try:
+            letter = cover_letter.generate(
+                vacancy.cv.raw_text,
+                vacancy.text,
+                vacancy.cv.full_name or "",
+                language=letter_language(vacancy.text),
+            )
+        except MODEL_ERRORS as error:
+            log(f"  cover letter failed for {vacancy.title}: {error}")
+            letter = ""
+        vacancy.cover_letter = letter
+
+    submitted = []
+
+    def mark_submitted() -> None:
+        submitted.append(True)
+        vacancy.submitted_at = timezone.now()
+        vacancy.save(update_fields=["submitted_at", "cover_letter", "updated_at"])
+
+    try:
+        applied, note = adapter.apply(
+            page,
+            vacancy.url,
+            titles.get(vacancy.resume_id, ""),
+            letter,
+            status,
+            notify=log if headed else None,
+            on_submit=mark_submitted,
+        )
+    except CaptchaError:
+        vacancy.status = Vacancy.Status.NEEDS_REVIEW
+        vacancy.note = (
+            "hh.kz asked for a captcha before sending; nothing was submitted. Send it with "
+            f"`hunt --apply --headed --vacancy {vacancy.external_id}`."
+        )
+        vacancy.save()
+        summary.review.append(vacancy)
+        raise
+    except PlaywrightError as error:
+        applied = False
+        note = f"Browser error: {first_line(error)}"
+        if submitted:
+            note += " (after Submit; check hh.kz before resending)"
+    finish(vacancy, applied, note)
+    (summary.applied if applied else summary.review).append(vacancy)
+    log(f"  {'APPLIED' if applied else 'REVIEW '} {vacancy.title}: {note}")
+    return True
 
 
 def finish(vacancy: Vacancy, applied: bool, note: str, sent: bool = True) -> None:
@@ -245,17 +292,19 @@ def run_once(
         page.goto(adapter_for(sources[0]).origin(sources[0]), wait_until="domcontentloaded")
         if not adapter_for(sources[0]).is_logged_in(page):
             raise RuntimeError("The hh.kz profile is not logged in; run hh_login.")
-        resume_hashes = [link.resume_id for link in links]
-        created = []
-        for url in sources:
-            adapter = adapter_for(url)
-            for search_url in adapter.expand_source(url, resume_hashes):
-                created += discover(page, adapter, search_url, max_pages, log)
-        summary.discovered = len(created)
-        pending = unscored()
-        score_vacancies(pending, links)
-        summary.review += [v for v in pending if v.status == Vacancy.Status.NEEDS_REVIEW]
-        report(list(Vacancy.objects.filter(pk__in=[v.pk for v in created])), log)
+        if not only:
+            resume_hashes = [link.resume_id for link in links]
+            created = []
+            for url in sources:
+                adapter = adapter_for(url)
+                for search_url in adapter.expand_source(url, resume_hashes):
+                    budget = settings.HUNTER_MAX_NEW_PER_RUN - len(created)
+                    created += discover(page, adapter, search_url, max_pages, log, budget)
+            summary.discovered = len(created)
+            pending = unscored()
+            score_vacancies(pending, links)
+            summary.review += [v for v in pending if v.status == Vacancy.Status.NEEDS_REVIEW]
+            report(list(Vacancy.objects.filter(pk__in=[v.pk for v in created])), log)
         if apply:
             apply_ready(page, limit, links, log, summary, only, headed)
         else:

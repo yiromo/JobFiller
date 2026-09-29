@@ -39,6 +39,169 @@ async function loadOpportunities() {
 document.getElementById("opportunities-refresh").addEventListener("click", loadOpportunities);
 loadOpportunities();
 
+const HUNTER_STATUS_LABELS = {
+  ready: "Ready to send",
+  applying: "Applying",
+  applied: "Applied",
+  needs_review: "Needs review",
+  below_threshold: "Below threshold",
+  skipped: "Skipped",
+};
+const hunterSection = document.getElementById("hunter-section");
+const hunterFilter = document.getElementById("hunter-filter");
+let hunterSnapshot = null;
+
+function formatTime(value) {
+  if (!value) return "—";
+  const date = new Date(typeof value === "number" ? value * 1000 : value);
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+}
+
+function el(tag, text, className) {
+  const node = document.createElement(tag);
+  if (text != null) node.textContent = text;
+  if (className) node.className = className;
+  return node;
+}
+
+function externalLink(url, text) {
+  const link = el("a", text);
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === "https:" || parsed.protocol === "http:") link.href = parsed.href;
+  } catch (err) {
+    link.removeAttribute("href");
+  }
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  return link;
+}
+
+function renderHunterHeader(data) {
+  const agent = data.agent || {};
+  const phase = agent.phase === "sleeping" ? `sleeping until ${formatTime(agent.next_cycle_at)}` : agent.phase;
+  document.getElementById("hunter-phase").textContent = `${phase}${agent.apply ? "" : " · dry run"}`;
+  document.getElementById("hunter-summary").textContent =
+    `Running on ${agent.host || "?"} (pid ${agent.pid ?? "?"}) since ${formatTime(agent.started_at)}, ` +
+    `every ${agent.loop_minutes ?? "?"} min. ${agent.cycles ?? 0} cycle(s) finished; ` +
+    `last heartbeat ${formatTime(agent.heartbeat_at)}.`;
+
+  const cap = data.config?.max_applies_per_day;
+  const stats = [[`${data.sent_last_day ?? 0}${cap ? ` / ${cap}` : ""}`, "Sent in 24h"]];
+  for (const [status, label] of Object.entries(HUNTER_STATUS_LABELS)) {
+    stats.push([data.counts?.[status] ?? 0, label]);
+  }
+  stats.push([data.total ?? 0, "Total seen"]);
+  document.getElementById("hunter-stats").replaceChildren(
+    ...stats.map(([value, label]) => {
+      const card = el("div", null, "hunter-stat");
+      card.append(el("strong", String(value)), el("span", label));
+      return card;
+    }),
+  );
+
+  const config = data.config || {};
+  const summary = agent.last_summary || {};
+  const rows = [
+    ["Current cycle started", formatTime(agent.cycle_started_at)],
+    ["Last cycle finished", formatTime(agent.cycle_finished_at)],
+    ["Next cycle", formatTime(agent.next_cycle_at)],
+    ["Last cycle found", `${summary.discovered ?? 0} new vacancies${summary.daily_cap_reached ? " · daily cap reached" : ""}`],
+    ["Last error", agent.last_error || "none"],
+    ["Sources", (config.sources || []).join("\n") || "—"],
+    ["Linked résumés", (data.resumes || []).map((r) => `${r.cv_name} → ${r.title || r.resume_id}`).join("\n") || "none"],
+    ["Min score", config.min_score],
+    ["Per cycle", `${config.max_applies_per_run} sends, ${config.max_new_per_run} new vacancies`],
+    ["Browser", String(config.headless)],
+    ["Telegram alerts", config.notify_telegram ? "on" : "off"],
+    ["hh.kz session saved", formatTime(data.session_saved_at)],
+    ["Snapshot", formatTime(data.generated_at)],
+  ];
+  const details = document.getElementById("hunter-details");
+  details.replaceChildren();
+  for (const [label, value] of rows) {
+    const dd = el("dd", String(value ?? "—"));
+    dd.style.whiteSpace = "pre-line";
+    if (label === "Last error" && agent.last_error) dd.className = "hunter-error";
+    details.append(el("dt", label), dd);
+  }
+
+  const last = document.getElementById("hunter-last");
+  last.replaceChildren();
+  for (const [kind, items] of [["Applied", summary.applied || []], ["Needs review", summary.review || []]]) {
+    for (const item of items) {
+      const row = el("li");
+      row.append(externalLink(item.url, item.title || item.external_id));
+      row.append(el("span", ` — ${kind}${item.employer ? ` · ${item.employer}` : ""}`));
+      if (item.note) row.append(el("small", item.note, "hunter-note"));
+      last.appendChild(row);
+    }
+  }
+  if (!last.children.length) last.appendChild(el("li", "Nothing sent or held in the last cycle.", "hunter-note"));
+
+  document.getElementById("hunter-log").textContent = (agent.recent_log || []).join("\n");
+}
+
+function renderHunterVacancies() {
+  const list = document.getElementById("hunter-vacancies");
+  const wanted = hunterFilter.value;
+  const items = (hunterSnapshot?.vacancies || []).filter((item) => !wanted || item.status === wanted);
+  list.replaceChildren();
+  for (const item of items) {
+    const row = el("li");
+    row.append(externalLink(item.url, item.title || item.external_id));
+    const score = item.match_score == null ? "unscored" : `${item.match_score}% fit`;
+    const when = item.applied_at ? ` · sent ${formatTime(item.applied_at)}` : ` · updated ${formatTime(item.updated_at)}`;
+    row.append(
+      el(
+        "span",
+        `${item.employer || "—"} · ${HUNTER_STATUS_LABELS[item.status] || item.status} · ${score}${item.cv_name ? ` · ${item.cv_name}` : ""}${when}`,
+        "hunter-meta",
+      ),
+    );
+    if (item.note) row.append(el("small", item.note, "hunter-note"));
+    if (item.match_reason && item.match_reason !== item.note) {
+      row.append(el("small", `Why: ${item.match_reason}`, "hunter-note"));
+    }
+    if (item.cover_letter) {
+      const letter = el("details");
+      letter.append(el("summary", "Cover letter"), el("pre", item.cover_letter));
+      row.append(letter);
+    }
+    list.appendChild(row);
+  }
+  document.getElementById("hunter-status").textContent =
+    `${items.length} of ${hunterSnapshot?.vacancies?.length || 0} most recently updated vacancies.`;
+}
+
+async function loadHunter() {
+  let data = null;
+  try {
+    const response = await fetch(`${CORE_URL}/api/v1/hunter/`);
+    if (response.ok) data = await response.json();
+  } catch (err) {
+    data = null;
+  }
+  if (!data?.up) {
+    hunterSection.hidden = true;
+    return;
+  }
+  hunterSnapshot = data;
+  renderHunterHeader(data);
+  renderHunterVacancies();
+  hunterSection.hidden = false;
+}
+
+for (const [status, label] of Object.entries(HUNTER_STATUS_LABELS)) {
+  const option = el("option", label);
+  option.value = status;
+  hunterFilter.appendChild(option);
+}
+hunterFilter.addEventListener("change", renderHunterVacancies);
+document.getElementById("hunter-refresh").addEventListener("click", loadHunter);
+loadHunter();
+setInterval(loadHunter, 30000);
+
 function setStatus(message) {
   statusEl.textContent = message;
 }

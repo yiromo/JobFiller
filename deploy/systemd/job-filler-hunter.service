@@ -1,7 +1,5 @@
 [Unit]
 Description=job-filler hh.kz hunter agent
-Wants=network-online.target
-After=network-online.target
 
 [Service]
 Type=simple
