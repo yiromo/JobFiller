@@ -47,9 +47,16 @@ Roughly in order. Not started unless noted in `PROGRESS.md`.
    opt-out. Simplify Copilot ships exactly this as a settings toggle. Not built now — no reason
    to believe it's intrusive yet, add it if a real site makes it feel that way.
 13. **hh.kz agent follow-ups** (`apps.hunter`, see `tasks/PROGRESS.md`):
-   - Employer questionnaires (`hasTests`) are routed to `needs_review`. Answer them via
-     `agent/question_answer.py` with Russian logistics/attestation/EEO hard-skips, once the real
-     questionnaire markup has been captured.
+   - Employer questionnaires (`hasTests`) now go to the navigator, but no live questionnaire has
+     been seen yet: 0 of ~360 vacancies across IT, sales, call-centre and courier searches in
+     Kazakhstan had `test.hasTests` or `shortVacancy.userTestPresent`. Rehearse the first one that
+     shows up (`hunt --vacancy ID --rehearse`) and check the trace before trusting it.
+   - Captchas are the main blocker: 14 of ~35 send attempts hit the submit captcha. The agent must
+     not solve or evade them; what is left is making the hand-off cheaper (the reconcile step
+     already picks up responses sent by hand).
+   - Navigator follow-ups: external employer sites ("no hh response button"), off by default until
+     real samples are rehearsed; LLM-learned listing selectors for non-hh job boards; per-host
+     lessons are only fed back as free text, not verified selectors.
    - Picking a non-default hh résumé in the response modal is written but unverified; its options
      did not render while non-GET requests were blocked during exploration.
    - Docker: the image lacks Camoufox and Xvfb, so there is no `hunter` compose service yet.

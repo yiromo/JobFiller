@@ -1,5 +1,31 @@
 # Progress log
 
+- **hh.kz agent: vision navigator, site lessons and failure evidence** — `apps/hunter/navigator.py`
+  runs an observe → decide → act loop: each step stamps the page's visible controls with
+  `data-jf-nav` numbers (label, nearby question text, value, options, `data-qa`, form/dialog
+  membership), sends MiMo (`MIMO_VISION_MODEL`) that outline, page text, CV, posting, recent steps,
+  the site's learned notes and a JPEG screenshot, and executes the one JSON action it returns
+  (click/fill/select/check/scroll/wait/done/stuck, max `HUNTER_NAVIGATOR_STEPS`). Rules are
+  enforced in `vet`, not the prompt: a captcha ends the run (never solved), consent/attestation
+  ticks (English and Russian) and demographic answers are refused, links off the vacancy's site are
+  refused and leaving it navigates back, three identical steps count as stuck, and the final submit
+  (a `data-qa` containing "submit", `type=submit` in a form, or the model's `final_submit`) stamps
+  `submitted_at` first, or ends a rehearsal. A send is only `applied` once the popup JSON confirms
+  it. It takes over questionnaire vacancies (`hasTests`) and scripted failures that sent nothing
+  (form did not open, résumé not selectable, questionnaire page); `HUNTER_NAVIGATOR=on|rehearse|off`
+  and it is off without `MIMO_API_KEY`. `hunt --vacancy ID --rehearse` runs it without sending and
+  restores the row. After each run `SiteLesson` (per host, migration `0003`) is rewritten by the
+  text model from the trace and fed to the next run; the prompt forbids personal data and send/stop
+  rules, since the first rehearsal taught it "stop at the final submit". `evidence.py` saves page
+  HTML, a full-page screenshot and the step trace under `data/hunter/pages/<id>/` (newest 200) on
+  every failed or navigated apply; `GET /api/v1/hunter/evidence/<id>/<file>` serves only those three
+  names from a `[A-Za-z0-9_-]` key, HTML as sandboxed `text/plain`. The Manage page shows the notes
+  ("What the agent learned"), a navigator config row and evidence links per vacancy; the panel tab
+  shows the navigator mode and note counts. MiMo vision was probed first (read an hh title and the
+  apply button from a screenshot in ~8 s, ~1.3k image tokens). Live rehearsal on vacancy 137845312:
+  Respond → "Still apply" (remote, other region) → open letter field → paste letter → stopped at
+  "Send application" (`vacancy-response-submit-popup`), row still `ready`, no `submitted_at`.
+
 - **hh.kz agent rechecks held vacancies every cycle** — before discovery, `reconcile` re-reads the
   popup JSON for the 30 least recently checked `needs_review` rows. One you sent by hand (e.g.
   after a captcha hold) becomes `applied` with no `applied_at`, so it does not use the agent's

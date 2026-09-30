@@ -114,6 +114,7 @@ function renderHunterHeader(data) {
     ["Per cycle", `${config.max_applies_per_run} sends, ${config.max_new_per_run} new vacancies`],
     ["Browser", String(config.headless)],
     ["Telegram alerts", config.notify_telegram ? "on" : "off"],
+    ["Navigator", `${config.navigator ?? "—"}, up to ${config.navigator_steps ?? "?"} steps`],
     ["hh.kz session saved", formatTime(data.session_saved_at)],
     ["Snapshot", formatTime(data.generated_at)],
   ];
@@ -124,6 +125,25 @@ function renderHunterHeader(data) {
     dd.style.whiteSpace = "pre-line";
     if (label === "Last error" && agent.last_error) dd.className = "hunter-error";
     details.append(el("dt", label), dd);
+  }
+
+  const lessons = document.getElementById("hunter-lessons");
+  lessons.replaceChildren();
+  for (const lesson of data.lessons || []) {
+    const block = el("div", null, "hunter-lesson");
+    block.append(
+      el("strong", lesson.host),
+      el(
+        "span",
+        ` · ${lesson.successes} ok, ${lesson.failures} stuck · updated ${formatTime(lesson.updated_at)}`,
+        "hunter-meta",
+      ),
+      el("pre", lesson.text || "No notes yet."),
+    );
+    lessons.appendChild(block);
+  }
+  if (!lessons.children.length) {
+    lessons.appendChild(el("p", "Nothing yet: notes appear after the navigator's first run.", "hunter-note"));
   }
 
   const last = document.getElementById("hunter-last");
@@ -162,6 +182,20 @@ function renderHunterVacancies() {
     if (item.note) row.append(el("small", item.note, "hunter-note"));
     if (item.match_reason && item.match_reason !== item.note) {
       row.append(el("small", `Why: ${item.match_reason}`, "hunter-note"));
+    }
+    if (item.evidence?.length) {
+      const files = el("small", "Evidence: ", "hunter-note");
+      const labels = { "page.jpg": "screenshot", "page.html": "page code", "trace.json": "navigator steps" };
+      item.evidence.forEach((name, index) => {
+        if (index) files.append(" · ");
+        files.append(
+          externalLink(
+            `${CORE_URL}/api/v1/hunter/evidence/${encodeURIComponent(item.external_id)}/${encodeURIComponent(name)}`,
+            labels[name] || name,
+          ),
+        );
+      });
+      row.append(files);
     }
     if (item.cover_letter) {
       const letter = el("details");

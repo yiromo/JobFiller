@@ -8,7 +8,7 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
 from apps.cvs.models import Cv
-from apps.hunter import notify, service, state
+from apps.hunter import evidence, navigator, notify, service, state
 from apps.hunter.models import ResumeLink, Vacancy
 from apps.hunter.service import RunSummary, letter_language
 from apps.hunter.sources import adapter_for, hh
@@ -240,3 +240,78 @@ class HunterStatusViewTests(TestCase):
             self.assertIn("counts", body)
             tracker.stopped()
             self.assertFalse(self.client.get("/api/v1/hunter/").json()["up"])
+
+
+class NavigatorGuardTests(SimpleTestCase):
+    def element(self, **fields):
+        base = {"ref": "1", "tag": "button", "type": "button", "text": "", "label": "", "group": ""}
+        return {**base, **fields}
+
+    def test_consent_and_demographic_answers_are_refused(self):
+        consent = self.element(tag="input", type="checkbox", label="Я согласен на обработку")
+        self.assertIn("refused", navigator.vet({"action": "check"}, consent, "hh.kz", False))
+        gender = self.element(tag="label", text="Female", group="What is your gender?")
+        self.assertIn("refused", navigator.vet({"action": "click"}, gender, "hh.kz", False))
+        salary = self.element(tag="textarea", label="Желаемая зарплата")
+        self.assertEqual(
+            navigator.vet({"action": "fill", "value": "x"}, salary, "hh.kz", False), ""
+        )
+
+    def test_links_off_the_site_are_refused(self):
+        link = self.element(tag="a", href="https://evil.example/login")
+        self.assertIn("outside", navigator.vet({"action": "click"}, link, "hh.kz", False))
+        inside = self.element(tag="a", href="https://astana.hh.kz/vacancy/1")
+        self.assertEqual(navigator.vet({"action": "click"}, inside, "hh.kz", False), "")
+
+    def test_rehearsal_stops_only_at_the_final_submit(self):
+        opener = self.element(tag="a", text="Respond", qa="vacancy-response-link-top")
+        confirm = self.element(text="Still apply", qa="relocation-warning-confirm", in_form=True)
+        send = self.element(type="submit", text="Send application", submit=True, in_form=True)
+        click = {"action": "click"}
+        self.assertEqual(navigator.vet(click, opener, "hh.kz", True), "")
+        self.assertEqual(navigator.vet(click, confirm, "hh.kz", True), "")
+        self.assertEqual(navigator.vet(click, send, "hh.kz", True), "rehearsal")
+        self.assertEqual(navigator.vet(click, send, "hh.kz", False), "")
+        flagged = {"action": "click", "final_submit": True}
+        self.assertEqual(navigator.vet(flagged, opener, "hh.kz", True), "rehearsal")
+
+    def test_unknown_or_missing_targets_are_reported(self):
+        self.assertIn("unknown", navigator.vet({"action": "hack"}, None, "hh.kz", False))
+        self.assertIn("no element", navigator.vet({"action": "click", "ref": 9}, None, "hh", False))
+        self.assertEqual(navigator.vet({"action": "done"}, None, "hh.kz", False), "")
+
+    def test_host_of_folds_city_subdomains(self):
+        self.assertEqual(navigator.host_of("https://astana.hh.kz/vacancy/1"), "hh.kz")
+        self.assertEqual(navigator.host_of("https://hh.kz/"), "hh.kz")
+
+    def test_navigator_needs_a_model_key(self):
+        with override_settings(MIMO_API_KEY="", HUNTER_NAVIGATOR="on"):
+            self.assertEqual(service.navigator_mode(), "off")
+        with override_settings(MIMO_API_KEY="k", HUNTER_NAVIGATOR="Rehearse"):
+            self.assertEqual(service.navigator_mode(), "rehearse")
+        with override_settings(MIMO_API_KEY="k", HUNTER_NAVIGATOR="maybe"):
+            self.assertEqual(service.navigator_mode(), "off")
+
+
+class EvidenceViewTests(SimpleTestCase):
+    def test_serves_only_known_files_from_safe_keys(self):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            override_settings(DATA_DIR=Path(directory)),
+        ):
+            folder = evidence.folder("123")
+            folder.mkdir(parents=True)
+            (folder / "page.html").write_text("<script>alert(1)</script>")
+            (folder / "secret.txt").write_text("no")
+            self.assertEqual(evidence.available("123"), ["page.html"])
+            response = self.client.get("/api/v1/hunter/evidence/123/page.html")
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(response["Content-Type"].startswith("text/plain"))
+            self.assertIn("sandbox", response["Content-Security-Policy"])
+            for url in (
+                "/api/v1/hunter/evidence/123/secret.txt",
+                "/api/v1/hunter/evidence/..%2F..%2Fbrowser/page.html",
+                "/api/v1/hunter/evidence/456/page.html",
+            ):
+                self.assertEqual(self.client.get(url).status_code, 404, url)
+            self.assertIsNone(evidence.folder("../browser"))

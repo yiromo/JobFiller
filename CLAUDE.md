@@ -104,7 +104,13 @@ Don't put DB queries or business logic in views — mirror an existing app. Apps
   `GET /api/v1/hunter/` serves only that file (plus `up`), never the DB: the Docker `core` the
   extension calls has its own volume database, and compose bind-mounts just that directory
   read-only. The Manage page section and panel "hh agent" tab stay hidden unless `up`. Keep the
-  endpoint read-only.
+  endpoint read-only. `navigator.py` is the general fallback: each step sends MiMo a screenshot
+  plus a numbered outline of the page's controls and executes one JSON action. Its safety rules
+  live in `vet` (code, not prompt): captcha stops the run, consent/attestation and EEO answers are
+  refused, off-site links are refused, and a rehearsal stops at the final submit (`data-qa`/
+  `type=submit`/model flag). `SiteLesson` notes are rewritten after each run and fed into the
+  next; they must never carry send/stop rules. `evidence.py` keeps page HTML, a screenshot and
+  the step trace per vacancy under `data/hunter/pages/`, served by `evidence/<id>/<file>`.
 
 `agent/` (`core/src/agent/`) is a **plain module, not a Django app** — it has no models. Its
 functions are called directly from `applications`/`cvs` services (not DI-injected — there's

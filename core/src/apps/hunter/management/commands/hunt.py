@@ -28,11 +28,20 @@ class Command(BaseCommand):
             "--headed", action="store_true", help="Visible browser; wait for you on a captcha"
         )
         parser.add_argument("--vacancy", default="", help="Apply only to this vacancy id")
+        parser.add_argument(
+            "--rehearse",
+            action="store_true",
+            help="With --vacancy: let the navigator fill the response but stop before sending",
+        )
         parser.add_argument("--loop", type=int, metavar="MINUTES", help="Repeat every N minutes")
 
     def handle(self, *args, **options):
         os.environ.setdefault("DJANGO_ALLOW_ASYNC_UNSAFE", "true")
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+        if options["rehearse"] and not options["vacancy"]:
+            raise CommandError("--rehearse needs --vacancy ID.")
+        if options["rehearse"]:
+            options["apply"] = True
         tracker = None
         if options["loop"]:
             tracker = Tracker(apply=options["apply"], loop_minutes=options["loop"])
@@ -64,6 +73,7 @@ class Command(BaseCommand):
                     log=log,
                     only=options["vacancy"],
                     headed=options["headed"],
+                    rehearse=options["rehearse"],
                     summary=summary,
                 )
             except (CaptchaError, RuntimeError) as error_raised:

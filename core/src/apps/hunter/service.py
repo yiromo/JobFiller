@@ -14,8 +14,10 @@ from agent import cover_letter
 from apps.opportunities.service import rank_jobs
 from apps.opportunities.telegraph import TelegraphPage
 
+from . import evidence
 from .browser import open_browser
 from .models import ResumeLink, Vacancy
+from .navigator import Navigator
 from .sources import adapter_for
 from .sources.hh import CaptchaError
 from .state import sent_last_day
@@ -41,6 +43,13 @@ LATIN_RE = re.compile(r"[a-z]", re.IGNORECASE)
 
 def first_line(error: BaseException) -> str:
     return (str(error).strip().splitlines() or [type(error).__name__])[0]
+
+
+def navigator_mode() -> str:
+    mode = settings.HUNTER_NAVIGATOR.strip().lower()
+    if not settings.MIMO_API_KEY or mode not in {"on", "rehearse"}:
+        return "off"
+    return mode
 
 
 def letter_language(text: str) -> str:
@@ -132,7 +141,7 @@ def discover(page, adapter, search_url: str, max_pages: int, log, budget: int) -
         elif not details.has_respond_button:
             vacancy.status = Vacancy.Status.SKIPPED
             vacancy.note = "No hh.kz response button; the employer takes applications elsewhere."
-        elif status.has_test:
+        elif status.has_test and navigator_mode() == "off":
             vacancy.note = "Employer questionnaire required; answer it manually."
         elif status.needs_relocation:
             vacancy.note = "Office job in another region; hh.kz warns about relocation."
@@ -181,10 +190,11 @@ def apply_ready(
     summary: RunSummary,
     only: str = "",
     headed: bool = False,
+    rehearse: bool = False,
 ) -> None:
     titles = {link.resume_id: link.title for link in links}
     remaining = max(0, settings.HUNTER_MAX_APPLIES_PER_DAY - sent_last_day())
-    if remaining < limit:
+    if remaining < limit and not rehearse:
         summary.daily_cap_reached = remaining == 0
         limit = remaining
         log(f"Daily cap: {remaining} more responses allowed in the last 24 hours.")
@@ -207,7 +217,7 @@ def apply_ready(
         if not claimed:
             continue
         try:
-            result = apply_one(page, adapter, vacancy, titles, log, summary, headed)
+            result = apply_one(page, adapter, vacancy, titles, log, summary, headed, rehearse)
         except (KeyboardInterrupt, SystemExit):
             finish(
                 vacancy, False, "The agent stopped while applying; check hh.kz before resending."
@@ -218,7 +228,8 @@ def apply_ready(
         attempted = attempted or result
 
 
-def apply_one(page, adapter, vacancy, titles, log, summary, headed) -> bool | None:
+def apply_one(page, adapter, vacancy, titles, log, summary, headed, rehearse=False) -> bool | None:
+    original_status = vacancy.status
     try:
         status = adapter.response_status(page, adapter.origin(vacancy.url), vacancy.external_id)
     except PlaywrightError as error:
@@ -261,17 +272,52 @@ def apply_one(page, adapter, vacancy, titles, log, summary, headed) -> bool | No
         vacancy.submitted_at = timezone.now()
         vacancy.save(update_fields=["submitted_at", "cover_letter", "updated_at"])
 
+    resume_title = titles.get(vacancy.resume_id, "")
+    mode = "rehearse" if rehearse else navigator_mode()
+    if mode == "rehearse" and not rehearse and not status.has_test:
+        mode = "off"
     try:
-        applied, note = adapter.apply(
-            page,
-            vacancy.url,
-            titles.get(vacancy.resume_id, ""),
-            letter,
-            status,
-            notify=log if headed else None,
-            on_submit=mark_submitted,
-        )
+        if rehearse or (mode != "off" and status.has_test):
+            applied, note = navigate(
+                page,
+                adapter,
+                vacancy,
+                status,
+                resume_title,
+                letter,
+                log,
+                mode == "rehearse",
+                mark_submitted,
+            )
+        else:
+            applied, note = adapter.apply(
+                page,
+                vacancy.url,
+                resume_title,
+                letter,
+                status,
+                notify=log if headed else None,
+                on_submit=mark_submitted,
+            )
+            if not applied and not submitted:
+                evidence.capture(page, vacancy.external_id)
+                if mode != "off" and note.startswith(adapter.NAVIGABLE):
+                    log(f"  scripted apply failed ({note}); handing over to the navigator")
+                    applied, note = navigate(
+                        page,
+                        adapter,
+                        vacancy,
+                        status,
+                        resume_title,
+                        letter,
+                        log,
+                        mode == "rehearse",
+                        mark_submitted,
+                    )
     except CaptchaError:
+        if rehearse:
+            Vacancy.objects.filter(pk=vacancy.pk).update(status=original_status)
+            raise
         vacancy.status = Vacancy.Status.NEEDS_REVIEW
         vacancy.note = (
             "hh.kz asked for a captcha before sending; nothing was submitted. Stop the service "
@@ -286,10 +332,46 @@ def apply_one(page, adapter, vacancy, titles, log, summary, headed) -> bool | No
         note = f"Browser error: {first_line(error)}"
         if submitted:
             note += " (after Submit; check hh.kz before resending)"
+    if rehearse:
+        Vacancy.objects.filter(pk=vacancy.pk).update(
+            status=original_status, cover_letter=vacancy.cover_letter
+        )
+        log(f"  REHEARSAL {vacancy.title}: {note}")
+        return False
     finish(vacancy, applied, note)
     (summary.applied if applied else summary.review).append(vacancy)
     log(f"  {'APPLIED' if applied else 'REVIEW '} {vacancy.title}: {note}")
     return True
+
+
+def navigate(
+    page, adapter, vacancy, status, resume_title, letter, log, rehearse, on_submit
+) -> tuple:
+    page.goto(vacancy.url, wait_until="domcontentloaded")
+    result = Navigator(
+        page,
+        goal=adapter.navigator_goal(vacancy.title, resume_title, letter, status),
+        cv_text=vacancy.cv.raw_text or "",
+        job_text=vacancy.text,
+        log=log,
+        rehearse=rehearse,
+        on_submit=on_submit,
+    ).run()
+    evidence.capture(page, vacancy.external_id, result.trace)
+    if result.status == "captcha" and not result.submitted:
+        raise CaptchaError(result.note)
+    if result.status == "rehearsed":
+        return False, result.note
+    if result.status == "done" or result.submitted:
+        page.wait_for_timeout(2000)
+        confirmed = adapter.response_status(page, adapter.origin(vacancy.url), vacancy.external_id)
+        if confirmed and confirmed.already_applied:
+            return True, "Applied on hh.kz by the navigator."
+        return False, (
+            f"Navigator {result.status}: {result.note} hh.kz does not report the response; "
+            "check it before resending."
+        )
+    return False, f"Navigator {result.status}: {result.note}"
 
 
 def finish(vacancy: Vacancy, applied: bool, note: str, sent: bool = True) -> None:
@@ -308,6 +390,7 @@ def run_once(
     log,
     only: str = "",
     headed: bool = False,
+    rehearse: bool = False,
     summary: RunSummary | None = None,
 ) -> RunSummary:
     summary = summary if summary is not None else RunSummary()
@@ -341,7 +424,7 @@ def run_once(
             summary.review += [v for v in pending if v.status == Vacancy.Status.NEEDS_REVIEW]
             report(list(Vacancy.objects.filter(pk__in=[v.pk for v in created])), log)
         if apply:
-            apply_ready(page, limit, links, log, summary, only, headed)
+            apply_ready(page, limit, links, log, summary, only, headed, rehearse)
         else:
             ready = Vacancy.objects.filter(status=Vacancy.Status.READY).count()
             log(f"Dry run: {ready} vacancies ready; rerun with --apply to send responses.")

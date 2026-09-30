@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import ResumeLink, Vacancy
+from .models import ResumeLink, SiteLesson, Vacancy
 
 
 @admin.register(Vacancy)
@@ -11,3 +11,4 @@ class VacancyAdmin(admin.ModelAdmin):
 
 
 admin.site.register(ResumeLink)
+admin.site.register(SiteLesson)

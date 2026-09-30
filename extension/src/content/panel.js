@@ -657,6 +657,7 @@
     const agentStats = h("div", { id: "jf-agent-stats", class: "jf-agent-stats" });
     const agentError = h("p", { id: "jf-agent-error", class: "jf-hint jf-agent-error", hidden: "" });
     const agentLast = h("div", { id: "jf-agent-last", class: "jf-section" });
+    const agentLearned = h("p", { id: "jf-agent-learned", class: "jf-hint" });
     const agentOpenBtn = h("button", { type: "button", id: "jf-agent-open-btn", class: "jf-btn" });
     agentOpenBtn.textContent = "Open full agent dashboard";
 
@@ -665,6 +666,7 @@
       agentStats,
       agentError,
       agentLast,
+      agentLearned,
       agentOpenBtn,
     ]);
 
@@ -978,6 +980,13 @@
 
     $("jf-agent-error").textContent = agent.last_error ? `Last error: ${agent.last_error}` : "";
     $("jf-agent-error").hidden = !agent.last_error;
+
+    const lessons = data.lessons || [];
+    $("jf-agent-learned").textContent =
+      `Navigator: ${data.config?.navigator ?? "—"} · ` +
+      (lessons.length
+        ? lessons.map((l) => `${l.host} notes from ${l.successes + l.failures} run(s)`).join(", ")
+        : "no site notes learned yet");
 
     const last = $("jf-agent-last");
     while (last.firstChild) last.removeChild(last.firstChild);

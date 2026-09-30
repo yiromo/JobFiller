@@ -10,7 +10,8 @@ from django.db import DatabaseError
 from django.db.models import Q
 from django.utils import timezone
 
-from .models import ResumeLink, Vacancy
+from . import evidence
+from .models import ResumeLink, SiteLesson, Vacancy
 
 RUNNING = "running"
 SLEEPING = "sleeping"
@@ -93,6 +94,7 @@ def vacancy_payload(vacancy: Vacancy, cv_names: dict) -> dict:
         "applied_at": vacancy.applied_at,
         "created_at": vacancy.created_at,
         "updated_at": vacancy.updated_at,
+        "evidence": evidence.available(vacancy.external_id),
     }
 
 
@@ -118,6 +120,8 @@ def data_snapshot() -> dict:
             "max_new_per_run": settings.HUNTER_MAX_NEW_PER_RUN,
             "max_applies_per_day": settings.HUNTER_MAX_APPLIES_PER_DAY,
             "notify_telegram": settings.HUNTER_NOTIFY_TELEGRAM,
+            "navigator": settings.HUNTER_NAVIGATOR,
+            "navigator_steps": settings.HUNTER_NAVIGATOR_STEPS,
         },
         "sent_last_day": sent_last_day(),
         "counts": {status: counts.get(status, 0) for status in Vacancy.Status.values},
@@ -127,6 +131,16 @@ def data_snapshot() -> dict:
             for link in links
         ],
         "session_saved_at": session_saved_at(),
+        "lessons": [
+            {
+                "host": lesson.host,
+                "text": lesson.text,
+                "successes": lesson.successes,
+                "failures": lesson.failures,
+                "updated_at": lesson.updated_at,
+            }
+            for lesson in SiteLesson.objects.order_by("host")
+        ],
         "vacancies": [vacancy_payload(vacancy, cv_names) for vacancy in recent],
     }
 

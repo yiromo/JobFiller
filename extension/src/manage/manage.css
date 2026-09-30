@@ -288,6 +288,7 @@ select {
 }
 
 .hunter-list pre,
+.hunter-lesson pre,
 .hunter-log {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -301,4 +302,8 @@ select {
 
 .hunter-log-wrap {
   margin-top: 20px;
+}
+
+.hunter-lesson {
+  margin: 0 0 12px;
 }

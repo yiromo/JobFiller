@@ -17,6 +17,11 @@ HIDDEN_RESUME_WARNING = '[data-qa="hidden-resume-warning"]'
 CAPTCHA = '[data-qa^="account-captcha"]'
 RELOCATION_CONFIRM = '[data-qa="relocation-warning-confirm"]'
 HUMAN_CAPTCHA_WAIT_MS = 10 * 60 * 1000
+NAVIGABLE = (
+    "The response form did not open",
+    "Could not select the hh résumé",
+    "hh.kz opened an employer questionnaire",
+)
 
 SERP_JS = """
 () => [...document.querySelectorAll('[data-qa="vacancy-serp__vacancy"]')].map(item => {
@@ -220,6 +225,28 @@ def parse_status(status: dict, relocation: dict | None = None) -> ResponseStatus
             if isinstance(entry, dict)
         ),
     )
+
+
+def navigator_goal(title: str, resume_title: str, letter: str, status: ResponseStatus) -> str:
+    relocation = (
+        "If hh.kz warns the job is in another region, reply stuck: this office job needs a move."
+        if status.needs_relocation
+        else "If hh.kz warns the job is in another region, confirm it: the job allows remote work."
+    )
+    lines = [
+        f'Send a response (отклик) to the hh.kz vacancy "{title}" open in this tab.',
+        "Press the vacancy's response button (Откликнуться) to open the response form.",
+        f'Pick the résumé titled "{resume_title}" if the form offers a choice.',
+        relocation,
+        "Answer every employer question from the CV, then send the response.",
+        (
+            "The application is sent when hh.kz shows that the response was delivered "
+            '(e.g. "Резюме доставлено" / "Вы откликнулись").'
+        ),
+    ]
+    if letter:
+        lines.append(f"Paste this cover letter into the letter field:\n{letter}")
+    return "\n".join(lines)
 
 
 def list_resumes(page, base: str) -> list[dict]:

@@ -50,3 +50,17 @@ class Vacancy(models.Model):
 
     def __str__(self):
         return f"{self.title or self.external_id} ({self.source})"
+
+
+class SiteLesson(models.Model):
+    host = models.CharField(max_length=255, unique=True)
+    text = models.TextField(blank=True)
+    successes = models.PositiveIntegerField(default=0)
+    failures = models.PositiveIntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "hunter_site_lessons"
+
+    def __str__(self):
+        return f"{self.host} ({self.successes}/{self.successes + self.failures})"
