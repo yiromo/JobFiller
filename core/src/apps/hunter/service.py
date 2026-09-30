@@ -23,6 +23,7 @@ from .sources.base import CaptchaError
 from .state import sent_last_day
 
 SCORE_BATCH = 8
+DUPLICATE_DAYS = 60
 MODEL_ERRORS = (OpenAIError, ValueError, TypeError, AttributeError, KeyError)
 UNSCORED_PREFIXES = ("Not scored", "Scoring failed")
 
@@ -60,6 +61,22 @@ def external_mode() -> str:
     if not settings.MIMO_API_KEY or mode not in {"on", "rehearse"}:
         return "off"
     return mode
+
+
+def role_key(text: str) -> str:
+    return re.sub(r"[^a-zа-яё0-9]+", " ", (text or "").lower()).strip()
+
+
+def duplicate_of(vacancy: Vacancy) -> Vacancy | None:
+    if not vacancy.employer or not vacancy.title:
+        return None
+    since = timezone.now() - timedelta(days=DUPLICATE_DAYS)
+    sent = Vacancy.objects.filter(
+        Q(applied_at__gte=since) | Q(submitted_at__gte=since) | Q(status=Vacancy.Status.APPLIED),
+        employer__iexact=vacancy.employer,
+    ).exclude(pk=vacancy.pk)
+    key = role_key(vacancy.title)
+    return next((other for other in sent if role_key(other.title) == key), None)
 
 
 def letter_language(text: str) -> str:
@@ -240,6 +257,13 @@ def apply_ready(
     queue = queue.filter(status__in=statuses).exclude(cv=None)
     attempted = False
     for vacancy in queue.order_by("-match_score", "id")[:limit]:
+        twin = None if only else duplicate_of(vacancy)
+        if twin:
+            vacancy.status = Vacancy.Status.SKIPPED
+            vacancy.note = f"Same role at {vacancy.employer} already applied: {twin.url}"
+            vacancy.save()
+            log(f"  SKIP    {vacancy.title}: {vacancy.note}")
+            continue
         if attempted:
             time.sleep(random.uniform(20, 60))
         claimed = Vacancy.objects.filter(pk=vacancy.pk, status__in=statuses).update(

@@ -203,6 +203,22 @@ class ApplyReadyTests(LinkedCvCase):
         self.assertEqual(len(summary.applied), 1)
         self.assertEqual(state.sent_last_day(), 1)
 
+    def test_the_same_role_at_the_same_employer_is_sent_once(self):
+        first = self.vacancy("20")
+        second = self.vacancy("21")
+        Vacancy.objects.filter(pk__in=[first.pk, second.pk]).update(
+            employer="Alpaca", title="Software Engineer - Market Data"
+        )
+        Vacancy.objects.filter(pk=second.pk).update(match_score=80)
+        adapter = FakeAdapter(hh.parse_status({"resumes": {"1": {"hash": "hash"}}}))
+        with patch("apps.hunter.service.time.sleep"):
+            self.run_apply(adapter)
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertEqual(adapter.applied, ["https://astana.hh.kz/vacancy/20"])
+        self.assertEqual(second.status, Vacancy.Status.SKIPPED)
+        self.assertIn("already applied", second.note)
+
     def test_rows_without_a_cv_are_never_claimed(self):
         orphan = self.vacancy("4", cv=False)
         self.run_apply(FakeAdapter(None))

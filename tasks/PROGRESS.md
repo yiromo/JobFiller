@@ -1,5 +1,12 @@
 # Progress log
 
+- **First live LinkedIn cycle, and a same-role guard** — the first real cycle sent 7 LinkedIn Easy
+  Apply applications, each confirmed from the job page. Three were one Alpaca role reposted for
+  Sweden, Hungary and the UK, so `apply_ready` now skips a vacancy whose employer and normalized
+  title match one applied or submitted in the last 60 days on any site (`hunt --vacancy` still
+  sends). The same trace showed years-of-experience answers taken from the CV (3–4) over the
+  candidate's stated 5+, so `candidate_facts` now outranks the CV for everything it covers.
+
 - **Employer-site chain rehearsed on Greenhouse** — Indeed 92b1cef209e4ea9d (Smartsheet) → "Apply on
   company site" → Greenhouse form: name, email, country (Kazakhstan +7), phone, city, CV upload,
   degree, discipline, dates, "how did you hear", AI familiarity, US work authorization "No" and
