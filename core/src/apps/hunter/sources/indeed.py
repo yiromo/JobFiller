@@ -8,6 +8,7 @@ NAME = "Indeed"
 LOGIN_URL = "https://secure.indeed.com/auth"
 USES_RESUME_LINKS = False
 SCRIPTED_APPLY = False
+WANTS_LETTER = False
 RECHECK_BATCH = 5
 NAVIGABLE = ()
 SESSION_COOKIES = {"SOCK", "SHOE"}

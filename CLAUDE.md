@@ -112,6 +112,15 @@ Don't put DB queries or business logic in views — mirror an existing app. Apps
   `type=submit`/model flag). `SiteLesson` notes are rewritten after each run and fed into the
   next; they must never carry send/stop rules. `evidence.py` keeps page HTML, a screenshot and
   the step trace per vacancy under `data/hunter/pages/`, served by `evidence/<id>/<file>`.
+  Adapters (`sources/hh.py`, `linkedin.py`, `indeed.py`) implement `sources/base.CONTRACT`; each
+  site has its own browser profile and `hunter_login SITE`. LinkedIn and Indeed have no scripted
+  apply, always go through the navigator, and default to `HUNTER_NAVIGATOR_<SITE>=rehearse`.
+  LinkedIn serves a client-rendered variant without `data-view-name` after the first navigation
+  in a tab, and Playwright locators miss its cards there: query through `page.evaluate`. Never
+  open Indeed `/viewjob` or `/rc/clk` (Cloudflare "Security Check"); a vacancy URL is the search
+  URL plus `vjk=<jk>`, which shows the job in the side panel. Only visible `a[data-jk]` cards
+  count: Indeed plants an invisible trap link. The captcha guard must stay visibility-based:
+  both sites carry invisible reCAPTCHA Enterprise frames that are not a challenge.
 
 `agent/` (`core/src/agent/`) is a **plain module, not a Django app** — it has no models. Its
 functions are called directly from `applications`/`cvs` services (not DI-injected — there's

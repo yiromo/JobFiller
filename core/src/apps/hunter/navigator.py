@@ -34,9 +34,25 @@ ACCOUNT_KEYWORDS = (
     "регистрация",
     "создать аккаунт",
 )
+ELIGIBILITY_KEYWORDS = (
+    "authorized to work",
+    "authorised to work",
+    "work authorization",
+    "legally",
+    "sponsorship",
+    "sponsor",
+    "visa",
+    "work permit",
+    "right to work",
+    "security clearance",
+    "citizen",
+    "разрешение на работу",
+    "гражданство",
+)
 ACTIONS = {"click", "fill", "select", "check", "upload", "scroll", "wait", "done", "stuck"}
 TARGETED = {"click", "fill", "select", "check", "upload"}
 TYPED_LIMIT = 300
+REHEARSED = "Rehearsal reached the final submit:"
 SUBMIT_RE = re.compile(
     r"^(откликнуться|отправить( отклик| заявку)?|подать заявку|submit( application)?|"
     r"send( application| response)?|respond|apply( now)?)$",
@@ -211,7 +227,10 @@ Rules:
   honest short answer (e.g. that you have no such experience) rather than a made-up one.
 - Fill empty required contact fields (name, email, phone, city) from candidate_contact. If a
   required value is not in candidate_contact or the CV, reply "stuck" and name the missing value.
-- Salary questions: use the CV's figure if it has one, otherwise write that it is negotiable.
+- Work authorization, visa, sponsorship, relocation, notice period and salary questions are
+  answered only from candidate_facts. If candidate_facts does not cover one, reply "stuck" and
+  name the question; never guess eligibility.
+- Salary questions: use candidate_facts or the CV's figure, otherwise write that it is negotiable.
 - Match the language of the question (Russian question, Russian answer).
 - Never tick a legal consent or attestation, never answer gender, ethnicity, disability,
   veteran or other demographic questions, and never try to solve a captcha: reply "stuck".
@@ -263,6 +282,7 @@ def vet(
     allowed_hosts: set[str],
     rehearse: bool,
     can_upload: bool = False,
+    has_facts: bool = False,
 ) -> str:
     action = decision.get("action")
     if action not in ACTIONS:
@@ -284,6 +304,8 @@ def vet(
         return "refused: legal consent and attestation boxes are the candidate's own click"
     if matches(haystack, EEO_KEYWORDS) and (action != "click" or choice):
         return "refused: demographic questions are never answered by the agent"
+    if matches(haystack, ELIGIBILITY_KEYWORDS) and not has_facts and (action != "click" or choice):
+        return "refused: work authorization and visa answers need HUNTER_FACTS"
     if element.get("type") == "password":
         return "refused: the agent never types passwords"
     if action == "click" and matches(own, ACCOUNT_KEYWORDS):
@@ -322,6 +344,7 @@ class Navigator:
         upload_path="",
         allowed_hosts=None,
         contact=None,
+        facts="",
     ):
         self.page = page
         self.goal = goal
@@ -335,6 +358,8 @@ class Navigator:
         self.allowed_hosts = set(allowed_hosts or ()) | {self.host}
         self.upload_path = upload_path
         self.contact = {key: value for key, value in (contact or {}).items() if value}
+        self.facts = facts
+        self.opened = []
         self.lesson, _ = SiteLesson.objects.get_or_create(host=self.host)
         self.trace = []
         self.submitted = False
@@ -352,6 +377,12 @@ class Navigator:
         result.trace = self.trace
         self.learn(result)
         return result
+
+    def close_opened(self) -> None:
+        for tab in self.opened:
+            if not tab.is_closed():
+                tab.close()
+        self.opened = []
 
     def loop(self) -> Result:
         repeats = 0
@@ -389,11 +420,16 @@ class Navigator:
             if action == "stuck":
                 return Result("stuck", entry["thought"] or "The agent could not make progress.")
             problem = vet(
-                decision, element, self.allowed_hosts, self.rehearse, bool(self.upload_path)
+                decision,
+                element,
+                self.allowed_hosts,
+                self.rehearse,
+                bool(self.upload_path),
+                bool(self.facts),
             )
             if problem == "rehearsal":
                 entry["result"] = "stopped before the final submit (rehearsal)"
-                return Result("rehearsed", f"Rehearsal reached the final submit: {entry['target']}")
+                return Result("rehearsed", f"{REHEARSED} {entry['target']}")
             if problem:
                 entry["result"] = problem
                 continue
@@ -443,6 +479,7 @@ class Navigator:
             tab.close()
             return f"; a new tab opened {host}, outside the allowed sites, and was closed"
         tab.bring_to_front()
+        self.opened.append(tab)
         self.page = tab
         return f"; switched to the new tab on {host}"
 
@@ -457,6 +494,7 @@ class Navigator:
             "url": self.page.url,
             "notes_from_earlier_visits": self.lesson.text,
             "candidate_contact": self.contact,
+            "candidate_facts": self.facts,
             "recent_steps": [
                 {key: entry.get(key) for key in ("action", "target", "value", "result")}
                 for entry in self.trace[-8:]

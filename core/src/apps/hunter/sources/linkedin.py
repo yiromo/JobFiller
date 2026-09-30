@@ -8,6 +8,7 @@ NAME = "LinkedIn"
 LOGIN_URL = "https://www.linkedin.com/login"
 USES_RESUME_LINKS = False
 SCRIPTED_APPLY = False
+WANTS_LETTER = False
 RECHECK_BATCH = 5
 NAVIGABLE = ()
 SESSION_COOKIE = "li_at"

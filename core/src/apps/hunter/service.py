@@ -17,7 +17,7 @@ from apps.opportunities.telegraph import TelegraphPage
 from . import evidence
 from .browser import open_browser
 from .models import ResumeLink, Vacancy
-from .navigator import Navigator
+from .navigator import REHEARSED, Navigator
 from .sources import adapter_for
 from .sources.base import CaptchaError
 from .state import sent_last_day
@@ -208,6 +208,12 @@ def apply_ready(
         log(f"Daily cap: {remaining} more responses allowed in the last 24 hours.")
     statuses = [Vacancy.Status.READY]
     queue = Vacancy.objects.select_related("cv").filter(source=adapter.SITE)
+    if not only and not rehearse and navigator_mode(adapter.SITE) == "on":
+        queue = queue.filter(
+            Q(status=Vacancy.Status.READY)
+            | Q(status=Vacancy.Status.NEEDS_REVIEW, note__startswith=REHEARSED)
+        )
+        statuses.append(Vacancy.Status.NEEDS_REVIEW)
     if only:
         statuses.append(Vacancy.Status.NEEDS_REVIEW)
         queue = queue.filter(external_id=only)
@@ -264,7 +270,7 @@ def apply_one(
         log(f"  {vacancy.title}: {reason}")
         return False
     letter = vacancy.cover_letter
-    if not letter and settings.MIMO_API_KEY:
+    if not letter and settings.MIMO_API_KEY and adapter.WANTS_LETTER:
         try:
             letter = cover_letter.generate(
                 vacancy.cv.raw_text,
@@ -370,9 +376,11 @@ def navigate(
         on_submit=on_submit,
         upload_path=cv_file_path(vacancy.cv),
         contact=contact_for(vacancy.cv),
+        facts=settings.HUNTER_FACTS,
     )
     result = navigator.run()
     evidence.capture(navigator.page, evidence.key_for(vacancy), result.trace)
+    navigator.close_opened()
     if result.status == "captcha" and not result.submitted:
         raise CaptchaError(result.note)
     if result.status == "rehearsed":

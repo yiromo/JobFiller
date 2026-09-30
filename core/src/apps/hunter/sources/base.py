@@ -7,6 +7,7 @@ CONTRACT = (
     "LOGIN_URL",
     "USES_RESUME_LINKS",
     "SCRIPTED_APPLY",
+    "WANTS_LETTER",
     "RECHECK_BATCH",
     "NAVIGABLE",
     "handles",

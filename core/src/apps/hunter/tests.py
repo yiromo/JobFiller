@@ -11,7 +11,7 @@ from apps.cvs.models import Cv
 from apps.hunter import evidence, navigator, notify, service, state
 from apps.hunter.models import ResumeLink, Vacancy
 from apps.hunter.service import RunSummary, letter_language
-from apps.hunter.sources import ADAPTERS, adapter_for, hh, missing_contract
+from apps.hunter.sources import ADAPTERS, adapter_for, hh, indeed, linkedin, missing_contract
 
 
 class HhParsingTests(SimpleTestCase):
@@ -128,6 +128,7 @@ class FakeAdapter:
     NAME = "hh.kz"
     USES_RESUME_LINKS = True
     SCRIPTED_APPLY = True
+    WANTS_LETTER = True
     RECHECK_BATCH = 30
     NAVIGABLE = hh.NAVIGABLE
 
@@ -414,9 +415,66 @@ class NavigatorRoutingTests(LinkedCvCase):
         self.assertEqual(vacancy.status, Vacancy.Status.NEEDS_REVIEW)
         self.assertIsNone(vacancy.submitted_at)
 
+    def test_rehearsed_rows_are_sent_once_the_site_is_switched_on(self):
+        held = self.vacancy("13", status=Vacancy.Status.NEEDS_REVIEW)
+        Vacancy.objects.filter(pk=held.pk).update(note="Rehearsal reached the final submit: Send")
+        other = self.vacancy("14", status=Vacancy.Status.NEEDS_REVIEW)
+        adapter = FakeAdapter(hh.parse_status(OFFERED))
+        self.run_apply(adapter, (True, "Applied"))
+        held.refresh_from_db()
+        other.refresh_from_db()
+        self.assertEqual(adapter.applied, ["https://astana.hh.kz/vacancy/13"])
+        self.assertEqual(other.status, Vacancy.Status.NEEDS_REVIEW)
+
     def test_vacancy_flag_sends_for_real_while_the_service_rehearses(self):
         self.vacancy("12", status=Vacancy.Status.NEEDS_REVIEW)
         status = hh.parse_status({**OFFERED, "test": {"hasTests": True}})
         with override_settings(HUNTER_NAVIGATOR="rehearse"):
             navigate = self.run_apply(FakeAdapter(status), (True, "Applied"), only="12")
         self.assertFalse(navigate.call_args.args[7])
+
+
+class LinkedInAndIndeedParsingTests(SimpleTestCase):
+    def test_linkedin_search_drops_the_open_job_and_pages_by_25(self):
+        url = "https://www.linkedin.com/jobs/search-results/?currentJobId=1&keywords=go&start=50"
+        search = linkedin.expand_source(url, [])[0]
+        self.assertEqual(search, "https://www.linkedin.com/jobs/search-results/?keywords=go")
+        self.assertTrue(linkedin.with_page_number(search, 2).endswith("keywords=go&start=50"))
+        self.assertEqual(
+            linkedin.vacancy_id("https://www.linkedin.com/jobs/view/4471778435/"), "4471778435"
+        )
+        self.assertIs(adapter_for(url), linkedin)
+
+    def test_linkedin_applied_and_closed_markers(self):
+        self.assertTrue(linkedin.APPLIED_RE.search("Applied 3 days ago · See application"))
+        self.assertTrue(linkedin.APPLIED_RE.search("Application submitted"))
+        self.assertFalse(linkedin.APPLIED_RE.search("Over 100 people clicked apply"))
+        self.assertTrue(linkedin.CLOSED_RE.search("No longer accepting applications"))
+
+    def test_indeed_job_url_keeps_the_search_and_selects_the_job(self):
+        url = "https://www.indeed.com/jobs?q=backend&l=Remote&start=10&vjk=abc"
+        search = indeed.expand_source(url, [])[0]
+        self.assertEqual(search, "https://www.indeed.com/jobs?q=backend&l=Remote")
+        self.assertEqual(
+            indeed.job_url(search, "7e9d"),
+            "https://www.indeed.com/jobs?q=backend&l=Remote&vjk=7e9d",
+        )
+        self.assertIs(adapter_for(url), indeed)
+        self.assertTrue(indeed.APPLIED_RE.search("You applied to this job"))
+        self.assertTrue(indeed.CLOSED_RE.search("This job has expired on Indeed"))
+
+
+class EligibilityGuardTests(SimpleTestCase):
+    def test_visa_questions_need_facts(self):
+        radio = {
+            "ref": "1",
+            "tag": "input",
+            "type": "radio",
+            "text": "Yes",
+            "label": "Yes",
+            "group": "Will you now or in the future require visa sponsorship?",
+        }
+        self.assertIn("HUNTER_FACTS", navigator.vet({"action": "click"}, radio, {"x.com"}, False))
+        self.assertEqual(
+            navigator.vet({"action": "click"}, radio, {"x.com"}, False, has_facts=True), ""
+        )

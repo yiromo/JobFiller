@@ -1,5 +1,14 @@
 # Progress log
 
+- **Navigator eligibility gate, rehearsal hand-over, tidier tabs** — work authorization, visa,
+  sponsorship, clearance and citizenship questions are refused in `vet` unless `HUNTER_FACTS` is
+  set, and the prompt answers those (plus notice period, relocation, salary) only from
+  `candidate_facts`, stopping with the question named otherwise. When a site's navigator mode is
+  `on`, rows a rehearsal left in `needs_review` ("Rehearsal reached the final submit…") are queued
+  again, so switching a site from `rehearse` to `on` sends them. Tabs the navigator switched to
+  are closed after each run. Cover letters are generated only for adapters with `WANTS_LETTER`
+  (hh), which keeps them out of every LinkedIn/Indeed vision prompt.
+
 - **Indeed adapter through the search page's side panel** — opening an Indeed job page
   (`/viewjob`, `/rc/clk`) returns Cloudflare's "Security Check", and the agent does not work around
   it, so `sources/indeed.py` never opens one: a vacancy's URL is the search URL plus `vjk=<jk>`,
