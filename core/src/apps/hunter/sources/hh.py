@@ -18,6 +18,7 @@ CAPTCHA = '[data-qa^="account-captcha"]'
 RELOCATION_CONFIRM = '[data-qa="relocation-warning-confirm"]'
 HUMAN_CAPTCHA_WAIT_MS = 10 * 60 * 1000
 NAVIGABLE = (
+    "No hh.kz response button",
     "The response form did not open",
     "Could not select the hh résumé",
     "hh.kz opened an employer questionnaire",

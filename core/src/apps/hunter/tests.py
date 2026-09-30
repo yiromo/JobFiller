@@ -123,9 +123,11 @@ class AgentStateTests(SimpleTestCase):
 
 class FakeAdapter:
     SITE = "hh"
+    NAVIGABLE = hh.NAVIGABLE
 
-    def __init__(self, status):
+    def __init__(self, status, outcome=(True, "Applied on hh.kz.")):
         self.status = status
+        self.outcome = outcome
         self.applied = []
 
     def origin(self, url):
@@ -138,9 +140,11 @@ class FakeAdapter:
         pass
 
     def apply(self, page, url, resume_title, letter, status, notify=None, on_submit=None):
+        if not self.outcome[0]:
+            return self.outcome
         on_submit()
         self.applied.append(url)
-        return True, "Applied on hh.kz."
+        return self.outcome
 
 
 @override_settings(MIMO_API_KEY="", HUNTER_MAX_APPLIES_PER_DAY=50)
@@ -163,10 +167,12 @@ class LinkedCvCase(TestCase):
 
 
 class ApplyReadyTests(LinkedCvCase):
-    def run_apply(self, adapter, only=""):
+    def run_apply(self, adapter, only="", rehearse=False):
         summary = RunSummary()
         with patch("apps.hunter.service.adapter_for", return_value=adapter):
-            service.apply_ready(None, 10, [self.link], lambda line: None, summary, only)
+            service.apply_ready(
+                None, 10, [self.link], lambda line: None, summary, only, rehearse=rehearse
+            )
         return summary
 
     def test_missing_response_info_requeues_and_stops(self):
@@ -242,6 +248,9 @@ class HunterStatusViewTests(TestCase):
             self.assertFalse(self.client.get("/api/v1/hunter/").json()["up"])
 
 
+OFFERED = {"resumes": {"1": {"hash": "hash"}}}
+
+
 class NavigatorGuardTests(SimpleTestCase):
     def element(self, **fields):
         base = {"ref": "1", "tag": "button", "type": "button", "text": "", "label": "", "group": ""}
@@ -315,3 +324,69 @@ class EvidenceViewTests(SimpleTestCase):
             ):
                 self.assertEqual(self.client.get(url).status_code, 404, url)
             self.assertIsNone(evidence.folder("../browser"))
+
+
+@override_settings(MIMO_API_KEY="key", HUNTER_NAVIGATOR="on", HUNTER_MAX_APPLIES_PER_DAY=50)
+class NavigatorRoutingTests(LinkedCvCase):
+    def run_apply(self, adapter, navigate_result, only="", rehearse=False):
+        summary = RunSummary()
+        with (
+            patch("apps.hunter.service.adapter_for", return_value=adapter),
+            patch("apps.hunter.service.navigate", return_value=navigate_result) as navigate,
+            patch("apps.hunter.service.evidence.capture"),
+            patch("apps.hunter.service.cover_letter.generate", return_value="Letter"),
+        ):
+            service.apply_ready(
+                None, 10, [self.link], lambda line: None, summary, only, rehearse=rehearse
+            )
+        return navigate
+
+    def test_scripted_failure_that_sent_nothing_is_handed_to_the_navigator(self):
+        vacancy = self.vacancy("8")
+        adapter = FakeAdapter(
+            hh.parse_status(OFFERED), outcome=(False, "The response form did not open (x).")
+        )
+        navigate = self.run_apply(adapter, (True, "Applied on hh.kz by the navigator."))
+        vacancy.refresh_from_db()
+        navigate.assert_called_once()
+        self.assertFalse(navigate.call_args.args[7])
+        self.assertEqual(vacancy.status, Vacancy.Status.APPLIED)
+
+    def test_policy_holds_are_not_handed_over(self):
+        vacancy = self.vacancy("9")
+        adapter = FakeAdapter(
+            hh.parse_status(OFFERED),
+            outcome=(False, "hh.kz asks to confirm applying from another region to an office job."),
+        )
+        navigate = self.run_apply(adapter, (True, "x"))
+        vacancy.refresh_from_db()
+        navigate.assert_not_called()
+        self.assertEqual(vacancy.status, Vacancy.Status.NEEDS_REVIEW)
+
+    def test_questionnaire_goes_straight_to_the_navigator(self):
+        self.vacancy("10")
+        status = hh.parse_status({**OFFERED, "test": {"hasTests": True}})
+        adapter = FakeAdapter(status)
+        navigate = self.run_apply(adapter, (False, "Navigator stuck: x"))
+        navigate.assert_called_once()
+        self.assertEqual(adapter.applied, [])
+
+    def test_rehearsal_restores_the_row_and_sends_nothing(self):
+        vacancy = self.vacancy("11", status=Vacancy.Status.NEEDS_REVIEW)
+        navigate = self.run_apply(
+            FakeAdapter(hh.parse_status(OFFERED)),
+            (False, "Rehearsal reached the final submit: Send"),
+            only="11",
+            rehearse=True,
+        )
+        vacancy.refresh_from_db()
+        self.assertTrue(navigate.call_args.args[7])
+        self.assertEqual(vacancy.status, Vacancy.Status.NEEDS_REVIEW)
+        self.assertIsNone(vacancy.submitted_at)
+
+    def test_vacancy_flag_sends_for_real_while_the_service_rehearses(self):
+        self.vacancy("12", status=Vacancy.Status.NEEDS_REVIEW)
+        status = hh.parse_status({**OFFERED, "test": {"hasTests": True}})
+        with override_settings(HUNTER_NAVIGATOR="rehearse"):
+            navigate = self.run_apply(FakeAdapter(status), (True, "Applied"), only="12")
+        self.assertFalse(navigate.call_args.args[7])

@@ -138,7 +138,7 @@ def discover(page, adapter, search_url: str, max_pages: int, log, budget: int) -
                 Vacancy.Status.SKIPPED,
                 "hh.kz does not allow a response.",
             )
-        elif not details.has_respond_button:
+        elif not details.has_respond_button and navigator_mode() == "off":
             vacancy.status = Vacancy.Status.SKIPPED
             vacancy.note = "No hh.kz response button; the employer takes applications elsewhere."
         elif status.has_test and navigator_mode() == "off":
@@ -217,7 +217,9 @@ def apply_ready(
         if not claimed:
             continue
         try:
-            result = apply_one(page, adapter, vacancy, titles, log, summary, headed, rehearse)
+            result = apply_one(
+                page, adapter, vacancy, titles, log, summary, headed, rehearse, forced=bool(only)
+            )
         except (KeyboardInterrupt, SystemExit):
             finish(
                 vacancy, False, "The agent stopped while applying; check hh.kz before resending."
@@ -228,7 +230,9 @@ def apply_ready(
         attempted = attempted or result
 
 
-def apply_one(page, adapter, vacancy, titles, log, summary, headed, rehearse=False) -> bool | None:
+def apply_one(
+    page, adapter, vacancy, titles, log, summary, headed, rehearse=False, forced=False
+) -> bool | None:
     original_status = vacancy.status
     try:
         status = adapter.response_status(page, adapter.origin(vacancy.url), vacancy.external_id)
@@ -274,8 +278,8 @@ def apply_one(page, adapter, vacancy, titles, log, summary, headed, rehearse=Fal
 
     resume_title = titles.get(vacancy.resume_id, "")
     mode = "rehearse" if rehearse else navigator_mode()
-    if mode == "rehearse" and not rehearse and not status.has_test:
-        mode = "off"
+    if forced and not rehearse and mode != "off":
+        mode = "on"
     try:
         if rehearse or (mode != "off" and status.has_test):
             applied, note = navigate(

@@ -45,6 +45,7 @@ uv run python manage.py sync_telegram_jobs [--days N]          # ingest the Tele
 uv run python manage.py hh_login                               # visible browser: log in to hh.kz once
 uv run python manage.py hh_resumes [--link CV_ID=HASH]         # list/link hh résumés
 uv run python manage.py hunt [--apply] [--headed] [--loop MIN] # hh.kz agent (dry run by default)
+uv run python manage.py hunt --vacancy ID [--rehearse]         # send one row (or rehearse: never submits)
 ```
 
 Docker: `docker compose up --build` (from repo root) — runs `core` on `:8000` with a SQLite

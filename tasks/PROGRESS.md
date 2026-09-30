@@ -12,8 +12,12 @@
   (a `data-qa` containing "submit", `type=submit` in a form, or the model's `final_submit`) stamps
   `submitted_at` first, or ends a rehearsal. A send is only `applied` once the popup JSON confirms
   it. It takes over questionnaire vacancies (`hasTests`) and scripted failures that sent nothing
-  (form did not open, résumé not selectable, questionnaire page); `HUNTER_NAVIGATOR=on|rehearse|off`
-  and it is off without `MIMO_API_KEY`. `hunt --vacancy ID --rehearse` runs it without sending and
+  (form did not open, résumé not selectable, questionnaire page, no response button, which is
+  what hh renaming its button would look like, so discovery no longer marks those `skipped` while
+  the navigator is enabled). `HUNTER_NAVIGATOR=on|rehearse|off`: `rehearse` runs the navigator
+  everywhere it would run but never presses the final submit (scripted sends are unaffected), and
+  `hunt --vacancy ID` without `--rehearse` always sends for real; it is off without `MIMO_API_KEY`.
+  The live `.env` is on `rehearse` until a real questionnaire trace has been read. `hunt --vacancy ID --rehearse` runs it without sending and
   restores the row. After each run `SiteLesson` (per host, migration `0003`) is rewritten by the
   text model from the trace and fed to the next run; the prompt forbids personal data and send/stop
   rules, since the first rehearsal taught it "stop at the final submit". `evidence.py` saves page
