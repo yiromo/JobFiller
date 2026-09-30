@@ -1,5 +1,6 @@
 import base64
 import json
+import random
 import re
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
@@ -24,8 +25,18 @@ ATTESTATION_KEYWORDS = (
     "даю согласие",
     "подтверждаю",
 )
-ACTIONS = {"click", "fill", "select", "check", "scroll", "wait", "done", "stuck"}
-TARGETED = {"click", "fill", "select", "check"}
+ACCOUNT_KEYWORDS = (
+    "create account",
+    "create an account",
+    "sign up",
+    "register",
+    "зарегистрироваться",
+    "регистрация",
+    "создать аккаунт",
+)
+ACTIONS = {"click", "fill", "select", "check", "upload", "scroll", "wait", "done", "stuck"}
+TARGETED = {"click", "fill", "select", "check", "upload"}
+TYPED_LIMIT = 300
 SUBMIT_RE = re.compile(
     r"^(откликнуться|отправить( отклик| заявку)?|подать заявку|submit( application)?|"
     r"send( application| response)?|respond|apply( now)?)$",
@@ -79,6 +90,7 @@ OUTLINE_JS = """
   const inForm = el => !!el.closest("form, [role=dialog], [aria-modal=true]");
   const candidates = [...document.querySelectorAll(selector)].filter(el => {
     if (el.type === "hidden") return false;
+    if (el.type === "file") return true;
     if (shown(el)) return true;
     return ["radio", "checkbox"].includes(el.type) && el.labels && [...el.labels].some(shown);
   });
@@ -103,8 +115,10 @@ OUTLINE_JS = """
     if (tag === "select") item.options = [...el.options].map(o => clean(o.text)).slice(0, 40);
     if (["input", "textarea"].includes(tag) && !["radio", "checkbox"].includes(el.type)) {
       item.value = (el.value || "").slice(0, 600);
+      item.value_length = (el.value || "").length;
     }
     if (tag === "a") item.href = el.href;
+    if (el.type === "file") item.accept = el.accept || "";
     return item;
   });
 }
@@ -113,9 +127,12 @@ SYSTEM_PROMPT = """You drive a web browser for a job seeker, one action per turn
 You get the goal, the candidate's CV text, the job posting, notes learned on earlier visits to
 this site, your recent steps, a screenshot and a numbered list of the page's interactive
 elements. Reply with one JSON object:
-{"thought": "<one sentence>", "action": "click|fill|select|check|scroll|wait|done|stuck",
- "ref": "<element number for click/fill/select/check>", "value": "<text for fill/select>",
+{"thought": "<one sentence>",
+ "action": "click|fill|select|check|upload|scroll|wait|done|stuck",
+ "ref": "<element number for click/fill/select/check/upload>", "value": "<text for fill/select>",
  "final_submit": <true only if this click sends the application>}
+"upload" attaches the candidate's CV file: point it at the file input or the upload button;
+the harness picks the file, so leave "value" empty.
 Rules:
 - Answer employer questions truthfully from the CV. Never invent employers, dates, degrees,
   numbers or skills the CV does not show. If the CV does not answer a question, give the most
@@ -125,6 +142,8 @@ Rules:
 - Never tick a legal consent or attestation, never answer gender, ethnicity, disability,
   veteran or other demographic questions, and never try to solve a captcha: reply "stuck".
 - Do not leave the site or open unrelated pages. Do not log out or change account settings.
+- Never create an account, register, or type a password: reply "stuck" at any login or
+  sign-up wall.
 - Reply "done" only when the page shows the application was sent. Reply "stuck" with the
   reason in "thought" when you cannot make progress."""
 LESSON_PROMPT = """You keep short working notes for a browser agent that applies to jobs on one
@@ -164,7 +183,13 @@ def matches(text: str, keywords) -> bool:
     return any(keyword in lowered for keyword in keywords)
 
 
-def vet(decision: dict, element: dict | None, allowed_host: str, rehearse: bool) -> str:
+def vet(
+    decision: dict,
+    element: dict | None,
+    allowed_hosts: set[str],
+    rehearse: bool,
+    can_upload: bool = False,
+) -> str:
     action = decision.get("action")
     if action not in ACTIONS:
         return f"unknown action {action!r}"
@@ -185,9 +210,15 @@ def vet(decision: dict, element: dict | None, allowed_host: str, rehearse: bool)
         return "refused: legal consent and attestation boxes are the candidate's own click"
     if matches(haystack, EEO_KEYWORDS) and (action != "click" or choice):
         return "refused: demographic questions are never answered by the agent"
+    if element.get("type") == "password":
+        return "refused: the agent never types passwords"
+    if action == "click" and matches(own, ACCOUNT_KEYWORDS):
+        return "refused: the agent never creates accounts"
+    if action == "upload" and not can_upload:
+        return "refused: no CV file to upload"
     href = element.get("href") or ""
-    if action == "click" and href.startswith("http") and host_of(href) != allowed_host:
-        return f"refused: {host_of(href)} is outside {allowed_host}"
+    if action == "click" and href.startswith("http") and host_of(href) not in allowed_hosts:
+        return f"refused: {host_of(href)} is outside {', '.join(sorted(allowed_hosts))}"
     if rehearse and is_final_submit(decision, element):
         return "rehearsal"
     return ""
@@ -204,7 +235,19 @@ def is_final_submit(decision: dict, element: dict) -> bool:
 
 
 class Navigator:
-    def __init__(self, page, *, goal, cv_text, job_text, log, rehearse=False, on_submit=None):
+    def __init__(
+        self,
+        page,
+        *,
+        goal,
+        cv_text,
+        job_text,
+        log,
+        rehearse=False,
+        on_submit=None,
+        upload_path="",
+        allowed_hosts=None,
+    ):
         self.page = page
         self.goal = goal
         self.cv_text = cv_text
@@ -214,6 +257,8 @@ class Navigator:
         self.on_submit = on_submit
         self.client = OpenAI(api_key=settings.MIMO_API_KEY, base_url=settings.MIMO_BASE_URL)
         self.host = host_of(page.url)
+        self.allowed_hosts = set(allowed_hosts or ()) | {self.host}
+        self.upload_path = upload_path
         self.lesson, _ = SiteLesson.objects.get_or_create(host=self.host)
         self.trace = []
         self.submitted = False
@@ -258,7 +303,9 @@ class Navigator:
                 return Result("done", entry["thought"] or "The page reports the application sent.")
             if action == "stuck":
                 return Result("stuck", entry["thought"] or "The agent could not make progress.")
-            problem = vet(decision, element, self.host, self.rehearse)
+            problem = vet(
+                decision, element, self.allowed_hosts, self.rehearse, bool(self.upload_path)
+            )
             if problem == "rehearsal":
                 entry["result"] = "stopped before the final submit (rehearsal)"
                 return Result("rehearsed", f"Rehearsal reached the final submit: {entry['target']}")
@@ -276,12 +323,28 @@ class Navigator:
                 self.submitted = True
                 if self.on_submit:
                     self.on_submit()
+            tabs = len(self.page.context.pages)
             entry["result"] = self.act(decision, element)
-            self.page.wait_for_timeout(1200)
-            if host_of(self.page.url) != self.host:
+            self.page.wait_for_timeout(int(random.uniform(0.9, 2.6) * 1000))
+            entry["result"] += self.follow_new_tab(tabs)
+            if host_of(self.page.url) not in self.allowed_hosts:
                 self.page.go_back(wait_until="domcontentloaded")
                 entry["result"] += f"; left {self.host}, went back"
         return Result("stuck", f"No result after {settings.HUNTER_NAVIGATOR_STEPS} steps.")
+
+    def follow_new_tab(self, before: int) -> str:
+        pages = self.page.context.pages
+        if len(pages) <= before:
+            return ""
+        tab = pages[-1]
+        tab.wait_for_load_state("domcontentloaded", timeout=20000)
+        host = host_of(tab.url)
+        if host not in self.allowed_hosts:
+            tab.close()
+            return f"; a new tab opened {host}, outside the allowed sites, and was closed"
+        tab.bring_to_front()
+        self.page = tab
+        return f"; switched to the new tab on {host}"
 
     def guard_captcha(self) -> None:
         if self.page.evaluate(CAPTCHA_JS):
@@ -350,15 +413,33 @@ class Navigator:
                 except PlaywrightError:
                     locator.select_option(value=value, timeout=8000)
             elif action == "fill":
-                if element.get("tag") in {"input", "textarea"}:
-                    locator.fill(value, timeout=8000)
-                else:
-                    locator.click(timeout=8000)
-                    self.page.keyboard.press("Control+A")
-                    self.page.keyboard.type(value, delay=15)
+                self.type_into(locator, element, value)
+            elif action == "upload":
+                self.upload(locator, element)
         except PlaywrightError as error:
             return f"failed: {first_line(error)[:200]}"
         return "ok"
+
+    def type_into(self, locator, element: dict, value: str) -> None:
+        native = element.get("tag") in {"input", "textarea"}
+        if native and len(value) > TYPED_LIMIT:
+            locator.fill(value, timeout=8000)
+            return
+        locator.click(timeout=8000)
+        self.page.keyboard.press("Control+A")
+        self.page.keyboard.press("Delete")
+        for chunk in re.findall(r"\S+\s*|\s+", value):
+            self.page.keyboard.type(chunk, delay=random.randint(35, 110))
+            if random.random() < 0.15:
+                self.page.wait_for_timeout(random.randint(150, 600))
+
+    def upload(self, locator, element: dict) -> None:
+        if element.get("type") == "file":
+            locator.set_input_files(self.upload_path, timeout=8000)
+            return
+        with self.page.expect_file_chooser(timeout=8000) as chooser:
+            locator.click(timeout=8000)
+        chooser.value.set_files(self.upload_path)
 
     def learn(self, result: Result) -> None:
         if result.status in {"done", "rehearsed"}:

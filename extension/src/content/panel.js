@@ -581,7 +581,7 @@
       "aria-selected": "false",
       hidden: "",
     });
-    tabAgent.textContent = "hh agent";
+    tabAgent.textContent = "Job agent";
     const tabs = h("div", { class: "jf-tabs", role: "tablist" }, [tabScan, tabAnalyze, tabLogs, tabAgent]);
 
     const scanBtn = h("button", {

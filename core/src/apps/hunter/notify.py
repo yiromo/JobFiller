@@ -31,8 +31,8 @@ def send(text: str) -> bool:
 def summary_text(summary, error: str = "", show_cap: bool = True) -> str:
     lines = []
     if summary.applied:
-        lines.append(f"✅ hh.kz: applied to {len(summary.applied)}")
-        lines += [f"• {v.title} — {v.employer}\n  {v.url}" for v in summary.applied]
+        lines.append(f"✅ Applied to {len(summary.applied)}")
+        lines += [f"• [{v.source}] {v.title} — {v.employer}\n  {v.url}" for v in summary.applied]
     if summary.review:
         lines.append(f"👀 Needs your review: {len(summary.review)}")
         lines += [f"• {v.title} — {v.note or v.match_reason}\n  {v.url}" for v in summary.review]

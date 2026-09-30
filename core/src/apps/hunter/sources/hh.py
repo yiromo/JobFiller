@@ -1,12 +1,15 @@
 import json
-import random
 import re
-from dataclasses import dataclass, field
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
+from .base import CaptchaError, Listing, ResponseStatus, VacancyPage, pause
+
 SITE = "hh"
+NAME = "hh.kz"
+LOGIN_URL = "https://hh.kz/account/login?backurl=%2F"
+USES_RESUME_LINKS = True
 VACANCY_ID_RE = re.compile(r"/vacancy/(\d+)")
 SUBMIT = '[data-qa="vacancy-response-submit-popup"]'
 LETTER = '[data-qa="vacancy-response-popup-form-letter-input"]'
@@ -49,42 +52,6 @@ RESUMES_JS = """
 """
 
 
-class CaptchaError(RuntimeError):
-    pass
-
-
-@dataclass
-class Listing:
-    external_id: str
-    url: str
-    title: str
-    employer: str
-
-
-@dataclass
-class VacancyPage:
-    title: str
-    employer: str
-    text: str
-    has_respond_button: bool
-
-
-@dataclass
-class ResponseStatus:
-    already_applied: bool
-    impossible: bool
-    letter_required: bool
-    has_test: bool
-    letter_max_length: int
-    resume_hashes: set[str] = field(default_factory=set)
-    relocation_warning: bool = False
-    remote: bool = False
-
-    @property
-    def needs_relocation(self) -> bool:
-        return self.relocation_warning and not self.remote
-
-
 def handles(url: str) -> bool:
     host = (urlparse(url).hostname or "").lower()
     return host == "hh.kz" or host.endswith(".hh.kz")
@@ -116,10 +83,6 @@ def with_page_number(search_url: str, number: int) -> str:
     if number:
         query.append(("page", str(number)))
     return urlunparse(parsed._replace(query=urlencode(query)))
-
-
-def pause(page, low: float = 0.8, high: float = 2.2) -> None:
-    page.wait_for_timeout(int(random.uniform(low, high) * 1000))
 
 
 def check_captcha(page) -> None:

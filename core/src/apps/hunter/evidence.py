@@ -15,6 +15,12 @@ FILES = {
 }
 
 
+def key_for(vacancy) -> str:
+    if vacancy.source == "hh":
+        return vacancy.external_id
+    return f"{vacancy.source}-{vacancy.external_id}"
+
+
 def pages_dir():
     return settings.DATA_DIR / "hunter" / "pages"
 

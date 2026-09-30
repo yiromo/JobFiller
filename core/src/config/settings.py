@@ -142,5 +142,10 @@ HUNTER_MAX_APPLIES_PER_RUN = config("HUNTER_MAX_APPLIES_PER_RUN", default=10, ca
 HUNTER_MAX_NEW_PER_RUN = config("HUNTER_MAX_NEW_PER_RUN", default=40, cast=int)
 HUNTER_MAX_APPLIES_PER_DAY = config("HUNTER_MAX_APPLIES_PER_DAY", default=50, cast=int)
 HUNTER_NAVIGATOR = config("HUNTER_NAVIGATOR", default="on")
+HUNTER_NAVIGATOR_BY_SITE = {
+    "hh": config("HUNTER_NAVIGATOR_HH", default=""),
+    "linkedin": config("HUNTER_NAVIGATOR_LINKEDIN", default="rehearse"),
+    "indeed": config("HUNTER_NAVIGATOR_INDEED", default="rehearse"),
+}
 HUNTER_NAVIGATOR_STEPS = config("HUNTER_NAVIGATOR_STEPS", default=25, cast=int)
 HUNTER_NOTIFY_TELEGRAM = config("HUNTER_NOTIFY_TELEGRAM", default=False, cast=bool)

@@ -42,7 +42,7 @@ uv run ruff format .
 uv run python manage.py test                                   # all Django tests
 uv run python manage.py test apps.opportunities.tests          # one module (or add .Class.test_name)
 uv run python manage.py sync_telegram_jobs [--days N]          # ingest the Telegram channel
-uv run python manage.py hh_login                               # visible browser: log in to hh.kz once
+uv run python manage.py hunter_login hh|linkedin|indeed       # visible browser: log in once per site
 uv run python manage.py hh_resumes [--link CV_ID=HASH]         # list/link hh résumés
 uv run python manage.py hunt [--apply] [--headed] [--loop MIN] # hh.kz agent (dry run by default)
 uv run python manage.py hunt --vacancy ID [--rehearse]         # send one row (or rehearse: never submits)

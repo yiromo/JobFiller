@@ -11,7 +11,7 @@ from apps.cvs.models import Cv
 from apps.hunter import evidence, navigator, notify, service, state
 from apps.hunter.models import ResumeLink, Vacancy
 from apps.hunter.service import RunSummary, letter_language
-from apps.hunter.sources import adapter_for, hh
+from apps.hunter.sources import ADAPTERS, adapter_for, hh, missing_contract
 
 
 class HhParsingTests(SimpleTestCase):
@@ -87,10 +87,12 @@ class HunterWorkflowTests(SimpleTestCase):
         self.assertEqual(notify.summary_text(RunSummary()), "")
 
     def test_summary_text_lists_applied_and_review(self):
-        applied = SimpleNamespace(title="Dev", employer="Acme", url="https://x/1", note="")
+        applied = SimpleNamespace(
+            source="hh", title="Dev", employer="Acme", url="https://x/1", note=""
+        )
         review = SimpleNamespace(title="Ops", employer="B", url="https://x/2", note="captcha")
         text = notify.summary_text(RunSummary(applied=[applied], review=[review]), "logged out")
-        self.assertIn("applied to 1", text)
+        self.assertIn("Applied to 1", text)
         self.assertIn("Ops — captcha", text)
         self.assertIn("logged out", text)
 
@@ -123,6 +125,8 @@ class AgentStateTests(SimpleTestCase):
 
 class FakeAdapter:
     SITE = "hh"
+    NAME = "hh.kz"
+    USES_RESUME_LINKS = True
     NAVIGABLE = hh.NAVIGABLE
 
     def __init__(self, status, outcome=(True, "Applied on hh.kz.")):
@@ -171,7 +175,7 @@ class ApplyReadyTests(LinkedCvCase):
         summary = RunSummary()
         with patch("apps.hunter.service.adapter_for", return_value=adapter):
             service.apply_ready(
-                None, 10, [self.link], lambda line: None, summary, only, rehearse=rehearse
+                None, adapter, 10, [self.link], lambda line: None, summary, only, rehearse=rehearse
             )
         return summary
 
@@ -207,7 +211,7 @@ class ReconcileTests(LinkedCvCase):
     def run_reconcile(self, adapter):
         summary = RunSummary()
         with patch("apps.hunter.service.adapter_for", return_value=adapter):
-            service.reconcile(None, lambda line: None, summary)
+            service.reconcile(None, adapter, lambda line: None, summary)
         return summary
 
     def test_held_vacancy_sent_by_hand_becomes_applied_without_using_the_cap(self):
@@ -258,40 +262,64 @@ class NavigatorGuardTests(SimpleTestCase):
 
     def test_consent_and_demographic_answers_are_refused(self):
         consent = self.element(tag="input", type="checkbox", label="Я согласен на обработку")
-        self.assertIn("refused", navigator.vet({"action": "check"}, consent, "hh.kz", False))
+        self.assertIn("refused", navigator.vet({"action": "check"}, consent, {"hh.kz"}, False))
         gender = self.element(tag="label", text="Female", group="What is your gender?")
-        self.assertIn("refused", navigator.vet({"action": "click"}, gender, "hh.kz", False))
+        self.assertIn("refused", navigator.vet({"action": "click"}, gender, {"hh.kz"}, False))
         salary = self.element(tag="textarea", label="Желаемая зарплата")
         self.assertEqual(
-            navigator.vet({"action": "fill", "value": "x"}, salary, "hh.kz", False), ""
+            navigator.vet({"action": "fill", "value": "x"}, salary, {"hh.kz"}, False), ""
         )
 
     def test_links_off_the_site_are_refused(self):
         link = self.element(tag="a", href="https://evil.example/login")
-        self.assertIn("outside", navigator.vet({"action": "click"}, link, "hh.kz", False))
+        self.assertIn("outside", navigator.vet({"action": "click"}, link, {"hh.kz"}, False))
         inside = self.element(tag="a", href="https://astana.hh.kz/vacancy/1")
-        self.assertEqual(navigator.vet({"action": "click"}, inside, "hh.kz", False), "")
+        self.assertEqual(navigator.vet({"action": "click"}, inside, {"hh.kz"}, False), "")
 
     def test_rehearsal_stops_only_at_the_final_submit(self):
         opener = self.element(tag="a", text="Respond", qa="vacancy-response-link-top")
         confirm = self.element(text="Still apply", qa="relocation-warning-confirm", in_form=True)
         send = self.element(type="submit", text="Send application", submit=True, in_form=True)
         click = {"action": "click"}
-        self.assertEqual(navigator.vet(click, opener, "hh.kz", True), "")
-        self.assertEqual(navigator.vet(click, confirm, "hh.kz", True), "")
-        self.assertEqual(navigator.vet(click, send, "hh.kz", True), "rehearsal")
-        self.assertEqual(navigator.vet(click, send, "hh.kz", False), "")
+        self.assertEqual(navigator.vet(click, opener, {"hh.kz"}, True), "")
+        self.assertEqual(navigator.vet(click, confirm, {"hh.kz"}, True), "")
+        self.assertEqual(navigator.vet(click, send, {"hh.kz"}, True), "rehearsal")
+        self.assertEqual(navigator.vet(click, send, {"hh.kz"}, False), "")
         flagged = {"action": "click", "final_submit": True}
-        self.assertEqual(navigator.vet(flagged, opener, "hh.kz", True), "rehearsal")
+        self.assertEqual(navigator.vet(flagged, opener, {"hh.kz"}, True), "rehearsal")
 
     def test_unknown_or_missing_targets_are_reported(self):
-        self.assertIn("unknown", navigator.vet({"action": "hack"}, None, "hh.kz", False))
-        self.assertIn("no element", navigator.vet({"action": "click", "ref": 9}, None, "hh", False))
-        self.assertEqual(navigator.vet({"action": "done"}, None, "hh.kz", False), "")
+        self.assertIn("unknown", navigator.vet({"action": "hack"}, None, {"hh.kz"}, False))
+        self.assertIn(
+            "no element", navigator.vet({"action": "click", "ref": 9}, None, {"hh.kz"}, False)
+        )
+        self.assertEqual(navigator.vet({"action": "done"}, None, {"hh.kz"}, False), "")
+
+    def test_passwords_account_creation_and_uploads_without_a_file_are_refused(self):
+        password = self.element(tag="input", type="password", label="Password")
+        self.assertIn("password", navigator.vet({"action": "fill"}, password, {"hh.kz"}, False))
+        signup = self.element(text="Create account")
+        self.assertIn("accounts", navigator.vet({"action": "click"}, signup, {"hh.kz"}, False))
+        upload = self.element(tag="input", type="file")
+        self.assertIn("no CV", navigator.vet({"action": "upload"}, upload, {"hh.kz"}, False))
+        self.assertEqual(navigator.vet({"action": "upload"}, upload, {"hh.kz"}, False, True), "")
 
     def test_host_of_folds_city_subdomains(self):
         self.assertEqual(navigator.host_of("https://astana.hh.kz/vacancy/1"), "hh.kz")
         self.assertEqual(navigator.host_of("https://hh.kz/"), "hh.kz")
+
+    def test_site_setting_overrides_the_global_navigator_mode(self):
+        sites = {"hh": "", "linkedin": "rehearse"}
+        with override_settings(
+            MIMO_API_KEY="k", HUNTER_NAVIGATOR="on", HUNTER_NAVIGATOR_BY_SITE=sites
+        ):
+            self.assertEqual(service.navigator_mode("hh"), "on")
+            self.assertEqual(service.navigator_mode("linkedin"), "rehearse")
+            self.assertEqual(service.navigator_mode(), "on")
+
+    def test_every_adapter_meets_the_contract(self):
+        for adapter in ADAPTERS:
+            self.assertEqual(missing_contract(adapter), [], adapter.SITE)
 
     def test_navigator_needs_a_model_key(self):
         with override_settings(MIMO_API_KEY="", HUNTER_NAVIGATOR="on"):
@@ -337,7 +365,7 @@ class NavigatorRoutingTests(LinkedCvCase):
             patch("apps.hunter.service.cover_letter.generate", return_value="Letter"),
         ):
             service.apply_ready(
-                None, 10, [self.link], lambda line: None, summary, only, rehearse=rehearse
+                None, adapter, 10, [self.link], lambda line: None, summary, only, rehearse=rehearse
             )
         return navigate
 

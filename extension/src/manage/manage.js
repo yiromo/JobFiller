@@ -114,8 +114,17 @@ function renderHunterHeader(data) {
     ["Per cycle", `${config.max_applies_per_run} sends, ${config.max_new_per_run} new vacancies`],
     ["Browser", String(config.headless)],
     ["Telegram alerts", config.notify_telegram ? "on" : "off"],
-    ["Navigator", `${config.navigator ?? "—"}, up to ${config.navigator_steps ?? "?"} steps`],
-    ["hh.kz session saved", formatTime(data.session_saved_at)],
+    [
+      "Navigator",
+      `${config.navigator ?? "—"}, up to ${config.navigator_steps ?? "?"} steps` +
+        Object.entries(config.navigator_by_site || {}).map(([site, mode]) => `\n${site}: ${mode}`).join(""),
+    ],
+    [
+      "Sessions saved",
+      Object.entries(data.sessions || { "hh.kz": data.session_saved_at })
+        .map(([site, saved]) => `${site}: ${saved ? formatTime(saved) : "not logged in"}`)
+        .join("\n"),
+    ],
     ["Snapshot", formatTime(data.generated_at)],
   ];
   const details = document.getElementById("hunter-details");
@@ -175,7 +184,7 @@ function renderHunterVacancies() {
     row.append(
       el(
         "span",
-        `${item.employer || "—"} · ${HUNTER_STATUS_LABELS[item.status] || item.status} · ${score}${item.cv_name ? ` · ${item.cv_name}` : ""}${when}`,
+        `${item.source ? `[${item.source}] ` : ""}${item.employer || "—"} · ${HUNTER_STATUS_LABELS[item.status] || item.status} · ${score}${item.cv_name ? ` · ${item.cv_name}` : ""}${when}`,
         "hunter-meta",
       ),
     );
@@ -190,7 +199,7 @@ function renderHunterVacancies() {
         if (index) files.append(" · ");
         files.append(
           externalLink(
-            `${CORE_URL}/api/v1/hunter/evidence/${encodeURIComponent(item.external_id)}/${encodeURIComponent(name)}`,
+            `${CORE_URL}/api/v1/hunter/evidence/${encodeURIComponent(item.evidence_key || item.external_id)}/${encodeURIComponent(name)}`,
             labels[name] || name,
           ),
         );

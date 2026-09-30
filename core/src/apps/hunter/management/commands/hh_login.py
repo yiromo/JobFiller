@@ -1,34 +1,9 @@
-import time
-
-from django.core.management.base import BaseCommand, CommandError
-from playwright.sync_api import Error as PlaywrightError
-
-from apps.hunter.browser import open_browser, save_session
-from apps.hunter.sources import hh
-
-LOGIN_URL = "https://hh.kz/account/login?backurl=%2F"
+from django.core.management import call_command
+from django.core.management.base import BaseCommand
 
 
 class Command(BaseCommand):
-    help = "Open a visible hh.kz browser on the shared profile so you can log in once."
+    help = "Alias for `hunter_login hh`."
 
     def handle(self, *args, **options):
-        with open_browser(hh.SITE, headless=False) as context:
-            page = context.pages[0] if context.pages else context.new_page()
-            page.goto(LOGIN_URL)
-            self.stdout.write("Log in to hh.kz in the opened window; it closes once you are in.")
-            logged_in = False
-            while not logged_in:
-                try:
-                    if not context.pages:
-                        break
-                    if any(hh.is_logged_in(tab) for tab in context.pages):
-                        save_session(hh.SITE, context)
-                        logged_in = True
-                        continue
-                except PlaywrightError:
-                    pass
-                time.sleep(3)
-        if not logged_in:
-            raise CommandError("The window closed before hh.kz showed a logged-in page.")
-        self.stdout.write(self.style.SUCCESS("hh.kz session saved to data/browser/hh/"))
+        call_command("hunter_login", "hh", stdout=self.stdout, stderr=self.stderr)

@@ -19,7 +19,7 @@ from .browser import open_browser
 from .models import ResumeLink, Vacancy
 from .navigator import Navigator
 from .sources import adapter_for
-from .sources.hh import CaptchaError
+from .sources.base import CaptchaError
 from .state import sent_last_day
 
 SCORE_BATCH = 8
@@ -45,8 +45,10 @@ def first_line(error: BaseException) -> str:
     return (str(error).strip().splitlines() or [type(error).__name__])[0]
 
 
-def navigator_mode() -> str:
-    mode = settings.HUNTER_NAVIGATOR.strip().lower()
+def navigator_mode(site: str = "") -> str:
+    mode = (
+        (settings.HUNTER_NAVIGATOR_BY_SITE.get(site) or settings.HUNTER_NAVIGATOR).strip().lower()
+    )
     if not settings.MIMO_API_KEY or mode not in {"on", "rehearse"}:
         return "off"
     return mode
@@ -57,8 +59,8 @@ def letter_language(text: str) -> str:
 
 
 def score_vacancies(vacancies: list[Vacancy], links: list[ResumeLink]) -> None:
-    cvs = [link.cv for link in links]
-    resume_for = {link.cv_id: link.resume_id for link in links}
+    cvs = list({link.cv_id: link.cv for link in links}.values())
+    resume_for = {(link.source, link.cv_id): link.resume_id for link in links}
     for start in range(0, len(vacancies), SCORE_BATCH):
         batch = vacancies[start : start + SCORE_BATCH]
         try:
@@ -73,7 +75,7 @@ def score_vacancies(vacancies: list[Vacancy], links: list[ResumeLink]) -> None:
         for vacancy in batch:
             cv, score, reason = ranked.get(str(vacancy.id), (None, None, vacancy.match_reason))
             vacancy.cv = cv
-            vacancy.resume_id = resume_for.get(cv.id, "") if cv else ""
+            vacancy.resume_id = resume_for.get((vacancy.source, cv.id), "") if cv else ""
             vacancy.match_score = score
             vacancy.match_reason = reason or f"{UNSCORED_PREFIXES[0]}; is MIMO_API_KEY set?"
             ready = score is not None and score >= settings.HUNTER_MIN_SCORE
@@ -119,7 +121,9 @@ def discover(page, adapter, search_url: str, max_pages: int, log, budget: int) -
             continue
         if status is None:
             if not adapter.is_logged_in(page):
-                raise RuntimeError("The hh.kz session expired; run hh_login.")
+                raise RuntimeError(
+                    f"The {adapter.NAME} session expired; run hunter_login {adapter.SITE}."
+                )
             log(f"  no response info for {item.url}; retrying next run")
             continue
         vacancy = Vacancy(
@@ -132,31 +136,31 @@ def discover(page, adapter, search_url: str, max_pages: int, log, budget: int) -
             status=Vacancy.Status.BELOW_THRESHOLD,
         )
         if status.already_applied:
-            vacancy.status, vacancy.note = Vacancy.Status.APPLIED, "Already applied on hh.kz."
+            vacancy.status = Vacancy.Status.APPLIED
+            vacancy.note = f"Already applied on {adapter.NAME}."
         elif status.impossible:
-            vacancy.status, vacancy.note = (
-                Vacancy.Status.SKIPPED,
-                "hh.kz does not allow a response.",
-            )
-        elif not details.has_respond_button and navigator_mode() == "off":
             vacancy.status = Vacancy.Status.SKIPPED
-            vacancy.note = "No hh.kz response button; the employer takes applications elsewhere."
-        elif status.has_test and navigator_mode() == "off":
+            vacancy.note = f"{adapter.NAME} does not allow a response."
+        elif not details.has_respond_button and navigator_mode(adapter.SITE) == "off":
+            vacancy.status = Vacancy.Status.SKIPPED
+            vacancy.note = (
+                f"No {adapter.NAME} response button; the employer takes applications elsewhere."
+            )
+        elif status.has_test and navigator_mode(adapter.SITE) == "off":
             vacancy.note = "Employer questionnaire required; answer it manually."
         elif status.needs_relocation:
-            vacancy.note = "Office job in another region; hh.kz warns about relocation."
+            vacancy.note = f"Office job in another region; {adapter.NAME} warns about relocation."
         vacancy.save()
         created.append(vacancy)
         adapter.pause(page, 1.5, 4.0)
     return created
 
 
-def reconcile(page, log, summary: RunSummary) -> None:
-    held = Vacancy.objects.filter(status=Vacancy.Status.NEEDS_REVIEW).order_by("updated_at")
+def reconcile(page, adapter, log, summary: RunSummary) -> None:
+    held = Vacancy.objects.filter(source=adapter.SITE, status=Vacancy.Status.NEEDS_REVIEW).order_by(
+        "updated_at"
+    )
     for vacancy in held[:RECHECK_BATCH]:
-        adapter = adapter_for(vacancy.url)
-        if adapter is None:
-            continue
         try:
             status = adapter.response_status(page, adapter.origin(vacancy.url), vacancy.external_id)
         except PlaywrightError as error:
@@ -165,16 +169,13 @@ def reconcile(page, log, summary: RunSummary) -> None:
         if status is None:
             continue
         if status.already_applied:
-            finish(
-                vacancy, True, "Sent outside the agent; confirmed in hh.kz responses.", sent=False
-            )
+            note = f"Sent outside the agent; confirmed on {adapter.NAME}."
+            finish(vacancy, True, note, sent=False)
             summary.reconciled.append(vacancy)
-            log(f"  SENT    {vacancy.title}: confirmed in hh.kz responses")
+            log(f"  SENT    {vacancy.title}: confirmed on {adapter.NAME}")
         elif status.impossible:
-            vacancy.status, vacancy.note = (
-                Vacancy.Status.SKIPPED,
-                "hh.kz no longer accepts responses.",
-            )
+            vacancy.status = Vacancy.Status.SKIPPED
+            vacancy.note = f"{adapter.NAME} no longer accepts responses."
             vacancy.save()
             log(f"  CLOSED  {vacancy.title}")
         else:
@@ -184,6 +185,7 @@ def reconcile(page, log, summary: RunSummary) -> None:
 
 def apply_ready(
     page,
+    adapter,
     limit: int,
     links: list[ResumeLink],
     log,
@@ -199,16 +201,13 @@ def apply_ready(
         limit = remaining
         log(f"Daily cap: {remaining} more responses allowed in the last 24 hours.")
     statuses = [Vacancy.Status.READY]
-    queue = Vacancy.objects.select_related("cv")
+    queue = Vacancy.objects.select_related("cv").filter(source=adapter.SITE)
     if only:
         statuses.append(Vacancy.Status.NEEDS_REVIEW)
         queue = queue.filter(external_id=only)
     queue = queue.filter(status__in=statuses).exclude(cv=None)
     attempted = False
     for vacancy in queue.order_by("-match_score", "id")[:limit]:
-        adapter = adapter_for(vacancy.url)
-        if adapter is None:
-            continue
         if attempted:
             time.sleep(random.uniform(20, 60))
         claimed = Vacancy.objects.filter(pk=vacancy.pk, status__in=statuses).update(
@@ -222,7 +221,9 @@ def apply_ready(
             )
         except (KeyboardInterrupt, SystemExit):
             finish(
-                vacancy, False, "The agent stopped while applying; check hh.kz before resending."
+                vacancy,
+                False,
+                f"The agent stopped while applying; check {adapter.NAME} before resending.",
             )
             raise
         if result is None:
@@ -241,14 +242,15 @@ def apply_one(
         log(f"  response info failed for {vacancy.title}: {first_line(error)}")
     if status is None:
         Vacancy.objects.filter(pk=vacancy.pk).update(status=Vacancy.Status.READY)
-        log("  hh.kz returned no response info; stopping sends until the next run.")
+        log(f"  {adapter.NAME} returned no response info; stopping sends until the next run.")
         return None
-    if status.already_applied or vacancy.resume_id not in status.resume_hashes:
+    resume_missing = adapter.USES_RESUME_LINKS and vacancy.resume_id not in status.resume_hashes
+    if status.already_applied or resume_missing:
         done = status.already_applied
         reason = (
-            "Already applied on hh.kz."
+            f"Already applied on {adapter.NAME}."
             if done
-            else "The linked hh résumé is not offered for this vacancy."
+            else f"The linked {adapter.NAME} résumé is not offered for this vacancy."
         )
         finish(vacancy, done, reason, sent=False)
         if not done:
@@ -277,7 +279,7 @@ def apply_one(
         vacancy.save(update_fields=["submitted_at", "cover_letter", "updated_at"])
 
     resume_title = titles.get(vacancy.resume_id, "")
-    mode = "rehearse" if rehearse else navigator_mode()
+    mode = "rehearse" if rehearse else navigator_mode(adapter.SITE)
     if forced and not rehearse and mode != "off":
         mode = "on"
     try:
@@ -304,7 +306,7 @@ def apply_one(
                 on_submit=mark_submitted,
             )
             if not applied and not submitted:
-                evidence.capture(page, vacancy.external_id)
+                evidence.capture(page, evidence.key_for(vacancy))
                 if mode != "off" and note.startswith(adapter.NAVIGABLE):
                     log(f"  scripted apply failed ({note}); handing over to the navigator")
                     applied, note = navigate(
@@ -324,8 +326,8 @@ def apply_one(
             raise
         vacancy.status = Vacancy.Status.NEEDS_REVIEW
         vacancy.note = (
-            "hh.kz asked for a captcha before sending; nothing was submitted. Stop the service "
-            "(`systemctl --user stop job-filler-hunter`), then send it with "
+            f"{adapter.NAME} asked for a captcha before sending; nothing was submitted. Stop the "
+            "service (`systemctl --user stop job-filler-hunter`), then send it with "
             f"`hunt --apply --headed --vacancy {vacancy.external_id}`."
         )
         vacancy.save()
@@ -335,7 +337,7 @@ def apply_one(
         applied = False
         note = f"Browser error: {first_line(error)}"
         if submitted:
-            note += " (after Submit; check hh.kz before resending)"
+            note += f" (after Submit; check {adapter.NAME} before resending)"
     if rehearse:
         Vacancy.objects.filter(pk=vacancy.pk).update(
             status=original_status, cover_letter=vacancy.cover_letter
@@ -352,7 +354,7 @@ def navigate(
     page, adapter, vacancy, status, resume_title, letter, log, rehearse, on_submit
 ) -> tuple:
     page.goto(vacancy.url, wait_until="domcontentloaded")
-    result = Navigator(
+    navigator = Navigator(
         page,
         goal=adapter.navigator_goal(vacancy.title, resume_title, letter, status),
         cv_text=vacancy.cv.raw_text or "",
@@ -360,8 +362,10 @@ def navigate(
         log=log,
         rehearse=rehearse,
         on_submit=on_submit,
-    ).run()
-    evidence.capture(page, vacancy.external_id, result.trace)
+        upload_path=cv_file_path(vacancy.cv),
+    )
+    result = navigator.run()
+    evidence.capture(navigator.page, evidence.key_for(vacancy), result.trace)
     if result.status == "captcha" and not result.submitted:
         raise CaptchaError(result.note)
     if result.status == "rehearsed":
@@ -370,12 +374,19 @@ def navigate(
         page.wait_for_timeout(2000)
         confirmed = adapter.response_status(page, adapter.origin(vacancy.url), vacancy.external_id)
         if confirmed and confirmed.already_applied:
-            return True, "Applied on hh.kz by the navigator."
+            return True, f"Applied on {adapter.NAME} by the navigator."
         return False, (
-            f"Navigator {result.status}: {result.note} hh.kz does not report the response; "
-            "check it before resending."
+            f"Navigator {result.status}: {result.note} {adapter.NAME} does not report the "
+            "response; check it before resending."
         )
     return False, f"Navigator {result.status}: {result.note}"
+
+
+def cv_file_path(cv) -> str:
+    try:
+        return cv.file.path if cv.file else ""
+    except (ValueError, NotImplementedError):
+        return ""
 
 
 def finish(vacancy: Vacancy, applied: bool, note: str, sent: bool = True) -> None:
@@ -384,6 +395,19 @@ def finish(vacancy: Vacancy, applied: bool, note: str, sent: bool = True) -> Non
     if applied and sent:
         vacancy.applied_at = timezone.now()
     vacancy.save()
+
+
+def site_groups(only: str) -> list[tuple]:
+    if only:
+        urls = Vacancy.objects.filter(external_id=only).values_list("url", flat=True)
+    else:
+        urls = settings.JOB_SOURCE_URLS
+    groups: dict = {}
+    for url in urls:
+        adapter = adapter_for(url)
+        if adapter is not None:
+            groups.setdefault(adapter.SITE, (adapter, []))[1].append(url)
+    return list(groups.values())
 
 
 def run_once(
@@ -398,41 +422,58 @@ def run_once(
     summary: RunSummary | None = None,
 ) -> RunSummary:
     summary = summary if summary is not None else RunSummary()
-    links = list(ResumeLink.objects.select_related("cv").filter(source="hh"))
+    links = list(ResumeLink.objects.select_related("cv"))
     if not links:
         raise RuntimeError("Link at least one CV to an hh résumé first (hh_resumes --link).")
-    sources = [url for url in settings.JOB_SOURCE_URLS if adapter_for(url)]
-    if not sources:
-        raise RuntimeError("Set JOB_SOURCE_URLS in core/.env to one or more hh.kz search URLs.")
+    groups = site_groups(only)
+    if not groups:
+        if only:
+            raise RuntimeError(f"No known vacancy {only} on a supported site.")
+        raise RuntimeError("Set JOB_SOURCE_URLS in core/.env to one or more job search URLs.")
     Vacancy.objects.filter(
         status=Vacancy.Status.APPLYING,
         updated_at__lt=timezone.now() - timedelta(hours=2),
-    ).update(status=Vacancy.Status.NEEDS_REVIEW, note="Run stopped while applying; check hh.kz.")
-    with open_browser("hh", headless=False if headed else None) as context:
+    ).update(status=Vacancy.Status.NEEDS_REVIEW, note="Run stopped while applying; check the site.")
+    errors = []
+    for adapter, urls in groups:
+        try:
+            run_site(
+                adapter, urls, links, apply, limit, max_pages, log, only, headed, rehearse, summary
+            )
+        except RuntimeError as error:
+            log(f"{adapter.NAME}: {error}")
+            errors.append(f"{adapter.NAME}: {error}" if len(groups) > 1 else str(error))
+    if errors:
+        raise RuntimeError("; ".join(errors))
+    return summary
+
+
+def run_site(adapter, urls, links, apply, limit, max_pages, log, only, headed, rehearse, summary):
+    with open_browser(adapter.SITE, headless=False if headed else None) as context:
         page = context.pages[0] if context.pages else context.new_page()
-        page.goto(adapter_for(sources[0]).origin(sources[0]), wait_until="domcontentloaded")
-        if not adapter_for(sources[0]).is_logged_in(page):
-            raise RuntimeError("The hh.kz profile is not logged in; run hh_login.")
+        page.goto(adapter.origin(urls[0]), wait_until="domcontentloaded")
+        if not adapter.is_logged_in(page):
+            raise RuntimeError(
+                f"The {adapter.NAME} profile is not logged in; run hunter_login {adapter.SITE}."
+            )
         if not only:
-            reconcile(page, log, summary)
-            resume_hashes = [link.resume_id for link in links]
+            reconcile(page, adapter, log, summary)
+            resume_hashes = [link.resume_id for link in links if link.source == adapter.SITE]
             created = []
-            for url in sources:
-                adapter = adapter_for(url)
+            for url in urls:
                 for search_url in adapter.expand_source(url, resume_hashes):
                     budget = settings.HUNTER_MAX_NEW_PER_RUN - len(created)
                     created += discover(page, adapter, search_url, max_pages, log, budget)
-            summary.discovered = len(created)
+            summary.discovered += len(created)
             pending = unscored()
             score_vacancies(pending, links)
             summary.review += [v for v in pending if v.status == Vacancy.Status.NEEDS_REVIEW]
             report(list(Vacancy.objects.filter(pk__in=[v.pk for v in created])), log)
         if apply:
-            apply_ready(page, limit, links, log, summary, only, headed, rehearse)
+            apply_ready(page, adapter, limit, links, log, summary, only, headed, rehearse)
         else:
-            ready = Vacancy.objects.filter(status=Vacancy.Status.READY).count()
-            log(f"Dry run: {ready} vacancies ready; rerun with --apply to send responses.")
-    return summary
+            ready = Vacancy.objects.filter(source=adapter.SITE, status=Vacancy.Status.READY).count()
+            log(f"Dry run: {ready} {adapter.NAME} vacancies ready; rerun with --apply to send.")
 
 
 def report(vacancies: list[Vacancy], log) -> None:

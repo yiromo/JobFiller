@@ -1,5 +1,20 @@
 # Progress log
 
+- **Hunter goes multi-site (foundation)** — shared adapter types and the adapter contract live in
+  `sources/base.py` (`CONTRACT`, checked by a test); `run_once` groups `JOB_SOURCE_URLS` by adapter
+  and runs each site in its own browser profile, so one site's logout or captcha no longer stops the
+  others (errors are joined at the end). Résumé-hash checks only apply to adapters with
+  `USES_RESUME_LINKS` (hh); scoring uses every linked CV. `hunter_login SITE` replaces `hh_login`
+  (kept as an alias) for hh, LinkedIn (`li_at` cookie) and Indeed (`SOCK`/`SHOE` cookies); the
+  latter two are login-only until their markup is captured. `HUNTER_NAVIGATOR_<SITE>` overrides
+  the global mode per site; LinkedIn and Indeed default to `rehearse`. The navigator gained an
+  allowed-host set, follows a new tab on an allowed host (closes others), an `upload` action whose
+  file is always the vacancy's CV chosen by code, refusals for password fields and account
+  creation, word-by-word typing with random delays and pauses between steps, and the field's full
+  length alongside its truncated value. Evidence keys are `<site>-<id>` off hh. Labels are now
+  "Job agent", with per-site sessions and navigator modes on the Manage page. Live hh rehearsal on
+  137964904 through the new path stopped at "Send application", row still `ready`.
+
 - **hh.kz agent: vision navigator, site lessons and failure evidence** — `apps/hunter/navigator.py`
   runs an observe → decide → act loop: each step stamps the page's visible controls with
   `data-jf-nav` numbers (label, nearby question text, value, options, `data-qa`, form/dialog

@@ -12,6 +12,7 @@ from django.utils import timezone
 
 from . import evidence
 from .models import ResumeLink, SiteLesson, Vacancy
+from .sources import LOGIN_SITES
 
 RUNNING = "running"
 SLEEPING = "sleeping"
@@ -94,7 +95,8 @@ def vacancy_payload(vacancy: Vacancy, cv_names: dict) -> dict:
         "applied_at": vacancy.applied_at,
         "created_at": vacancy.created_at,
         "updated_at": vacancy.updated_at,
-        "evidence": evidence.available(vacancy.external_id),
+        "evidence_key": evidence.key_for(vacancy),
+        "evidence": evidence.available(evidence.key_for(vacancy)),
     }
 
 
@@ -121,6 +123,9 @@ def data_snapshot() -> dict:
             "max_applies_per_day": settings.HUNTER_MAX_APPLIES_PER_DAY,
             "notify_telegram": settings.HUNTER_NOTIFY_TELEGRAM,
             "navigator": settings.HUNTER_NAVIGATOR,
+            "navigator_by_site": {
+                site: mode for site, mode in settings.HUNTER_NAVIGATOR_BY_SITE.items() if mode
+            },
             "navigator_steps": settings.HUNTER_NAVIGATOR_STEPS,
         },
         "sent_last_day": sent_last_day(),
@@ -131,6 +136,7 @@ def data_snapshot() -> dict:
             for link in links
         ],
         "session_saved_at": session_saved_at(),
+        "sessions": {adapter.NAME: session_saved_at(adapter.SITE) for adapter in LOGIN_SITES},
         "lessons": [
             {
                 "host": lesson.host,

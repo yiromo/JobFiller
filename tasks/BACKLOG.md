@@ -54,6 +54,10 @@ Roughly in order. Not started unless noted in `PROGRESS.md`.
    - Captchas are the main blocker: 14 of ~35 send attempts hit the submit captcha. The agent must
      not solve or evade them; what is left is making the hand-off cheaper (the reconcile step
      already picks up responses sent by hand).
+   - The daily cap is global across sites (`sent_last_day` counts every source); add a per-site cap
+     once LinkedIn/Indeed send.
+   - LinkedIn and Indeed are login-only modules (`LOGIN_SITES`) until their search/job markup is
+     captured live; then they join `ADAPTERS` with crawl, status and a rehearsed Easy Apply.
    - Navigator follow-ups: external employer sites ("no hh response button"), off by default until
      real samples are rehearsed; LLM-learned listing selectors for non-hh job boards; per-host
      lessons are only fed back as free text, not verified selectors.
