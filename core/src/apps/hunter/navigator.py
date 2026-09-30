@@ -238,8 +238,9 @@ Rules:
   honest short answer (e.g. that you have no such experience) rather than a made-up one.
 - Fill empty required contact fields (name, email, phone, city) from candidate_contact. If a
   required value is not in candidate_contact or the CV, reply "stuck" and name the missing value.
-- Work authorization, visa, sponsorship, relocation, notice period and salary questions are
-  answered only from candidate_facts. If candidate_facts does not cover one, reply "stuck" and
+- candidate_facts is the candidate's own statement and outranks the CV for everything it
+  covers, including years of experience. Work authorization, visa, sponsorship, relocation,
+  notice period and salary questions are answered only from candidate_facts. If candidate_facts does not cover one, reply "stuck" and
   name the question; never guess eligibility.
 - Searchable dropdowns: type a short part of the answer and pick the matching option. If none
   matches after one try, pick "Other" when offered; otherwise leave an optional field empty and
