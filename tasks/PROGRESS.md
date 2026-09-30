@@ -1,5 +1,12 @@
 # Progress log
 
+- **Hunter scoring follows the candidate's stated preferences** — `rank_jobs` takes an optional
+  `preferences` string (the Telegram queue passes none) that outranks what a CV implies about
+  location, eligibility and work format. The hunter sends `HUNTER_FACTS` plus: remote roles limited
+  to US/EU residents are not marked down, on-site/hybrid roles are a major mismatch. Rescoring the
+  9 LinkedIn/Indeed rows moved the hybrid/on-site ones from 70–74 down to 30–58 and a remote .NET
+  role from 28 to 45.
+
 - **Navigator eligibility gate, rehearsal hand-over, tidier tabs** — work authorization, visa,
   sponsorship, clearance and citizenship questions are refused in `vet` unless `HUNTER_FACTS` is
   set, and the prompt answers those (plus notice period, relocation, salary) only from

@@ -57,6 +57,16 @@ def letter_language(text: str) -> str:
     return "Russian" if len(CYRILLIC_RE.findall(text)) > len(LATIN_RE.findall(text)) else ""
 
 
+def scoring_preferences() -> str:
+    if not settings.HUNTER_FACTS:
+        return ""
+    return (
+        f"{settings.HUNTER_FACTS} The candidate applies to remote roles even when they are limited "
+        "to US or EU residents; do not lower the score for that. On-site or hybrid roles are a "
+        "major mismatch."
+    )
+
+
 def score_vacancies(vacancies: list[Vacancy], links: list[ResumeLink]) -> None:
     cvs = list({link.cv_id: link.cv for link in links}.values())
     resume_for = {(link.source, link.cv_id): link.resume_id for link in links}
@@ -66,6 +76,7 @@ def score_vacancies(vacancies: list[Vacancy], links: list[ResumeLink]) -> None:
             ranked = rank_jobs(
                 [(str(v.id), TelegraphPage(title=v.title, text=v.text, links=[])) for v in batch],
                 cvs,
+                preferences=scoring_preferences(),
             )
         except MODEL_ERRORS as error:
             ranked = {}
