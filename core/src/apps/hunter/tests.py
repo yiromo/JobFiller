@@ -478,3 +478,75 @@ class EligibilityGuardTests(SimpleTestCase):
         self.assertEqual(
             navigator.vet({"action": "click"}, radio, {"x.com"}, False, has_facts=True), ""
         )
+
+
+class ExternalApplyTests(SimpleTestCase):
+    def test_leaving_the_site_needs_an_external_hop_and_sign_in_is_refused(self):
+        link = {
+            "ref": "1",
+            "tag": "a",
+            "text": "Apply",
+            "label": "",
+            "group": "",
+            "href": "https://jobs.lever.co/acme/1",
+        }
+        self.assertIn("outside", navigator.vet({"action": "click"}, link, {"linkedin.com"}, False))
+        self.assertEqual(
+            navigator.vet({"action": "click"}, link, {"linkedin.com"}, False, may_leave=True), ""
+        )
+        sign_in = {
+            "ref": "2",
+            "tag": "button",
+            "text": "Sign in to apply",
+            "label": "",
+            "group": "",
+        }
+        self.assertIn("accounts", navigator.vet({"action": "click"}, sign_in, {"lever.co"}, False))
+
+    def test_confirmation_phrases(self):
+        for text in (
+            "Thank you for applying to Acme!",
+            "Your application has been submitted.",
+            "We have received your application",
+            "Application received",
+        ):
+            self.assertTrue(navigator.CONFIRMED_RE.search(text), text)
+        self.assertFalse(navigator.CONFIRMED_RE.search("Submit your application"))
+
+    def test_external_mode_parsing(self):
+        with override_settings(MIMO_API_KEY="k", HUNTER_EXTERNAL_APPLY="True"):
+            self.assertEqual(service.external_mode(), "on")
+        with override_settings(MIMO_API_KEY="k", HUNTER_EXTERNAL_APPLY="rehearse"):
+            self.assertEqual(service.external_mode(), "rehearse")
+        with override_settings(MIMO_API_KEY="", HUNTER_EXTERNAL_APPLY="on"):
+            self.assertEqual(service.external_mode(), "off")
+
+
+@override_settings(MIMO_API_KEY="key", HUNTER_NAVIGATOR="on", HUNTER_MAX_APPLIES_PER_DAY=50)
+class ExternalRoutingTests(LinkedCvCase):
+    def run_external(self, mode):
+        vacancy = self.vacancy(f"x{mode}")
+        status = hh.parse_status(OFFERED)
+        status.external_apply = True
+        adapter = FakeAdapter(status)
+        with (
+            override_settings(HUNTER_EXTERNAL_APPLY=mode),
+            patch("apps.hunter.service.navigate", return_value=(False, "Navigator stuck")) as nav,
+            patch("apps.hunter.service.evidence.capture"),
+            patch("apps.hunter.service.cover_letter.generate", return_value="Letter"),
+        ):
+            service.apply_ready(None, adapter, 10, [self.link], lambda line: None, RunSummary())
+        vacancy.refresh_from_db()
+        return vacancy, nav, adapter
+
+    def test_external_jobs_wait_while_external_applying_is_off(self):
+        vacancy, nav, adapter = self.run_external("off")
+        nav.assert_not_called()
+        self.assertEqual(adapter.applied, [])
+        self.assertEqual(vacancy.status, Vacancy.Status.NEEDS_REVIEW)
+
+    def test_external_rehearsal_never_sends(self):
+        _, nav, adapter = self.run_external("rehearse")
+        nav.assert_called_once()
+        self.assertTrue(nav.call_args.args[7])
+        self.assertEqual(adapter.applied, [])

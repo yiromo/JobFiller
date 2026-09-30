@@ -1,5 +1,16 @@
 # Progress log
 
+- **Employer-site apply chain (`HUNTER_EXTERNAL_APPLY=off|rehearse|on`, default off)** — LinkedIn
+  "Apply" and Indeed "Apply on company site" jobs are kept, scored and handed to the navigator
+  with `external_hops=1`: it may follow the link off the job board once, and the host it lands on
+  (after redirects settle, same tab or new tab) joins the allowed hosts; any further new host is
+  refused or closed. Sign-in, log-in, password and account-creation steps are refused in `vet`,
+  and the goal (`sources/base.external_goal`) says to stop at those walls. An employer-site send
+  counts as applied only when the page text matches a confirmation ("Thank you for applying",
+  "Application received"…); otherwise it is held for review with the navigator's note. External
+  runs keep their notes under a shared `employer-sites` lesson instead of polluting the job
+  board's. `ResponseStatus.external_apply` carries the flag from the LinkedIn/Indeed page.
+
 - **Hunter scoring follows the candidate's stated preferences** — `rank_jobs` takes an optional
   `preferences` string (the Telegram queue passes none) that outranks what a CV implies about
   location, eligibility and work format. The hunter sends `HUNTER_FACTS` plus: remote roles limited

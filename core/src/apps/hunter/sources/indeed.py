@@ -1,7 +1,7 @@
 import re
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-from .base import CaptchaError, Listing, ResponseStatus, VacancyPage, pause
+from .base import CaptchaError, Listing, ResponseStatus, VacancyPage, external_goal, pause
 
 SITE = "indeed"
 NAME = "Indeed"
@@ -147,6 +147,7 @@ def response_status(page, url: str) -> ResponseStatus | None:
         letter_required=False,
         has_test=False,
         letter_max_length=4000,
+        external_apply=pane["external"] and not pane["easy"],
     )
 
 
@@ -159,6 +160,12 @@ def apply(page, url, resume_title, letter, status, notify=None, on_submit=None) 
 
 
 def navigator_goal(title: str, resume_title: str, letter: str, status: ResponseStatus) -> str:
+    if status.external_apply:
+        return external_goal(
+            f'the Indeed job "{title}" shown in the right-hand panel',
+            "Apply on company site",
+            letter,
+        )
     lines = [
         f'Apply to the Indeed job "{title}" shown in the right-hand panel of this search page.',
         (

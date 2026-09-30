@@ -17,7 +17,7 @@ from apps.opportunities.telegraph import TelegraphPage
 from . import evidence
 from .browser import open_browser
 from .models import ResumeLink, Vacancy
-from .navigator import REHEARSED, Navigator
+from .navigator import CONFIRMED_RE, PAGE_TEXT_JS, REHEARSED, Navigator, host_of
 from .sources import adapter_for
 from .sources.base import CaptchaError
 from .state import sent_last_day
@@ -48,6 +48,15 @@ def navigator_mode(site: str = "") -> str:
     mode = (
         (settings.HUNTER_NAVIGATOR_BY_SITE.get(site) or settings.HUNTER_NAVIGATOR).strip().lower()
     )
+    if not settings.MIMO_API_KEY or mode not in {"on", "rehearse"}:
+        return "off"
+    return mode
+
+
+def external_mode() -> str:
+    mode = str(settings.HUNTER_EXTERNAL_APPLY).strip().lower()
+    if mode in {"1", "true", "yes"}:
+        mode = "on"
     if not settings.MIMO_API_KEY or mode not in {"on", "rehearse"}:
         return "off"
     return mode
@@ -121,7 +130,7 @@ def discover(page, adapter, search_url: str, max_pages: int, log, budget: int) -
     fresh = [item for item in listings if item.external_id not in known]
     log(f"{search_url}: {len(listings)} listed, {len(fresh)} new")
     created = []
-    if not settings.HUNTER_EXTERNAL_APPLY:
+    if external_mode() == "off":
         external = [item for item in fresh if item.external_apply]
         fresh = [item for item in fresh if not item.external_apply]
         if external:
@@ -155,7 +164,7 @@ def discover(page, adapter, search_url: str, max_pages: int, log, budget: int) -
         elif status.impossible:
             vacancy.status = Vacancy.Status.SKIPPED
             vacancy.note = f"{adapter.NAME} does not allow a response."
-        elif details.external_apply and not settings.HUNTER_EXTERNAL_APPLY:
+        elif details.external_apply and external_mode() == "off":
             vacancy.status = Vacancy.Status.SKIPPED
             vacancy.note = "Applies on the employer's site; external applying is off."
         elif not details.has_respond_button and navigator_mode(adapter.SITE) == "off":
@@ -303,10 +312,17 @@ def apply_one(
 
     resume_title = titles.get(vacancy.resume_id, "")
     mode = "rehearse" if rehearse else navigator_mode(adapter.SITE)
+    if status.external_apply:
+        mode = "rehearse" if rehearse else external_mode()
+        if mode == "off":
+            finish(vacancy, False, "Applies on the employer's site; external applying is off.")
+            summary.review.append(vacancy)
+            return False
     if forced and not rehearse and mode != "off":
         mode = "on"
     try:
-        if rehearse or (mode != "off" and (status.has_test or not adapter.SCRIPTED_APPLY)):
+        needs_navigator = status.has_test or status.external_apply or not adapter.SCRIPTED_APPLY
+        if rehearse or (mode != "off" and needs_navigator):
             applied, note = navigate(
                 page,
                 adapter,
@@ -388,14 +404,25 @@ def navigate(
         upload_path=cv_file_path(vacancy.cv),
         contact=contact_for(vacancy.cv),
         facts=settings.HUNTER_FACTS,
+        external_hops=1 if status.external_apply else 0,
     )
     result = navigator.run()
     evidence.capture(navigator.page, evidence.key_for(vacancy), result.trace)
+    external_note = ""
+    if status.external_apply and (result.status == "done" or result.submitted):
+        external_note = confirm_external(navigator)
     navigator.close_opened()
     if result.status == "captcha" and not result.submitted:
         raise CaptchaError(result.note)
     if result.status == "rehearsed":
         return False, result.note
+    if status.external_apply and (result.status == "done" or result.submitted):
+        if external_note:
+            return True, external_note
+        return False, (
+            f"Navigator {result.status}: {result.note} The employer's page did not confirm the "
+            "application; check it before resending."
+        )
     if result.status == "done" or result.submitted:
         page.wait_for_timeout(2000)
         page.goto("about:blank")
@@ -407,6 +434,19 @@ def navigate(
             "response; check it before resending."
         )
     return False, f"Navigator {result.status}: {result.note}"
+
+
+def confirm_external(navigator) -> str:
+    try:
+        navigator.page.wait_for_timeout(2500)
+        text = navigator.page.evaluate(PAGE_TEXT_JS)
+    except PlaywrightError:
+        return ""
+    match = CONFIRMED_RE.search(text)
+    if not match:
+        return ""
+    hosts = ", ".join(navigator.external_hosts) or host_of(navigator.page.url)
+    return f'Applied on the employer\'s site ({hosts}): "{match.group(0)}".'
 
 
 def contact_for(cv) -> dict:

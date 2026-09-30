@@ -26,6 +26,10 @@ ATTESTATION_KEYWORDS = (
     "подтверждаю",
 )
 ACCOUNT_KEYWORDS = (
+    "sign in",
+    "log in",
+    "login",
+    "войти",
     "create account",
     "create an account",
     "sign up",
@@ -52,6 +56,13 @@ ELIGIBILITY_KEYWORDS = (
 ACTIONS = {"click", "fill", "select", "check", "upload", "scroll", "wait", "done", "stuck"}
 TARGETED = {"click", "fill", "select", "check", "upload"}
 TYPED_LIMIT = 300
+EXTERNAL_LESSON = "employer-sites"
+CONFIRMED_RE = re.compile(
+    r"thank(s| you)[^.\n]{0,60}(appl|interest|submi)|application (has been |was )?"
+    r"(submitted|received|sent|complete)|we('ve| have) received your application|"
+    r"successfully (submitted|applied)",
+    re.IGNORECASE,
+)
 REHEARSED = "Rehearsal reached the final submit:"
 SUBMIT_RE = re.compile(
     r"^(откликнуться|отправить( отклик| заявку)?|подать заявку|submit( application)?|"
@@ -283,6 +294,7 @@ def vet(
     rehearse: bool,
     can_upload: bool = False,
     has_facts: bool = False,
+    may_leave: bool = False,
 ) -> str:
     action = decision.get("action")
     if action not in ACTIONS:
@@ -313,7 +325,8 @@ def vet(
     if action == "upload" and not can_upload:
         return "refused: no CV file to upload"
     href = element.get("href") or ""
-    if action == "click" and href.startswith("http") and host_of(href) not in allowed_hosts:
+    off_site = href.startswith("http") and host_of(href) not in allowed_hosts
+    if action == "click" and off_site and not may_leave:
         return f"refused: {host_of(href)} is outside {', '.join(sorted(allowed_hosts))}"
     if rehearse and is_final_submit(decision, element):
         return "rehearsal"
@@ -345,6 +358,7 @@ class Navigator:
         allowed_hosts=None,
         contact=None,
         facts="",
+        external_hops=0,
     ):
         self.page = page
         self.goal = goal
@@ -360,7 +374,10 @@ class Navigator:
         self.contact = {key: value for key, value in (contact or {}).items() if value}
         self.facts = facts
         self.opened = []
-        self.lesson, _ = SiteLesson.objects.get_or_create(host=self.host)
+        self.external_hops = external_hops
+        self.external_hosts = []
+        lesson_host = EXTERNAL_LESSON if external_hops else self.host
+        self.lesson, _ = SiteLesson.objects.get_or_create(host=lesson_host)
         self.trace = []
         self.submitted = False
 
@@ -426,6 +443,7 @@ class Navigator:
                 self.rehearse,
                 bool(self.upload_path),
                 bool(self.facts),
+                self.external_hops > 0,
             )
             if problem == "rehearsal":
                 entry["result"] = "stopped before the final submit (rehearsal)"
@@ -449,8 +467,11 @@ class Navigator:
             self.page.wait_for_timeout(int(random.uniform(0.9, 2.6) * 1000))
             entry["result"] += self.follow_new_tab(tabs)
             if host_of(self.page.url) not in self.allowed_hosts:
-                self.page.go_back(wait_until="domcontentloaded")
-                entry["result"] += f"; left {self.host}, went back"
+                if self.hop(self.page):
+                    entry["result"] += f"; now on the employer's site {host_of(self.page.url)}"
+                else:
+                    self.page.go_back(wait_until="domcontentloaded")
+                    entry["result"] += f"; left {self.host}, went back"
         return Result("stuck", f"No result after {settings.HUNTER_NAVIGATOR_STEPS} steps.")
 
     def named_button(self, name: str) -> dict | None:
@@ -475,6 +496,8 @@ class Navigator:
         tab = pages[-1]
         tab.wait_for_load_state("domcontentloaded", timeout=20000)
         host = host_of(tab.url)
+        if host not in self.allowed_hosts and self.hop(tab):
+            host = host_of(tab.url)
         if host not in self.allowed_hosts:
             tab.close()
             return f"; a new tab opened {host}, outside the allowed sites, and was closed"
@@ -482,6 +505,22 @@ class Navigator:
         self.opened.append(tab)
         self.page = tab
         return f"; switched to the new tab on {host}"
+
+    def hop(self, page) -> bool:
+        if self.external_hops <= 0:
+            return False
+        try:
+            page.wait_for_load_state("load", timeout=20000)
+        except PlaywrightError:
+            pass
+        page.wait_for_timeout(2500)
+        host = host_of(page.url)
+        if host in self.allowed_hosts:
+            return True
+        self.external_hops -= 1
+        self.allowed_hosts.add(host)
+        self.external_hosts.append(host)
+        return True
 
     def guard_captcha(self) -> None:
         if self.page.evaluate(CAPTCHA_JS):
