@@ -36,6 +36,9 @@ def summary_text(summary, error: str = "", show_cap: bool = True) -> str:
     if summary.review:
         lines.append(f"👀 Needs your review: {len(summary.review)}")
         lines += [f"• {v.title} — {v.note or v.match_reason}\n  {v.url}" for v in summary.review]
+    if summary.reconciled:
+        lines.append(f"📬 Confirmed sent outside the agent: {len(summary.reconciled)}")
+        lines += [f"• {v.title} — {v.employer}" for v in summary.reconciled]
     if summary.daily_cap_reached and show_cap:
         lines.append(f"⏸ Daily cap of {settings.HUNTER_MAX_APPLIES_PER_DAY} responses reached.")
     if error:

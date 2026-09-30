@@ -21,6 +21,7 @@ from .sources.hh import CaptchaError
 from .state import sent_last_day
 
 SCORE_BATCH = 8
+RECHECK_BATCH = 30
 MODEL_ERRORS = (OpenAIError, ValueError, TypeError, AttributeError, KeyError)
 UNSCORED_PREFIXES = ("Not scored", "Scoring failed")
 
@@ -30,6 +31,7 @@ class RunSummary:
     discovered: int = 0
     applied: list = field(default_factory=list)
     review: list = field(default_factory=list)
+    reconciled: list = field(default_factory=list)
     daily_cap_reached: bool = False
 
 
@@ -138,6 +140,37 @@ def discover(page, adapter, search_url: str, max_pages: int, log, budget: int) -
         created.append(vacancy)
         adapter.pause(page, 1.5, 4.0)
     return created
+
+
+def reconcile(page, log, summary: RunSummary) -> None:
+    held = Vacancy.objects.filter(status=Vacancy.Status.NEEDS_REVIEW).order_by("updated_at")
+    for vacancy in held[:RECHECK_BATCH]:
+        adapter = adapter_for(vacancy.url)
+        if adapter is None:
+            continue
+        try:
+            status = adapter.response_status(page, adapter.origin(vacancy.url), vacancy.external_id)
+        except PlaywrightError as error:
+            log(f"  recheck failed for {vacancy.title}: {first_line(error)}")
+            continue
+        if status is None:
+            continue
+        if status.already_applied:
+            finish(
+                vacancy, True, "Sent outside the agent; confirmed in hh.kz responses.", sent=False
+            )
+            summary.reconciled.append(vacancy)
+            log(f"  SENT    {vacancy.title}: confirmed in hh.kz responses")
+        elif status.impossible:
+            vacancy.status, vacancy.note = (
+                Vacancy.Status.SKIPPED,
+                "hh.kz no longer accepts responses.",
+            )
+            vacancy.save()
+            log(f"  CLOSED  {vacancy.title}")
+        else:
+            Vacancy.objects.filter(pk=vacancy.pk).update(updated_at=timezone.now())
+        adapter.pause(page, 0.5, 1.5)
 
 
 def apply_ready(
@@ -294,6 +327,7 @@ def run_once(
         if not adapter_for(sources[0]).is_logged_in(page):
             raise RuntimeError("The hh.kz profile is not logged in; run hh_login.")
         if not only:
+            reconcile(page, log, summary)
             resume_hashes = [link.resume_id for link in links]
             created = []
             for url in sources:

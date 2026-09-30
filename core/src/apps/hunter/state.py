@@ -192,6 +192,7 @@ class Tracker:
                 "discovered": summary.discovered,
                 "applied": [vacancy_brief(v) for v in summary.applied],
                 "review": [vacancy_brief(v) for v in summary.review],
+                "reconciled": [vacancy_brief(v) for v in summary.reconciled],
                 "daily_cap_reached": summary.daily_cap_reached,
             },
         )

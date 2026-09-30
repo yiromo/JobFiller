@@ -986,7 +986,7 @@
     heading.textContent = `Last cycle: ${summary.discovered ?? 0} new${summary.daily_cap_reached ? " · daily cap reached" : ""}`;
     last.appendChild(heading);
     const list = document.createElement("ul");
-    for (const [kind, items] of [["Applied", summary.applied || []], ["Review", summary.review || []]]) {
+    for (const [kind, items] of [["Applied", summary.applied || []], ["Review", summary.review || []], ["Sent by you", summary.reconciled || []]]) {
       for (const item of items) {
         const li = document.createElement("li");
         const url = safeExternalUrl(item.url);

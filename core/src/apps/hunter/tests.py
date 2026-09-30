@@ -134,6 +134,9 @@ class FakeAdapter:
     def response_status(self, page, base, external_id):
         return self.status
 
+    def pause(self, page, low, high):
+        pass
+
     def apply(self, page, url, resume_title, letter, status, notify=None, on_submit=None):
         on_submit()
         self.applied.append(url)
@@ -141,7 +144,7 @@ class FakeAdapter:
 
 
 @override_settings(MIMO_API_KEY="", HUNTER_MAX_APPLIES_PER_DAY=50)
-class ApplyReadyTests(TestCase):
+class LinkedCvCase(TestCase):
     def setUp(self):
         self.cv = Cv.objects.create(file="cvs/a.pdf", original_filename="a.pdf")
         self.link = ResumeLink.objects.create(cv=self.cv, resume_id="hash", title="Backend")
@@ -158,6 +161,8 @@ class ApplyReadyTests(TestCase):
             status=status,
         )
 
+
+class ApplyReadyTests(LinkedCvCase):
     def run_apply(self, adapter, only=""):
         summary = RunSummary()
         with patch("apps.hunter.service.adapter_for", return_value=adapter):
@@ -190,6 +195,33 @@ class ApplyReadyTests(TestCase):
         self.run_apply(FakeAdapter(None))
         orphan.refresh_from_db()
         self.assertEqual(orphan.status, Vacancy.Status.READY)
+
+
+class ReconcileTests(LinkedCvCase):
+    def run_reconcile(self, adapter):
+        summary = RunSummary()
+        with patch("apps.hunter.service.adapter_for", return_value=adapter):
+            service.reconcile(None, lambda line: None, summary)
+        return summary
+
+    def test_held_vacancy_sent_by_hand_becomes_applied_without_using_the_cap(self):
+        held = self.vacancy("5", status=Vacancy.Status.NEEDS_REVIEW)
+        summary = self.run_reconcile(FakeAdapter(hh.parse_status({"usedResumeIds": ["1"]})))
+        held.refresh_from_db()
+        self.assertEqual(held.status, Vacancy.Status.APPLIED)
+        self.assertEqual(summary.reconciled, [held])
+        self.assertEqual(state.sent_last_day(), 0)
+
+    def test_closed_vacancy_is_skipped_and_open_one_stays_held(self):
+        held = self.vacancy("6", status=Vacancy.Status.NEEDS_REVIEW)
+        self.run_reconcile(FakeAdapter(hh.parse_status({"responseImpossible": True})))
+        held.refresh_from_db()
+        self.assertEqual(held.status, Vacancy.Status.SKIPPED)
+        waiting = self.vacancy("7", status=Vacancy.Status.NEEDS_REVIEW)
+        summary = self.run_reconcile(FakeAdapter(hh.parse_status({})))
+        waiting.refresh_from_db()
+        self.assertEqual(waiting.status, Vacancy.Status.NEEDS_REVIEW)
+        self.assertEqual(summary.reconciled, [])
 
 
 class HunterStatusViewTests(TestCase):

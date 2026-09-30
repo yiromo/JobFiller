@@ -1,5 +1,12 @@
 # Progress log
 
+- **hh.kz agent rechecks held vacancies every cycle** — before discovery, `reconcile` re-reads the
+  popup JSON for the 30 least recently checked `needs_review` rows. One you sent by hand (e.g.
+  after a captcha hold) becomes `applied` with no `applied_at`, so it does not use the agent's
+  daily cap; one hh no longer accepts becomes `skipped`; the rest just get `updated_at` bumped so
+  the batch rotates. The cycle summary, Telegram message, Manage page and panel list them as sent
+  outside the agent. A live run over the 20 held rows found none sent yet and changed nothing.
+
 - **hh.kz agent status in the extension, plus an adversarial-review hardening pass** — `hunt
   --loop` now publishes `data/hunter/status.json` (agent phase, pid/host, heartbeat, cycle times,
   next cycle, last error, last-cycle applied/held lists, last 150 log lines, config, status counts,

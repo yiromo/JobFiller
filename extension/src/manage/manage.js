@@ -128,7 +128,7 @@ function renderHunterHeader(data) {
 
   const last = document.getElementById("hunter-last");
   last.replaceChildren();
-  for (const [kind, items] of [["Applied", summary.applied || []], ["Needs review", summary.review || []]]) {
+  for (const [kind, items] of [["Applied", summary.applied || []], ["Needs review", summary.review || []], ["Sent outside the agent", summary.reconciled || []]]) {
     for (const item of items) {
       const row = el("li");
       row.append(externalLink(item.url, item.title || item.external_id));
