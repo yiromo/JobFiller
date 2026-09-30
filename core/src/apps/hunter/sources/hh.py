@@ -10,6 +10,8 @@ SITE = "hh"
 NAME = "hh.kz"
 LOGIN_URL = "https://hh.kz/account/login?backurl=%2F"
 USES_RESUME_LINKS = True
+SCRIPTED_APPLY = True
+RECHECK_BATCH = 30
 VACANCY_ID_RE = re.compile(r"/vacancy/(\d+)")
 SUBMIT = '[data-qa="vacancy-response-submit-popup"]'
 LETTER = '[data-qa="vacancy-response-popup-form-letter-input"]'

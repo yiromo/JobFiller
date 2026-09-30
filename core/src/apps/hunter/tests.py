@@ -127,6 +127,8 @@ class FakeAdapter:
     SITE = "hh"
     NAME = "hh.kz"
     USES_RESUME_LINKS = True
+    SCRIPTED_APPLY = True
+    RECHECK_BATCH = 30
     NAVIGABLE = hh.NAVIGABLE
 
     def __init__(self, status, outcome=(True, "Applied on hh.kz.")):

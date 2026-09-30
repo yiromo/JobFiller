@@ -147,5 +147,8 @@ HUNTER_NAVIGATOR_BY_SITE = {
     "linkedin": config("HUNTER_NAVIGATOR_LINKEDIN", default="rehearse"),
     "indeed": config("HUNTER_NAVIGATOR_INDEED", default="rehearse"),
 }
+HUNTER_CONTACT_PHONE = config("HUNTER_CONTACT_PHONE", default="")
+HUNTER_CONTACT_CITY = config("HUNTER_CONTACT_CITY", default="")
+HUNTER_EXTERNAL_APPLY = config("HUNTER_EXTERNAL_APPLY", default=False, cast=bool)
 HUNTER_NAVIGATOR_STEPS = config("HUNTER_NAVIGATOR_STEPS", default=25, cast=int)
 HUNTER_NOTIFY_TELEGRAM = config("HUNTER_NOTIFY_TELEGRAM", default=False, cast=bool)

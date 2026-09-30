@@ -23,7 +23,6 @@ from .sources.base import CaptchaError
 from .state import sent_last_day
 
 SCORE_BATCH = 8
-RECHECK_BATCH = 30
 MODEL_ERRORS = (OpenAIError, ValueError, TypeError, AttributeError, KeyError)
 UNSCORED_PREFIXES = ("Not scored", "Scoring failed")
 
@@ -112,6 +111,11 @@ def discover(page, adapter, search_url: str, max_pages: int, log, budget: int) -
     log(f"{search_url}: {len(listings)} listed, {len(fresh)} new")
     base = adapter.origin(search_url)
     created = []
+    if not settings.HUNTER_EXTERNAL_APPLY:
+        external = [item for item in fresh if item.external_apply]
+        fresh = [item for item in fresh if not item.external_apply]
+        if external:
+            log(f"  {len(external)} apply on the employer's site; external applying is off")
     for item in fresh[:budget]:
         try:
             details = adapter.read_vacancy(page, item.url)
@@ -141,6 +145,9 @@ def discover(page, adapter, search_url: str, max_pages: int, log, budget: int) -
         elif status.impossible:
             vacancy.status = Vacancy.Status.SKIPPED
             vacancy.note = f"{adapter.NAME} does not allow a response."
+        elif details.external_apply and not settings.HUNTER_EXTERNAL_APPLY:
+            vacancy.status = Vacancy.Status.SKIPPED
+            vacancy.note = "Applies on the employer's site; external applying is off."
         elif not details.has_respond_button and navigator_mode(adapter.SITE) == "off":
             vacancy.status = Vacancy.Status.SKIPPED
             vacancy.note = (
@@ -160,7 +167,7 @@ def reconcile(page, adapter, log, summary: RunSummary) -> None:
     held = Vacancy.objects.filter(source=adapter.SITE, status=Vacancy.Status.NEEDS_REVIEW).order_by(
         "updated_at"
     )
-    for vacancy in held[:RECHECK_BATCH]:
+    for vacancy in held[: adapter.RECHECK_BATCH]:
         try:
             status = adapter.response_status(page, adapter.origin(vacancy.url), vacancy.external_id)
         except PlaywrightError as error:
@@ -283,7 +290,7 @@ def apply_one(
     if forced and not rehearse and mode != "off":
         mode = "on"
     try:
-        if rehearse or (mode != "off" and status.has_test):
+        if rehearse or (mode != "off" and (status.has_test or not adapter.SCRIPTED_APPLY)):
             applied, note = navigate(
                 page,
                 adapter,
@@ -363,6 +370,7 @@ def navigate(
         rehearse=rehearse,
         on_submit=on_submit,
         upload_path=cv_file_path(vacancy.cv),
+        contact=contact_for(vacancy.cv),
     )
     result = navigator.run()
     evidence.capture(navigator.page, evidence.key_for(vacancy), result.trace)
@@ -380,6 +388,15 @@ def navigate(
             "response; check it before resending."
         )
     return False, f"Navigator {result.status}: {result.note}"
+
+
+def contact_for(cv) -> dict:
+    return {
+        "name": cv.full_name or "",
+        "email": cv.email or "",
+        "phone": cv.phone or settings.HUNTER_CONTACT_PHONE,
+        "city": settings.HUNTER_CONTACT_CITY,
+    }
 
 
 def cv_file_path(cv) -> str:

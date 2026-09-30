@@ -1,7 +1,7 @@
 from . import hh, indeed, linkedin
 from .base import CONTRACT
 
-ADAPTERS = (hh,)
+ADAPTERS = (hh, linkedin)
 LOGIN_SITES = (hh, linkedin, indeed)
 
 

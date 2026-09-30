@@ -6,6 +6,8 @@ CONTRACT = (
     "NAME",
     "LOGIN_URL",
     "USES_RESUME_LINKS",
+    "SCRIPTED_APPLY",
+    "RECHECK_BATCH",
     "NAVIGABLE",
     "handles",
     "origin",
@@ -31,6 +33,7 @@ class Listing:
     url: str
     title: str
     employer: str
+    external_apply: bool = False
 
 
 @dataclass
@@ -39,6 +42,7 @@ class VacancyPage:
     employer: str
     text: str
     has_respond_button: bool
+    external_apply: bool = False
 
 
 @dataclass

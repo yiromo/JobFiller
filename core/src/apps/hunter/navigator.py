@@ -137,6 +137,8 @@ Rules:
 - Answer employer questions truthfully from the CV. Never invent employers, dates, degrees,
   numbers or skills the CV does not show. If the CV does not answer a question, give the most
   honest short answer (e.g. that you have no such experience) rather than a made-up one.
+- Fill empty required contact fields (name, email, phone, city) from candidate_contact. If a
+  required value is not in candidate_contact or the CV, reply "stuck" and name the missing value.
 - Salary questions: use the CV's figure if it has one, otherwise write that it is negotiable.
 - Match the language of the question (Russian question, Russian answer).
 - Never tick a legal consent or attestation, never answer gender, ethnicity, disability,
@@ -247,6 +249,7 @@ class Navigator:
         on_submit=None,
         upload_path="",
         allowed_hosts=None,
+        contact=None,
     ):
         self.page = page
         self.goal = goal
@@ -259,6 +262,7 @@ class Navigator:
         self.host = host_of(page.url)
         self.allowed_hosts = set(allowed_hosts or ()) | {self.host}
         self.upload_path = upload_path
+        self.contact = {key: value for key, value in (contact or {}).items() if value}
         self.lesson, _ = SiteLesson.objects.get_or_create(host=self.host)
         self.trace = []
         self.submitted = False
@@ -356,6 +360,7 @@ class Navigator:
             "goal": self.goal,
             "url": self.page.url,
             "notes_from_earlier_visits": self.lesson.text,
+            "candidate_contact": self.contact,
             "recent_steps": [
                 {key: entry.get(key) for key in ("action", "target", "value", "result")}
                 for entry in self.trace[-8:]

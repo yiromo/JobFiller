@@ -1,5 +1,22 @@
 # Progress log
 
+- **LinkedIn adapter: discovery and Easy Apply through the navigator** — `sources/linkedin.py`
+  crawls the new `/jobs/search-results/` UI (25 cards a page, `start=` paging) by
+  `[role=button][componentkey^="job-card-component-ref-<id>"]`. LinkedIn serves two renders: the
+  first load in a fresh tab carries `data-view-name="job-search-job-card"`, later navigations are
+  client-rendered without it, and Playwright locators stayed at 0 there while `page.evaluate` saw
+  the cards, so the adapter queries and scrolls through `evaluate` only. Cards already marked
+  "Applied" are skipped and cards without the "Easy Apply" badge are dropped before any job page is
+  opened while `HUNTER_EXTERNAL_APPLY` is off (live: 17 of 25). The job page gives title/company
+  from `document.title`, the description from `[componentkey^="JobDetails_AboutTheJob_"]` (falls
+  back to the main text when it loads lazily), Easy Apply from `button[aria-label^="Easy Apply"]`,
+  "Applied … ago" as already applied and "No longer accepting applications" as closed. It has no
+  scripted apply (`SCRIPTED_APPLY = False`), so it always goes to the navigator, and rechecks only
+  5 held rows a cycle since each costs a page load. The navigator now gets `candidate_contact`
+  (CV name/email/phone, `HUNTER_CONTACT_PHONE`, `HUNTER_CONTACT_CITY`) and must stop naming a
+  missing required value. First live rehearsal (4469234806) opened Easy Apply and stopped on the
+  required phone field: the CVs have no phone and none was configured.
+
 - **Hunter goes multi-site (foundation)** — shared adapter types and the adapter contract live in
   `sources/base.py` (`CONTRACT`, checked by a test); `run_once` groups `JOB_SOURCE_URLS` by adapter
   and runs each site in its own browser profile, so one site's logout or captcha no longer stops the
