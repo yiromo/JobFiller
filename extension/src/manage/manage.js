@@ -135,7 +135,7 @@ function renderHunterHeader(data) {
       el("strong", lesson.host),
       el(
         "span",
-        ` · ${lesson.successes} ok, ${lesson.failures} stuck · updated ${formatTime(lesson.updated_at)}`,
+        `${lesson.successes} ok, ${lesson.failures} stuck · updated ${formatTime(lesson.updated_at)}`,
         "hunter-meta",
       ),
       el("pre", lesson.text || "No notes yet."),
