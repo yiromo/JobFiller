@@ -415,7 +415,20 @@ const DEFAULT_EEO_ROWS = [
   { match: "disability", answer: "" },
 ];
 
+const ALL_EEO_QUESTIONS = [
+  "gender",
+  "transgender",
+  "sexual orientation",
+  "pronoun",
+  "hispanic",
+  "race",
+  "ethnicity",
+  "veteran",
+  "disability",
+];
+
 const eeoRowsEl = document.getElementById("eeo-rows");
+const eeoAllBtn = document.getElementById("eeo-all-btn");
 const eeoAddRowBtn = document.getElementById("eeo-add-row-btn");
 const eeoSaveBtn = document.getElementById("eeo-save-btn");
 const eeoStatusEl = document.getElementById("eeo-status");
@@ -433,7 +446,7 @@ function renderEeoRows(rows) {
 
     const answerInput = document.createElement("input");
     answerInput.className = "eeo-answer";
-    answerInput.placeholder = "your answer, filled exactly as typed";
+    answerInput.placeholder = "your answer, e.g. Decline to self-identify";
     answerInput.value = row.answer;
 
     const removeBtn = document.createElement("button");
@@ -458,15 +471,38 @@ function readEeoRows() {
 async function loadEeoRows() {
   const stored = await browser.storage.local.get(EEO_STORAGE_KEY);
   renderEeoRows(stored[EEO_STORAGE_KEY] || DEFAULT_EEO_ROWS);
+  if (stored[EEO_STORAGE_KEY]) syncEeoToAgent(stored[EEO_STORAGE_KEY]).catch(() => {});
 }
 
 eeoAddRowBtn.addEventListener("click", () => {
   renderEeoRows([...readEeoRows(), { match: "", answer: "" }]);
 });
 
+async function syncEeoToAgent(rows) {
+  const response = await fetch(`${CORE_URL}/api/v1/hunter/eeo/`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ answers: rows }),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+}
+
+eeoAllBtn.addEventListener("click", () => {
+  const rows = readEeoRows();
+  const known = new Set(rows.map((row) => row.match.toLowerCase()));
+  const missing = ALL_EEO_QUESTIONS.filter((match) => !known.has(match)).map((match) => ({ match, answer: "" }));
+  renderEeoRows([...rows, ...missing]);
+});
+
 eeoSaveBtn.addEventListener("click", async () => {
-  await browser.storage.local.set({ [EEO_STORAGE_KEY]: readEeoRows() });
-  eeoStatusEl.textContent = "Saved.";
+  const rows = readEeoRows();
+  await browser.storage.local.set({ [EEO_STORAGE_KEY]: rows });
+  try {
+    await syncEeoToAgent(rows);
+    eeoStatusEl.textContent = "Saved, and synced to the job agent.";
+  } catch (err) {
+    eeoStatusEl.textContent = `Saved here; the job agent sync failed (${err.message}).`;
+  }
 });
 
 loadCvs().catch((err) => setStatus(`Could not reach core API: ${err}`));

@@ -35,7 +35,9 @@ def extract_profile(raw_text: str, filename: str) -> Profile:
 def _guess_name(raw_text: str, filename: str) -> str:
     first_line = next((line.strip() for line in raw_text.splitlines() if line.strip()), "")
     looks_like_a_name = (
-        first_line and len(first_line) <= 60 and "@" not in first_line
+        first_line
+        and len(first_line) <= 60
+        and "@" not in first_line
         and not any(ch.isdigit() for ch in first_line)
     )
     if looks_like_a_name:

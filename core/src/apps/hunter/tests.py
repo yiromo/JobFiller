@@ -8,7 +8,7 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
 from apps.cvs.models import Cv
-from apps.hunter import evidence, navigator, notify, service, state
+from apps.hunter import evidence, inbox, navigator, notify, service, state
 from apps.hunter.models import ResumeLink, Vacancy
 from apps.hunter.service import RunSummary, letter_language
 from apps.hunter.sources import ADAPTERS, adapter_for, hh, indeed, linkedin, missing_contract
@@ -566,3 +566,64 @@ class ExternalRoutingTests(LinkedCvCase):
         nav.assert_called_once()
         self.assertTrue(nav.call_args.args[7])
         self.assertEqual(adapter.applied, [])
+
+
+class PrivacyAndEeoRuleTests(SimpleTestCase):
+    def box(self, text, group=""):
+        return {
+            "ref": "1",
+            "tag": "input",
+            "type": "checkbox",
+            "text": "",
+            "label": text,
+            "group": group,
+        }
+
+    def test_privacy_notice_acknowledgments_are_allowed_but_not_certifications(self):
+        allowed = self.box("I acknowledge receipt of the Applicant Privacy Notice.")
+        self.assertEqual(navigator.vet({"action": "check"}, allowed, {"x.com"}, False), "")
+        data = self.box("Я даю согласие на обработку персональных данных")
+        self.assertEqual(navigator.vet({"action": "check"}, data, {"hh.kz"}, False), "")
+        certify = self.box(
+            "I certify that the information in this application is true and complete"
+        )
+        self.assertIn("refused", navigator.vet({"action": "check"}, certify, {"x.com"}, False))
+        terms = self.box("I agree to the Terms and Conditions")
+        self.assertIn("refused", navigator.vet({"action": "check"}, terms, {"x.com"}, False))
+
+    def test_eeo_options_must_match_the_saved_answer(self):
+        eeo = [{"match": "gender", "answer": "Decline to self-identify"}]
+        group = "What is your gender? Male Female Decline to self-identify"
+        decline = {
+            "ref": "1",
+            "tag": "div",
+            "role": "option",
+            "text": "Decline To Self Identify",
+            "label": "",
+            "group": group,
+        }
+        female = {**decline, "text": "Female"}
+        click = {"action": "click"}
+        self.assertEqual(navigator.vet(click, decline, {"x.com"}, False, eeo=eeo), "")
+        self.assertIn("does not match", navigator.vet(click, female, {"x.com"}, False, eeo=eeo))
+        veteran = {**decline, "text": "I am not a veteran", "group": "Veteran status"}
+        self.assertIn("saved EEO", navigator.vet(click, veteran, {"x.com"}, False, eeo=eeo))
+
+
+class EeoInboxViewTests(SimpleTestCase):
+    def test_answers_round_trip_through_the_inbox(self):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            override_settings(DATA_DIR=Path(directory)),
+        ):
+            self.assertEqual(self.client.get("/api/v1/hunter/eeo/").json(), {"answers": []})
+            body = {
+                "answers": [{"match": "gender", "answer": "Decline"}, {"match": "", "answer": "x"}]
+            }
+            response = self.client.put("/api/v1/hunter/eeo/", body, content_type="application/json")
+            self.assertEqual(response.json()["answers"], [{"match": "gender", "answer": "Decline"}])
+            self.assertEqual(inbox.answered_eeo(), [{"match": "gender", "answer": "Decline"}])
+            bad = self.client.put(
+                "/api/v1/hunter/eeo/", {"answers": "nope"}, content_type="application/json"
+            )
+            self.assertEqual(bad.status_code, 400)

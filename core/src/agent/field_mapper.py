@@ -14,6 +14,8 @@ EEO_KEYWORDS = (
     "disability",
     "race",
     "pronoun",
+    "sexual orientation",
+    "transgender",
 )
 _RESUME_KEYWORDS = ("resume", "cv")
 _COVER_LETTER_KEYWORDS = ("cover letter", "cover_letter", "cover-letter", "coverletter")

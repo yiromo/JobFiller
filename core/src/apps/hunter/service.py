@@ -14,7 +14,7 @@ from agent import cover_letter
 from apps.opportunities.service import rank_jobs
 from apps.opportunities.telegraph import TelegraphPage
 
-from . import evidence
+from . import evidence, inbox
 from .browser import open_browser
 from .models import ResumeLink, Vacancy
 from .navigator import CONFIRMED_RE, PAGE_TEXT_JS, REHEARSED, Navigator, host_of
@@ -429,6 +429,7 @@ def navigate(
         contact=contact_for(vacancy.cv),
         facts=settings.HUNTER_FACTS,
         external_hops=1 if status.external_apply else 0,
+        eeo=inbox.answered_eeo(),
     )
     result = navigator.run()
     evidence.capture(navigator.page, evidence.key_for(vacancy), result.trace)

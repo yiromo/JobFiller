@@ -2,7 +2,7 @@ from django.http import FileResponse, Http404
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import evidence, state
+from . import evidence, inbox, state
 
 
 class HunterStatusView(APIView):
@@ -22,3 +22,17 @@ class HunterEvidenceView(APIView):
         response["Content-Security-Policy"] = "sandbox; default-src 'none'; img-src 'self'"
         response["X-Content-Type-Options"] = "nosniff"
         return response
+
+
+class HunterEeoView(APIView):
+    def get(self, request):
+        return Response({"answers": inbox.read_eeo()})
+
+    def put(self, request):
+        try:
+            answers = inbox.write_eeo(request.data.get("answers"))
+        except (TypeError, ValueError, AttributeError) as error:
+            return Response({"error": str(error)}, status=400)
+        except OSError as error:
+            return Response({"error": f"could not save: {error}"}, status=500)
+        return Response({"answers": answers})

@@ -121,6 +121,13 @@ Don't put DB queries or business logic in views — mirror an existing app. Apps
   URL plus `vjk=<jk>`, which shows the job in the side panel. Only visible `a[data-jk]` cards
   count: Indeed plants an invisible trap link. The captcha guard must stay visibility-based:
   both sites carry invisible reCAPTCHA Enterprise frames that are not a challenge.
+  The navigator's consent and EEO rules differ from the extension's scan path by the user's
+  explicit choice (2026-10-01): it may tick privacy-notice and personal-data-processing
+  acknowledgments (`privacy_acknowledgment`), never certifications, terms or other attestations;
+  and it answers a demographic question only when the chosen option matches the user's own saved
+  answer (`eeo_problem`). Those answers come from the extension's Settings through
+  `PUT /api/v1/hunter/eeo/`, which writes `data/hunter-inbox/eeo.json`: the one writable path
+  into the hunter, bind-mounted read-write into the Docker `core`. Keep everything else read-only.
 
 `agent/` (`core/src/agent/`) is a **plain module, not a Django app** — it has no models. Its
 functions are called directly from `applications`/`cvs` services (not DI-injected — there's

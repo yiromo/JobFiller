@@ -25,6 +25,32 @@ ATTESTATION_KEYWORDS = (
     "даю согласие",
     "подтверждаю",
 )
+PRIVACY_KEYWORDS = (
+    "privacy",
+    "personal data",
+    "personal information",
+    "data processing",
+    "processing of my data",
+    "demographic data",
+    "gdpr",
+    "персональных данных",
+    "обработку данных",
+)
+CERTIFY_KEYWORDS = (
+    "certify",
+    "attest",
+    "true and complete",
+    "true, complete",
+    "accurate and complete",
+    "truthful",
+    "background check",
+    "drug test",
+    "terms of service",
+    "terms and conditions",
+    "arbitration",
+    "non-compete",
+    "electronic signature",
+)
 ACCOUNT_KEYWORDS = (
     "sign in",
     "log in",
@@ -248,8 +274,12 @@ Rules:
 - Skip optional fields the CV cannot answer; required fields are marked with * or "required".
 - Salary questions: use candidate_facts or the CV's figure, otherwise write that it is negotiable.
 - Match the language of the question (Russian question, Russian answer).
-- Never tick a legal consent or attestation, never answer gender, ethnicity, disability,
-  veteran or other demographic questions, and never try to solve a captcha: reply "stuck".
+- Privacy-notice and personal-data-processing acknowledgments may be ticked. Never tick any
+  other attestation (e.g. certifying the application is true, terms of service) and never try to
+  solve a captcha: reply "stuck".
+- Answer demographic questions (gender, race, ethnicity, veteran, disability, sexual
+  orientation, pronouns…) only with the matching entry in candidate_eeo_answers, choosing the
+  option whose wording matches that answer. If there is no matching entry, reply "stuck".
 - Do not leave the site or open unrelated pages. Do not log out or change account settings.
 - Never create an account, register, or type a password: reply "stuck" at any login or
   sign-up wall.
@@ -300,6 +330,7 @@ def vet(
     can_upload: bool = False,
     has_facts: bool = False,
     may_leave: bool = False,
+    eeo: list | None = None,
 ) -> str:
     action = decision.get("action")
     if action not in ACTIONS:
@@ -317,10 +348,14 @@ def vet(
         or element.get("type") in CHOICE_TYPES
         or element.get("role") in CHOICE_ROLES
     )
-    if matches(own, ATTESTATION_KEYWORDS) and action in {"click", "check"}:
+    attestation = matches(own, (*ATTESTATION_KEYWORDS, *CERTIFY_KEYWORDS))
+    attestation = attestation and not privacy_acknowledgment(own)
+    if attestation and action in {"click", "check"}:
         return "refused: legal consent and attestation boxes are the candidate's own click"
     if matches(haystack, EEO_KEYWORDS) and (action != "click" or choice):
-        return "refused: demographic questions are never answered by the agent"
+        problem = eeo_problem(decision, element, haystack, eeo or [])
+        if problem:
+            return problem
     if matches(haystack, ELIGIBILITY_KEYWORDS) and not has_facts and (action != "click" or choice):
         return "refused: work authorization and visa answers need HUNTER_FACTS"
     if element.get("type") == "password":
@@ -336,6 +371,29 @@ def vet(
     if rehearse and is_final_submit(decision, element):
         return "rehearsal"
     return ""
+
+
+def privacy_acknowledgment(text: str) -> bool:
+    return matches(text, PRIVACY_KEYWORDS) and not matches(text, CERTIFY_KEYWORDS)
+
+
+def normalized(text: str) -> str:
+    return re.sub(r"[^a-z0-9а-яё]+", " ", (text or "").lower()).strip()
+
+
+def eeo_problem(decision: dict, element: dict, haystack: str, eeo: list) -> str:
+    lowered = haystack.lower()
+    row = next((row for row in eeo if row["match"].lower() in lowered), None)
+    if row is None:
+        return "refused: demographic questions are answered only from your saved EEO answers"
+    answer = normalized(row["answer"])
+    if decision.get("action") in {"fill", "select"}:
+        chosen = normalized(str(decision.get("value") or ""))
+    else:
+        chosen = normalized(" ".join(str(element.get(key, "")) for key in ("text", "label")))
+    if chosen and (chosen in answer or answer in chosen):
+        return ""
+    return f"refused: that option does not match your saved answer for {row['match']!r}"
 
 
 def is_final_submit(decision: dict, element: dict) -> bool:
@@ -364,6 +422,7 @@ class Navigator:
         contact=None,
         facts="",
         external_hops=0,
+        eeo=None,
     ):
         self.page = page
         self.goal = goal
@@ -378,6 +437,7 @@ class Navigator:
         self.upload_path = upload_path
         self.contact = {key: value for key, value in (contact or {}).items() if value}
         self.facts = facts
+        self.eeo = [row for row in (eeo or []) if row.get("answer")]
         self.opened = []
         self.external_hops = external_hops
         self.max_steps = (
@@ -454,6 +514,7 @@ class Navigator:
                 bool(self.upload_path),
                 bool(self.facts),
                 self.external_hops > 0,
+                self.eeo,
             )
             if problem == "rehearsal":
                 entry["result"] = "stopped before the final submit (rehearsal)"
@@ -544,6 +605,7 @@ class Navigator:
             "notes_from_earlier_visits": self.lesson.text,
             "candidate_contact": self.contact,
             "candidate_facts": self.facts,
+            "candidate_eeo_answers": self.eeo,
             "recent_steps": [
                 {key: entry.get(key) for key in ("action", "target", "value", "result")}
                 for entry in self.trace[-8:]

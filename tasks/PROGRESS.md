@@ -1,5 +1,18 @@
 # Progress log
 
+- **EEO answers from the extension reach the agent; privacy notices and employer sites on** — the
+  Settings page gains "Add all common EEO questions" (gender, transgender, sexual orientation,
+  pronoun, hispanic, race, ethnicity, veteran, disability) and syncs saved rows (and on every Manage
+  page load) to `PUT /api/v1/hunter/eeo/`, which writes `data/hunter-inbox/eeo.json`; compose
+  mounts that one directory read-write so the host agent can read what the Docker core wrote. The
+  navigator gets the answered rows as `candidate_eeo_answers`, and `vet` only lets an EEO choice
+  through when its wording matches the saved answer for that question (otherwise refused, and no
+  row at all still stops the run). On the user's explicit choice, privacy-notice and
+  personal-data-processing acknowledgments may now be ticked by the navigator; certifications
+  ("I certify … true and complete"), terms, arbitration and signatures stay refused — and the
+  certify wording is now caught at all, which the old keyword list missed. `EEO_KEYWORDS` also
+  covers sexual orientation and transgender. `HUNTER_EXTERNAL_APPLY=on` in the live `.env`.
+
 - **First live LinkedIn cycle, and a same-role guard** — the first real cycle sent 7 LinkedIn Easy
   Apply applications, each confirmed from the job page. Three were one Alpaca role reposted for
   Sweden, Hungary and the UK, so `apply_ready` now skips a vacancy whose employer and normalized
