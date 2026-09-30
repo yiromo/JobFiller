@@ -241,6 +241,10 @@ Rules:
 - Work authorization, visa, sponsorship, relocation, notice period and salary questions are
   answered only from candidate_facts. If candidate_facts does not cover one, reply "stuck" and
   name the question; never guess eligibility.
+- Searchable dropdowns: type a short part of the answer and pick the matching option. If none
+  matches after one try, pick "Other" when offered; otherwise leave an optional field empty and
+  move on, and reply "stuck" naming a required one. Never retry the same field more than twice.
+- Skip optional fields the CV cannot answer; required fields are marked with * or "required".
 - Salary questions: use candidate_facts or the CV's figure, otherwise write that it is negotiable.
 - Match the language of the question (Russian question, Russian answer).
 - Never tick a legal consent or attestation, never answer gender, ethnicity, disability,
@@ -375,6 +379,11 @@ class Navigator:
         self.facts = facts
         self.opened = []
         self.external_hops = external_hops
+        self.max_steps = (
+            settings.HUNTER_NAVIGATOR_EXTERNAL_STEPS
+            if external_hops
+            else settings.HUNTER_NAVIGATOR_STEPS
+        )
         self.external_hosts = []
         lesson_host = EXTERNAL_LESSON if external_hops else self.host
         self.lesson, _ = SiteLesson.objects.get_or_create(host=lesson_host)
@@ -406,7 +415,7 @@ class Navigator:
         previous = None
         stale = 0
         last_view = None
-        for step in range(1, settings.HUNTER_NAVIGATOR_STEPS + 1):
+        for step in range(1, self.max_steps + 1):
             self.guard_captcha()
             elements = self.page.evaluate(OUTLINE_JS, 120)
             view = (self.page.url, json.dumps(elements, sort_keys=True))
@@ -472,7 +481,7 @@ class Navigator:
                 else:
                     self.page.go_back(wait_until="domcontentloaded")
                     entry["result"] += f"; left {self.host}, went back"
-        return Result("stuck", f"No result after {settings.HUNTER_NAVIGATOR_STEPS} steps.")
+        return Result("stuck", f"No result after {self.max_steps} steps.")
 
     def named_button(self, name: str) -> dict | None:
         name = name.strip()

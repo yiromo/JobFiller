@@ -1,5 +1,17 @@
 # Progress log
 
+- **Employer-site chain rehearsed on Greenhouse** — Indeed 92b1cef209e4ea9d (Smartsheet) → "Apply on
+  company site" → Greenhouse form: name, email, country (Kazakhstan +7), phone, city, CV upload,
+  degree, discipline, dates, "how did you hear", AI familiarity, US work authorization "No" and
+  sponsorship "Yes" from `HUNTER_FACTS`. `vet` refused "I acknowledge receipt of the Applicant
+  Privacy Notice", and the run stopped because the remaining required items were that
+  acknowledgment, four EEOC questions and a demographic-data consent, none of which the agent
+  answers. External runs now get `HUNTER_NAVIGATOR_EXTERNAL_STEPS` (60) and the prompt limits a
+  searchable dropdown to two tries ("Other", skip if optional, stop if required). The live
+  LinkedIn search moved from "on-site or hybrid or remote" (1/25 remote; every scored job was a
+  major mismatch for a remote-only candidate) to the same roles with ", remote" (22/25 remote), and
+  Indeed from an empty query to `python golang backend`.
+
 - **Employer-site apply chain (`HUNTER_EXTERNAL_APPLY=off|rehearse|on`, default off)** — LinkedIn
   "Apply" and Indeed "Apply on company site" jobs are kept, scored and handed to the navigator
   with `external_hops=1`: it may follow the link off the job board once, and the host it lands on
