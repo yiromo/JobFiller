@@ -1186,7 +1186,7 @@
     $("jf-tab-agent").addEventListener("click", () => switchTab("agent", "tab-agent"));
     $("jf-agent-open-btn").addEventListener("click", () => {
       logEvent("CLICK", { id: "agent-open-btn" });
-      send("openManage", {});
+      send("openManage", { tab: "agent" });
     });
 
     $("jf-copy-logs-btn").addEventListener("click", async () => {

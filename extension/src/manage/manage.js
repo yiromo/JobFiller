@@ -47,7 +47,6 @@ const HUNTER_STATUS_LABELS = {
   below_threshold: "Below threshold",
   skipped: "Skipped",
 };
-const hunterSection = document.getElementById("hunter-section");
 const hunterFilter = document.getElementById("hunter-filter");
 let hunterSnapshot = null;
 
@@ -171,12 +170,38 @@ function renderHunterHeader(data) {
   document.getElementById("hunter-log").textContent = (agent.recent_log || []).join("\n");
 }
 
+const hunterPageSize = document.getElementById("hunter-page-size");
+let hunterPage = 0;
+
+function readSetting(key, fallback) {
+  try {
+    return localStorage.getItem(key) || fallback;
+  } catch (err) {
+    return fallback;
+  }
+}
+
+function writeSetting(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch (err) {
+    return;
+  }
+}
+
 function renderHunterVacancies() {
   const list = document.getElementById("hunter-vacancies");
   const wanted = hunterFilter.value;
   const items = (hunterSnapshot?.vacancies || []).filter((item) => !wanted || item.status === wanted);
+  const size = Number(hunterPageSize.value) || 20;
+  const pages = Math.max(1, Math.ceil(items.length / size));
+  hunterPage = Math.min(Math.max(hunterPage, 0), pages - 1);
+  const start = hunterPage * size;
+  document.getElementById("hunter-page").textContent = `Page ${hunterPage + 1} of ${pages}`;
+  document.getElementById("hunter-prev").disabled = hunterPage === 0;
+  document.getElementById("hunter-next").disabled = hunterPage >= pages - 1;
   list.replaceChildren();
-  for (const item of items) {
+  for (const item of items.slice(start, start + size)) {
     const row = el("li");
     row.append(externalLink(item.url, item.title || item.external_id));
     const score = item.match_score == null ? "unscored" : `${item.match_score}% fit`;
@@ -213,8 +238,9 @@ function renderHunterVacancies() {
     }
     list.appendChild(row);
   }
+  const shown = items.length ? `${start + 1}–${Math.min(start + size, items.length)} of ` : "";
   document.getElementById("hunter-status").textContent =
-    `${items.length} of ${hunterSnapshot?.vacancies?.length || 0} most recently updated vacancies.`;
+    `${shown}${items.length} matching · ${hunterSnapshot?.vacancies?.length || 0} most recently updated vacancies.`;
 }
 
 async function loadHunter() {
@@ -226,21 +252,60 @@ async function loadHunter() {
     data = null;
   }
   if (!data?.up) {
-    hunterSection.hidden = true;
+    setAgentAvailable(false);
     return;
   }
   hunterSnapshot = data;
   renderHunterHeader(data);
   renderHunterVacancies();
-  hunterSection.hidden = false;
+  setAgentAvailable(true);
 }
+
+const tabButtons = Array.from(document.querySelectorAll(".tabs .tab"));
+const tabPanels = Array.from(document.querySelectorAll(".tab-panel"));
+
+function showTab(name, remember = true) {
+  const button = tabButtons.find((tab) => tab.dataset.tab === name && !tab.hidden) || tabButtons[0];
+  for (const tab of tabButtons) tab.setAttribute("aria-selected", String(tab === button));
+  for (const panel of tabPanels) panel.hidden = panel.dataset.panel !== button.dataset.tab;
+  if (remember) writeSetting("manageTab", button.dataset.tab);
+}
+
+function setAgentAvailable(up) {
+  const button = tabButtons.find((tab) => tab.dataset.tab === "agent");
+  const wasHidden = button.hidden;
+  button.hidden = !up;
+  const wanted = location.hash.slice(1) || readSetting("manageTab", "cvs");
+  if (!up && button.getAttribute("aria-selected") === "true") showTab("cvs");
+  else if (up && wasHidden && wanted === "agent") showTab("agent");
+}
+
+for (const tab of tabButtons) tab.addEventListener("click", () => showTab(tab.dataset.tab));
+showTab(location.hash.slice(1) || readSetting("manageTab", "cvs"), false);
 
 for (const [status, label] of Object.entries(HUNTER_STATUS_LABELS)) {
   const option = el("option", label);
   option.value = status;
   hunterFilter.appendChild(option);
 }
-hunterFilter.addEventListener("change", renderHunterVacancies);
+hunterPageSize.value = readSetting("hunterPageSize", "20");
+hunterPageSize.addEventListener("change", () => {
+  writeSetting("hunterPageSize", hunterPageSize.value);
+  hunterPage = 0;
+  renderHunterVacancies();
+});
+document.getElementById("hunter-prev").addEventListener("click", () => {
+  hunterPage -= 1;
+  renderHunterVacancies();
+});
+document.getElementById("hunter-next").addEventListener("click", () => {
+  hunterPage += 1;
+  renderHunterVacancies();
+});
+hunterFilter.addEventListener("change", () => {
+  hunterPage = 0;
+  renderHunterVacancies();
+});
 document.getElementById("hunter-refresh").addEventListener("click", loadHunter);
 loadHunter();
 setInterval(loadHunter, 30000);

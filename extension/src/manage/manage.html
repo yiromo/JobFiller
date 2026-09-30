@@ -6,19 +6,27 @@
     <link rel="stylesheet" href="manage.css" />
   </head>
   <body>
-    <h1>Manage CVs <span id="jf-version" class="version"></span></h1>
+    <h1>JobFiller <span id="jf-version" class="version"></span></h1>
     <p id="status">Loading...</p>
 
+    <nav class="tabs" role="tablist">
+      <button type="button" role="tab" class="tab" data-tab="cvs">CVs</button>
+      <button type="button" role="tab" class="tab" data-tab="agent" hidden>Job agent</button>
+      <button type="button" role="tab" class="tab" data-tab="telegram">Telegram</button>
+      <button type="button" role="tab" class="tab" data-tab="generate">Generate CV</button>
+      <button type="button" role="tab" class="tab" data-tab="settings">Settings</button>
+    </nav>
+
+    <section class="tab-panel" data-panel="cvs" role="tabpanel">
     <div class="actions">
       <input id="cv-file-input" type="file" accept=".pdf,.docx" hidden />
       <button id="cv-upload-btn" type="button">Upload CV</button>
     </div>
 
     <ul id="cv-list"></ul>
+    </section>
 
-    <hr />
-
-    <section id="hunter-section" hidden>
+    <section id="hunter-section" class="tab-panel" data-panel="agent" role="tabpanel" hidden>
       <h1>Job agent <span id="hunter-phase" class="version"></span></h1>
       <p id="hunter-summary" class="hint"></p>
       <div id="hunter-stats" class="hunter-stats"></div>
@@ -37,21 +45,33 @@
       </div>
       <p id="hunter-status"></p>
       <ul id="hunter-vacancies" class="hunter-list"></ul>
+      <div class="pager">
+        <label>Per page
+          <select id="hunter-page-size">
+            <option value="10">10</option>
+            <option value="20" selected>20</option>
+            <option value="50">50</option>
+          </select>
+        </label>
+        <button id="hunter-prev" type="button">Previous</button>
+        <span id="hunter-page"></span>
+        <button id="hunter-next" type="button">Next</button>
+      </div>
       <details class="hunter-log-wrap">
         <summary>Agent log</summary>
         <pre id="hunter-log" class="hunter-log"></pre>
       </details>
-      <hr />
     </section>
 
+    <section class="tab-panel" data-panel="telegram" role="tabpanel" hidden>
     <h1>Telegram opportunities</h1>
     <p class="hint">Matched jobs and application results from the subscribed channel.</p>
     <button id="opportunities-refresh" type="button">Refresh opportunities</button>
     <p id="opportunities-status"></p>
     <ul id="opportunities-list"></ul>
+    </section>
 
-    <hr />
-
+    <section class="tab-panel" data-panel="generate" role="tabpanel" hidden>
     <h1>Generate a tailored CV</h1>
     <p class="hint">
       Rewrites one of your CVs for a specific position and saves the result as a new PDF you can
@@ -97,9 +117,9 @@
         <ul id="gen-warnings-list"></ul>
       </div>
     </div>
+    </section>
 
-    <hr />
-
+    <section class="tab-panel" data-panel="settings" role="tabpanel" hidden>
     <h1>Settings</h1>
     <p class="hint">
       EEO/demographic questions (gender, race, veteran, disability status, etc.) are never
@@ -114,6 +134,7 @@
     <button id="eeo-add-row-btn" type="button">Add row</button>
     <button id="eeo-save-btn" type="button">Save</button>
     <p id="eeo-status"></p>
+    </section>
 
     <script src="../version.js"></script>
     <script src="manage.js"></script>

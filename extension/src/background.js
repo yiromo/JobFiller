@@ -1470,7 +1470,9 @@ browser.runtime.onMessage.addListener((message, sender) => {
     case "openManage":
       return respond(
         browser.tabs
-          .create({ url: browser.runtime.getURL("src/manage/manage.html") })
+          .create({
+            url: browser.runtime.getURL(`src/manage/manage.html${message.tab ? `#${message.tab}` : ""}`),
+          })
           .then((tab) => browser.tabs.setZoom(tab.id, 0.3))
           .then(() => ({ ok: true })),
       );

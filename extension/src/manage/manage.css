@@ -307,3 +307,55 @@ select {
 .hunter-lesson {
   margin: 0 0 12px;
 }
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 8px 0 28px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.tabs .tab {
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.6);
+  padding: 10px 14px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.tabs .tab:hover {
+  color: #ffffff;
+}
+
+.tabs .tab[aria-selected="true"] {
+  color: #ffffff;
+  border-bottom-color: #ffffff;
+}
+
+.tab-panel > h1:first-child {
+  margin-top: 0;
+}
+
+.pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.pager select {
+  margin-left: 6px;
+}
+
+.pager button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}

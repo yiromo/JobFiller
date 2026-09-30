@@ -1,5 +1,14 @@
 # Progress log
 
+- **Manage page in tabs, paged vacancies** — the Manage page is now tabs (CVs, Job agent,
+  Telegram, Generate CV, Settings) instead of one long page; the Job agent tab exists only while
+  the agent is up (falling back to CVs if it goes down), the last tab is remembered in
+  `localStorage` (the initial restore does not overwrite a saved "agent" choice before the status
+  loads), and `#agent` in the URL opens it — the panel's "Open full agent dashboard" now does.
+  The vacancy list pages at 10/20/50 per page (remembered) with Previous/Next, "1–20 of N
+  matching", and resets to page 1 on a filter or page-size change. Smoke-rendered with a stubbed
+  snapshot: 326 vacancies → 17 pages at 20, 33 at 10, 7 at 50, no page errors.
+
 - **EEO answers from the extension reach the agent; privacy notices and employer sites on** — the
   Settings page gains "Add all common EEO questions" (gender, transgender, sexual orientation,
   pronoun, hispanic, race, ethnicity, veteran, disability) and syncs saved rows (and on every Manage
