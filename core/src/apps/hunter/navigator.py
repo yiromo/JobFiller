@@ -44,12 +44,21 @@ SUBMIT_RE = re.compile(
 )
 CAPTCHA_JS = """
 () => {
-  if (/captcha/i.test(location.href)) return true;
-  if (document.querySelector('[data-qa*="captcha" i], [class*="captcha" i], [id*="captcha" i]')) {
-    return true;
-  }
-  return [...document.querySelectorAll("iframe")].some(frame =>
-    /captcha|recaptcha|hcaptcha|turnstile|challenges\\.cloudflare/i.test(frame.src || ""));
+  const visible = el => {
+    const box = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return box.width > 30 && box.height > 30 && box.bottom > 0 && box.right > 0
+      && box.top < innerHeight && box.left < innerWidth && style.visibility !== "hidden"
+      && style.display !== "none" && style.opacity !== "0";
+  };
+  const badge = el => !!el.closest(".grecaptcha-badge");
+  if (/captcha|\\/checkpoint\\/challenge/i.test(location.pathname)) return true;
+  const frames = [...document.querySelectorAll("iframe")].filter(frame =>
+    /captcha|recaptcha|hcaptcha|turnstile|challenges\\.cloudflare/i.test(frame.src || "")
+    && visible(frame) && !badge(frame));
+  if (frames.length) return true;
+  return [...document.querySelectorAll('[data-qa*="captcha" i], [id*="captcha" i], [class*="captcha" i]')]
+    .some(el => visible(el) && !badge(el) && !/grecaptcha-badge/.test(el.className));
 }
 """
 DEEP_JS = """

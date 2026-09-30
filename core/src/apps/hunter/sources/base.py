@@ -18,6 +18,7 @@ CONTRACT = (
     "read_vacancy",
     "response_status",
     "apply",
+    "open_for_apply",
     "navigator_goal",
     "pause",
 )

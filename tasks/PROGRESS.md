@@ -1,5 +1,20 @@
 # Progress log
 
+- **Indeed adapter through the search page's side panel** — opening an Indeed job page
+  (`/viewjob`, `/rc/clk`) returns Cloudflare's "Security Check", and the agent does not work around
+  it, so `sources/indeed.py` never opens one: a vacancy's URL is the search URL plus `vjk=<jk>`,
+  which opens that job in the right-hand panel with the full description and the apply control
+  (`viewjob-indeed-apply` "Apply now" → `smartapply.indeed.com` in a new tab, or `viewjob-apply`
+  "Apply on company site"). Cards are visible `a[data-jk]` only: the results include an invisible
+  `jk=890abcdef0123456` link, a trap no agent should touch. `response_status` now takes the
+  vacancy URL for every adapter, `open_for_apply` says where an apply starts, and the navigator's
+  confirmation reloads from `about:blank` so a stale panel can't confirm a send. Indeed and its
+  apply tab carry an invisible reCAPTCHA Enterprise, so the captcha guard now fires only on a
+  visible challenge frame or captcha element (not the badge or off-screen frames). Live: 20
+  listed, 8 read, 7 apply on the employer's site (skipped while external applying is off); the
+  Indeed Apply rehearsal on 7e9d8b6dd6bafde4 opened the apply tab, kept the uploaded résumé and
+  stopped at a required "I consent" checkbox, which the agent never ticks.
+
 - **LinkedIn adapter: discovery and Easy Apply through the navigator** — `sources/linkedin.py`
   crawls the new `/jobs/search-results/` UI (25 cards a page, `start=` paging) by
   `[role=button][componentkey^="job-card-component-ref-<id>"]`. LinkedIn serves two renders: the

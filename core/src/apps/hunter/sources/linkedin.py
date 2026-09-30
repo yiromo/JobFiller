@@ -166,8 +166,8 @@ def read_vacancy(page, url: str) -> VacancyPage:
     )
 
 
-def response_status(page, base: str, external_id: str) -> ResponseStatus | None:
-    job = open_job(page, external_id)
+def response_status(page, url: str) -> ResponseStatus | None:
+    job = open_job(page, vacancy_id(url) or "")
     if not job["top"]:
         return None
     return ResponseStatus(
@@ -178,6 +178,10 @@ def response_status(page, base: str, external_id: str) -> ResponseStatus | None:
         has_test=False,
         letter_max_length=4000,
     )
+
+
+def open_for_apply(page, url: str) -> None:
+    open_job(page, vacancy_id(url) or "")
 
 
 def apply(page, url, resume_title, letter, status, notify=None, on_submit=None) -> tuple:

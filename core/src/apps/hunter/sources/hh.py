@@ -151,7 +151,8 @@ def read_vacancy(page, url: str) -> VacancyPage:
     )
 
 
-def response_status(page, base: str, external_id: str) -> ResponseStatus | None:
+def response_status(page, url: str) -> ResponseStatus | None:
+    base, external_id = origin(url), vacancy_id(url) or ""
     response = page.request.get(
         f"{base}/applicant/vacancy_response/popup",
         params={"vacancyId": external_id, "isTest": "no", "withoutTest": "no", "lux": "true"},
@@ -213,6 +214,10 @@ def navigator_goal(title: str, resume_title: str, letter: str, status: ResponseS
     if letter:
         lines.append(f"Paste this cover letter into the letter field:\n{letter}")
     return "\n".join(lines)
+
+
+def open_for_apply(page, url: str) -> None:
+    page.goto(url, wait_until="domcontentloaded")
 
 
 def list_resumes(page, base: str) -> list[dict]:
@@ -325,7 +330,7 @@ def apply(
     if outcome != "closed":
         return False, f"hh.kz did not accept the response: {_dialog_text(page)}"
     pause(page, 1.5, 3.0)
-    confirmed = response_status(page, origin(url), vacancy_id(url) or "")
+    confirmed = response_status(page, url)
     if confirmed and confirmed.already_applied:
         return True, "Applied on hh.kz."
     return False, "The form closed but hh.kz does not report the response; check it manually."

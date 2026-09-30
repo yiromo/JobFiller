@@ -109,7 +109,6 @@ def discover(page, adapter, search_url: str, max_pages: int, log, budget: int) -
     )
     fresh = [item for item in listings if item.external_id not in known]
     log(f"{search_url}: {len(listings)} listed, {len(fresh)} new")
-    base = adapter.origin(search_url)
     created = []
     if not settings.HUNTER_EXTERNAL_APPLY:
         external = [item for item in fresh if item.external_apply]
@@ -119,7 +118,7 @@ def discover(page, adapter, search_url: str, max_pages: int, log, budget: int) -
     for item in fresh[:budget]:
         try:
             details = adapter.read_vacancy(page, item.url)
-            status = adapter.response_status(page, base, item.external_id)
+            status = adapter.response_status(page, item.url)
         except PlaywrightError as error:
             log(f"  could not read {item.url}: {first_line(error)}")
             continue
@@ -169,7 +168,7 @@ def reconcile(page, adapter, log, summary: RunSummary) -> None:
     )
     for vacancy in held[: adapter.RECHECK_BATCH]:
         try:
-            status = adapter.response_status(page, adapter.origin(vacancy.url), vacancy.external_id)
+            status = adapter.response_status(page, vacancy.url)
         except PlaywrightError as error:
             log(f"  recheck failed for {vacancy.title}: {first_line(error)}")
             continue
@@ -243,7 +242,7 @@ def apply_one(
 ) -> bool | None:
     original_status = vacancy.status
     try:
-        status = adapter.response_status(page, adapter.origin(vacancy.url), vacancy.external_id)
+        status = adapter.response_status(page, vacancy.url)
     except PlaywrightError as error:
         status = None
         log(f"  response info failed for {vacancy.title}: {first_line(error)}")
@@ -360,7 +359,7 @@ def apply_one(
 def navigate(
     page, adapter, vacancy, status, resume_title, letter, log, rehearse, on_submit
 ) -> tuple:
-    page.goto(vacancy.url, wait_until="domcontentloaded")
+    adapter.open_for_apply(page, vacancy.url)
     navigator = Navigator(
         page,
         goal=adapter.navigator_goal(vacancy.title, resume_title, letter, status),
@@ -380,7 +379,8 @@ def navigate(
         return False, result.note
     if result.status == "done" or result.submitted:
         page.wait_for_timeout(2000)
-        confirmed = adapter.response_status(page, adapter.origin(vacancy.url), vacancy.external_id)
+        page.goto("about:blank")
+        confirmed = adapter.response_status(page, vacancy.url)
         if confirmed and confirmed.already_applied:
             return True, f"Applied on {adapter.NAME} by the navigator."
         return False, (

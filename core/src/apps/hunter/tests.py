@@ -139,7 +139,7 @@ class FakeAdapter:
     def origin(self, url):
         return "https://astana.hh.kz"
 
-    def response_status(self, page, base, external_id):
+    def response_status(self, page, url):
         return self.status
 
     def pause(self, page, low, high):
