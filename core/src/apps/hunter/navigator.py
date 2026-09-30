@@ -52,24 +52,45 @@ CAPTCHA_JS = """
     /captcha|recaptcha|hcaptcha|turnstile|challenges\\.cloudflare/i.test(frame.src || ""));
 }
 """
-OUTLINE_JS = """
-(limit) => {
+DEEP_JS = """
+const deepAll = (selector, root = document) => {
+  const found = [];
+  const visit = node => {
+    node.querySelectorAll(selector).forEach(el => found.push(el));
+    node.querySelectorAll("*").forEach(el => el.shadowRoot && visit(el.shadowRoot));
+  };
+  visit(root);
+  return found;
+};
+const hostUp = el => el.parentElement || (el.getRootNode() instanceof ShadowRoot ? el.getRootNode().host : null);
+const closestDeep = (el, selector) => {
+  for (let node = el; node; node = hostUp(node)) if (node.matches && node.matches(selector)) return node;
+  return null;
+};
+const shown = el => {
+  const box = el.getBoundingClientRect();
+  const style = getComputedStyle(el);
+  return box.width > 1 && box.height > 1 && style.visibility !== "hidden"
+    && style.display !== "none" && style.opacity !== "0";
+};
+const DIALOG = "[role=dialog], [aria-modal=true], dialog[open]";
+const openDialog = () => deepAll(DIALOG).filter(shown).pop() || null;
+"""
+OUTLINE_JS = (
+    "(limit) => {"
+    + DEEP_JS
+    + """
   const selector = [
     "a[href]", "button", "input", "select", "textarea", "label", "[contenteditable=true]",
     "[role=button]", "[role=radio]", "[role=checkbox]", "[role=option]", "[role=combobox]",
     "[role=textbox]", "[role=switch]", "[role=tab]", "[role=menuitem]",
   ].join(",");
   const clean = text => (text || "").replace(/\\s+/g, " ").trim();
-  const shown = el => {
-    const box = el.getBoundingClientRect();
-    const style = getComputedStyle(el);
-    return box.width > 1 && box.height > 1 && style.visibility !== "hidden"
-      && style.display !== "none" && style.opacity !== "0";
-  };
   const labelOf = el => {
+    const root = el.getRootNode();
     const labelled = el.getAttribute("aria-labelledby");
     if (labelled) {
-      const text = labelled.split(/\\s+/).map(id => document.getElementById(id))
+      const text = labelled.split(/\\s+/).map(id => (root.getElementById ? root.getElementById(id) : null) || document.getElementById(id))
         .filter(Boolean).map(node => node.innerText).join(" ");
       if (clean(text)) return clean(text);
     }
@@ -86,16 +107,29 @@ OUTLINE_JS = """
     }
     return "";
   };
-  document.querySelectorAll("[data-jf-nav]").forEach(el => el.removeAttribute("data-jf-nav"));
-  const inForm = el => !!el.closest("form, [role=dialog], [aria-modal=true]");
-  const candidates = [...document.querySelectorAll(selector)].filter(el => {
+  deepAll("[data-jf-nav]").forEach(el => el.removeAttribute("data-jf-nav"));
+  const dialog = openDialog();
+  const inForm = el => !!closestDeep(el, "form, " + DIALOG);
+  const candidates = deepAll(selector, dialog || document).filter(el => {
     if (el.type === "hidden") return false;
     if (el.type === "file") return true;
     if (shown(el)) return true;
     return ["radio", "checkbox"].includes(el.type) && el.labels && [...el.labels].some(shown);
   });
-  candidates.sort((a, b) => Number(inForm(b)) - Number(inForm(a)));
-  return candidates.slice(0, limit).map((el, index) => {
+  const listed = new Set(candidates);
+  const pruned = candidates.filter(el => !(el.tagName === "LABEL" && el.control && listed.has(el.control) && shown(el.control)));
+  const stepper = /^(next|continue|review|submit|apply|send|done|далее|продолжить|отправить|откликнуться)/i;
+  const inView = el => {
+    const box = el.getBoundingClientRect();
+    return box.bottom > 0 && box.top < innerHeight && box.right > 0 && box.left < innerWidth;
+  };
+  const rank = el => (stepper.test(clean(el.innerText || el.value || el.getAttribute("aria-label"))) ? 8 : 0)
+    + (inView(el) ? 4 : 0) + (inForm(el) ? 2 : 0)
+    + (["INPUT", "SELECT", "TEXTAREA"].includes(el.tagName) ? 1 : 0);
+  const ranked = pruned.map((el, order) => [rank(el), order, el])
+    .sort((a, b) => b[0] - a[0] || a[1] - b[1]).slice(0, limit)
+    .sort((a, b) => a[1] - b[1]).map(entry => entry[2]);
+  return ranked.map((el, index) => {
     const ref = String(index + 1);
     el.setAttribute("data-jf-nav", ref);
     const tag = el.tagName.toLowerCase();
@@ -109,6 +143,7 @@ OUTLINE_JS = """
       submit: tag === "button" ? (el.type || "submit") === "submit" && !!el.form
         : el.type === "submit",
       in_form: inForm(el),
+      in_dialog: !!dialog,
       qa: el.getAttribute("data-qa") || "",
     };
     if (["radio", "checkbox"].includes(el.type)) item.checked = el.checked;
@@ -121,8 +156,34 @@ OUTLINE_JS = """
     if (el.type === "file") item.accept = el.accept || "";
     return item;
   });
-}
-"""
+}"""
+)
+PAGE_TEXT_JS = (
+    "() => {"
+    + DEEP_JS
+    + """
+  const dialog = openDialog();
+  return ((dialog ? dialog.innerText + "\\n----\\n" : "") + document.body.innerText);
+}"""
+)
+SCROLL_JS = (
+    "(ref) => {"
+    + DEEP_JS
+    + """
+  const target = ref ? deepAll('[data-jf-nav="' + ref + '"]')[0] : null;
+  if (target) {
+    target.scrollIntoView({block: "center", behavior: "smooth"});
+    return "scrolled to the element";
+  }
+  const root = openDialog();
+  const boxes = (root ? [root, ...deepAll("*", root)] : [document.scrollingElement])
+    .filter(el => el && el.scrollHeight > el.clientHeight + 20
+      && ["auto", "scroll"].includes(getComputedStyle(el).overflowY) || el === document.scrollingElement);
+  const box = boxes.sort((a, b) => b.clientHeight - a.clientHeight)[0] || document.scrollingElement;
+  box.scrollBy({top: box.clientHeight * 0.8});
+  return root ? "scrolled the dialog" : "scrolled the page";
+}"""
+)
 SYSTEM_PROMPT = """You drive a web browser for a job seeker, one action per turn, to reach a goal.
 You get the goal, the candidate's CV text, the job posting, notes learned on earlier visits to
 this site, your recent steps, a screenshot and a numbered list of the page's interactive
@@ -131,6 +192,8 @@ elements. Reply with one JSON object:
  "action": "click|fill|select|check|upload|scroll|wait|done|stuck",
  "ref": "<element number for click/fill/select/check/upload>", "value": "<text for fill/select>",
  "final_submit": <true only if this click sends the application>}
+To click a button that is visible in the screenshot but missing from the element list, send
+"click" with no "ref" and the button's visible name in "value".
 "upload" attaches the candidate's CV file: point it at the file input or the upload button;
 the harness picks the file, so leave "value" empty.
 Rules:
@@ -284,12 +347,21 @@ class Navigator:
     def loop(self) -> Result:
         repeats = 0
         previous = None
+        stale = 0
+        last_view = None
         for step in range(1, settings.HUNTER_NAVIGATOR_STEPS + 1):
             self.guard_captcha()
             elements = self.page.evaluate(OUTLINE_JS, 120)
+            view = (self.page.url, json.dumps(elements, sort_keys=True))
+            stale = stale + 1 if view == last_view else 0
+            last_view = view
+            if stale >= 6:
+                return Result("stuck", "The page did not change for six steps.")
             decision = self.decide(elements)
             action = decision.get("action")
             element = next((e for e in elements if e["ref"] == str(decision.get("ref"))), None)
+            if element is None and action == "click" and not decision.get("ref"):
+                element = self.named_button(str(decision.get("value") or ""))
             entry = {
                 "step": step,
                 "url": self.page.url,
@@ -336,6 +408,21 @@ class Navigator:
                 entry["result"] += f"; left {self.host}, went back"
         return Result("stuck", f"No result after {settings.HUNTER_NAVIGATOR_STEPS} steps.")
 
+    def named_button(self, name: str) -> dict | None:
+        name = name.strip()
+        if not name:
+            return None
+        return {
+            "ref": "",
+            "name": name[:80],
+            "tag": "button",
+            "type": "button",
+            "text": name[:80],
+            "label": "",
+            "group": "",
+            "in_form": True,
+        }
+
     def follow_new_tab(self, before: int) -> str:
         pages = self.page.context.pages
         if len(pages) <= before:
@@ -367,7 +454,7 @@ class Navigator:
             ],
             "cv_text": self.cv_text[:7000],
             "job_posting": self.job_text[:4000],
-            "page_text": self.page.evaluate("() => document.body.innerText")[:5000],
+            "page_text": self.page.evaluate(PAGE_TEXT_JS)[:6000],
             "elements": elements,
         }
         response = self.client.chat.completions.create(
@@ -397,12 +484,15 @@ class Navigator:
     def act(self, decision: dict, element: dict) -> str:
         action = decision["action"]
         if action == "scroll":
-            self.page.mouse.wheel(0, 700)
-            return "scrolled"
+            ref = element["ref"] if element else ""
+            return self.page.evaluate(SCROLL_JS, ref)
         if action == "wait":
             self.page.wait_for_timeout(2500)
             return "waited"
-        locator = self.page.locator(f'[data-jf-nav="{element["ref"]}"]').first
+        if element.get("name"):
+            locator = self.page.get_by_role("button", name=element["name"]).first
+        else:
+            locator = self.page.locator(f'[data-jf-nav="{element["ref"]}"]').first
         value = str(decision.get("value") or "")
         try:
             if action == "click":

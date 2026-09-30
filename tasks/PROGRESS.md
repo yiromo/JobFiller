@@ -14,8 +14,14 @@
   scripted apply (`SCRIPTED_APPLY = False`), so it always goes to the navigator, and rechecks only
   5 held rows a cycle since each costs a page load. The navigator now gets `candidate_contact`
   (CV name/email/phone, `HUNTER_CONTACT_PHONE`, `HUNTER_CONTACT_CITY`) and must stop naming a
-  missing required value. First live rehearsal (4469234806) opened Easy Apply and stopped on the
-  required phone field: the CVs have no phone and none was configured.
+  missing required value. The Easy Apply dialog lives in a shadow root, so the outline now walks
+  shadow roots, lists only the open dialog's controls when one is open, drops labels whose control
+  is already listed, and ranks step buttons (Next/Review/Submit…) then in-view controls before the
+  120-item cap; the page text leads with the dialog's text; `scroll` scrolls the dialog's own
+  scroll box; the model may click a visible button by name when it has no number (guards still run
+  on it); six steps with an unchanged page end the run. Live rehearsal on 4469234806: Easy Apply →
+  phone (+7 preselected, rest typed) → résumé kept → referral "No one referred me" → Boston office
+  "No" → location "Astana, Kazakhstan" → Review → stopped at "Submit application" (7/7 steps).
 
 - **Hunter goes multi-site (foundation)** — shared adapter types and the adapter contract live in
   `sources/base.py` (`CONTRACT`, checked by a test); `run_once` groups `JOB_SOURCE_URLS` by adapter
