@@ -79,9 +79,22 @@ ELIGIBILITY_KEYWORDS = (
     "разрешение на работу",
     "гражданство",
 )
-ACTIONS = {"click", "fill", "select", "check", "upload", "scroll", "wait", "done", "stuck"}
+ACTIONS = {
+    "click",
+    "fill",
+    "select",
+    "check",
+    "upload",
+    "scroll",
+    "wait",
+    "reload",
+    "done",
+    "stuck",
+}
 TARGETED = {"click", "fill", "select", "check", "upload"}
 TYPED_LIMIT = 300
+WAIT_BEFORE_RELOAD = 3
+WAIT_LIMIT = 6
 EXTERNAL_LESSON = "employer-sites"
 CONFIRMED_RE = re.compile(
     r"thank(s| you)[^.\n]{0,60}(appl|interest|submi)|application (has been |was )?"
@@ -159,6 +172,17 @@ OUTLINE_JS = (
     if (el.labels && el.labels.length) return clean([...el.labels].map(l => l.innerText).join(" "));
     return clean(el.getAttribute("aria-label") || el.getAttribute("placeholder") || el.title);
   };
+  const choiceText = el => {
+    const own = labelOf(el);
+    if (own) return own;
+    const wrap = el.closest("label");
+    if (wrap && clean(wrap.innerText)) return clean(wrap.innerText);
+    for (const node of [el.nextElementSibling, el.parentElement]) {
+      const text = node ? clean(node.innerText) : "";
+      if (text && text.length <= 80) return text;
+    }
+    return "";
+  };
   const groupOf = el => {
     let node = el.parentElement;
     for (let depth = 0; node && depth < 6; depth += 1, node = node.parentElement) {
@@ -197,7 +221,7 @@ OUTLINE_JS = (
     const tag = el.tagName.toLowerCase();
     const item = {
       ref, tag, type: el.type || "", role: el.getAttribute("role") || "",
-      text: clean(el.innerText || el.value || "").slice(0, 160),
+      text: (["radio", "checkbox"].includes(el.type) ? choiceText(el) : clean(el.innerText || el.value || "")).slice(0, 160),
       label: labelOf(el).slice(0, 200),
       group: groupOf(el),
       required: !!(el.required || el.getAttribute("aria-required") === "true"),
@@ -208,7 +232,10 @@ OUTLINE_JS = (
       in_dialog: !!dialog,
       qa: el.getAttribute("data-qa") || "",
     };
-    if (["radio", "checkbox"].includes(el.type)) item.checked = el.checked;
+    if (["radio", "checkbox"].includes(el.type)) {
+      item.checked = el.checked;
+      item.value = el.value;
+    }
     if (tag === "select") item.options = [...el.options].map(o => clean(o.text)).slice(0, 40);
     if (["input", "textarea"].includes(tag) && !["radio", "checkbox"].includes(el.type)) {
       item.value = (el.value || "").slice(0, 600);
@@ -251,9 +278,10 @@ You get the goal, the candidate's CV text, the job posting, notes learned on ear
 this site, your recent steps, a screenshot and a numbered list of the page's interactive
 elements. Reply with one JSON object:
 {"thought": "<one sentence>",
- "action": "click|fill|select|check|upload|scroll|wait|done|stuck",
+ "action": "click|fill|select|check|upload|scroll|wait|reload|done|stuck",
  "ref": "<element number for click/fill/select/check/upload>", "value": "<text for fill/select>",
  "final_submit": <true only if this click sends the application>}
+If the page keeps loading or shows an error for more than two waits, use "reload" once.
 To click a button that is visible in the screenshot but missing from the element list, send
 "click" with no "ref" and the button's visible name in "value".
 "upload" attaches the candidate's CV file: point it at the file input or the upload button;
@@ -476,6 +504,8 @@ class Navigator:
         previous = None
         stale = 0
         last_view = None
+        waits = 0
+        reloaded = False
         for step in range(1, self.max_steps + 1):
             self.guard_captcha()
             elements = self.page.evaluate(OUTLINE_JS, 120)
@@ -522,8 +552,23 @@ class Navigator:
             if problem:
                 entry["result"] = problem
                 continue
-            signature = (action, entry["target"], entry["value"])
-            repeats = repeats + 1 if signature == previous else 0
+            waits = waits + 1 if action == "wait" else 0
+            if waits >= WAIT_LIMIT:
+                return Result("stuck", "The page kept loading or erroring after a reload.")
+            if waits >= WAIT_BEFORE_RELOAD and not reloaded:
+                action = decision["action"] = "reload"
+            if action == "reload":
+                if reloaded:
+                    entry["result"] = "refused: the page was already reloaded once"
+                    continue
+                reloaded = True
+                waits = 0
+                self.page.reload(wait_until="domcontentloaded")
+                self.page.wait_for_timeout(3000)
+                entry["result"] = "reloaded the page"
+                continue
+            signature = (action, entry["target"], entry["value"], entry["ref"])
+            repeats = repeats + 1 if signature == previous and action != "wait" else 0
             previous = signature
             if repeats >= 2:
                 return Result(

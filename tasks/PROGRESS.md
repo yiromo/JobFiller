@@ -1,5 +1,12 @@
 # Progress log
 
+- **Navigator: real radio labels, one reload, a wait budget** — Indeed Apply renders Yes/No radios
+  whose inputs carry `value=1/0` next to an unassociated text node, so the outline listed them as
+  "1"/"0" and the model looped flipping answers; radio/checkbox text now comes from the label,
+  the wrapping `<label>`, or the adjacent short text, with the value kept separately. A stuck
+  spinner or error dialog used to end in "repeated wait three times"; waits no longer count as
+  repeats, three in a row trigger one page reload (also a model action), and six end the run.
+
 - **Manage page in tabs, paged vacancies** — the Manage page is now tabs (CVs, Job agent,
   Telegram, Generate CV, Settings) instead of one long page; the Job agent tab exists only while
   the agent is up (falling back to CVs if it goes down), the last tab is remembered in
