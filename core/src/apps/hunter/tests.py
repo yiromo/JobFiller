@@ -588,6 +588,12 @@ class PrivacyAndEeoRuleTests(SimpleTestCase):
             "I certify that the information in this application is true and complete"
         )
         self.assertIn("refused", navigator.vet({"action": "check"}, certify, {"x.com"}, False))
+        bare_terms = self.box("Agree", group="By applying you accept our Terms of Service. Agree")
+        self.assertIn("refused", navigator.vet({"action": "check"}, bare_terms, {"x.com"}, False))
+        bare_privacy = self.box("Agree", group="I have read the Applicant Privacy Notice. Agree")
+        self.assertEqual(navigator.vet({"action": "check"}, bare_privacy, {"x.com"}, False), "")
+        bare_other = self.box("Agree", group="Agree")
+        self.assertIn("refused", navigator.vet({"action": "check"}, bare_other, {"x.com"}, False))
         terms = self.box("I agree to the Terms and Conditions")
         self.assertIn("refused", navigator.vet({"action": "check"}, terms, {"x.com"}, False))
 

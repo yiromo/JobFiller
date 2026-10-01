@@ -93,6 +93,8 @@ ACTIONS = {
 }
 TARGETED = {"click", "fill", "select", "check", "upload"}
 TYPED_LIMIT = 300
+SHORT_LABEL = 25
+AGREE_WORDS = ("agree", "accept", "acknowledge", "согласен", "принимаю")
 WAIT_BEFORE_RELOAD = 3
 WAIT_LIMIT = 6
 EXTERNAL_LESSON = "employer-sites"
@@ -376,8 +378,9 @@ def vet(
         or element.get("type") in CHOICE_TYPES
         or element.get("role") in CHOICE_ROLES
     )
-    attestation = matches(own, (*ATTESTATION_KEYWORDS, *CERTIFY_KEYWORDS))
-    attestation = attestation and not privacy_acknowledgment(own)
+    context = own if len(own.strip()) > SHORT_LABEL else f"{own} {element.get('group', '')}"
+    attestation = matches(context, (*ATTESTATION_KEYWORDS, *CERTIFY_KEYWORDS, *AGREE_WORDS))
+    attestation = attestation and not privacy_acknowledgment(context)
     if attestation and action in {"click", "check"}:
         return "refused: legal consent and attestation boxes are the candidate's own click"
     if matches(haystack, EEO_KEYWORDS) and (action != "click" or choice):

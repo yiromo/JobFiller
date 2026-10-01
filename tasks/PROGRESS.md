@@ -1,5 +1,15 @@
 # Progress log
 
+- **Stuck Indeed retries, and bare "Agree" boxes** — the three held Indeed Apply jobs were retried on
+  the fixed navigator: the radio fix carried 4fd4b6b748b4746d through its questions to "Review your
+  application", where the page stalled and, after the one reload, Cloudflare's check appeared; the
+  other two met the check as soon as the apply tab opened. None were sent; Indeed's apply tab now
+  often checks this browser and those jobs stay with the user. That run ticked a bare "Agree"
+  checkbox: attestation detection read only the control's own text, so "Agree" beside terms or a
+  certification would have passed too. Short labels (≤25 chars) are now judged with their
+  question text, and agree/accept/acknowledge count as consent words, so only a privacy or
+  personal-data context lets one through.
+
 - **Navigator: real radio labels, one reload, a wait budget** — Indeed Apply renders Yes/No radios
   whose inputs carry `value=1/0` next to an unassociated text node, so the outline listed them as
   "1"/"0" and the model looped flipping answers; radio/checkbox text now comes from the label,
