@@ -36,3 +36,31 @@ class HunterEeoView(APIView):
         except OSError as error:
             return Response({"error": f"could not save: {error}"}, status=500)
         return Response({"answers": answers})
+
+
+class HunterLetterView(APIView):
+    def get(self, request):
+        return Response({"size": inbox.read_letter_size()})
+
+    def put(self, request):
+        try:
+            size = inbox.write_letter_size(request.data.get("size"))
+        except (TypeError, ValueError) as error:
+            return Response({"error": str(error)}, status=400)
+        except OSError as error:
+            return Response({"error": f"could not save: {error}"}, status=500)
+        return Response({"size": size})
+
+
+class HunterScopeView(APIView):
+    def get(self, request):
+        return Response({"scope": inbox.read_apply_scope()})
+
+    def put(self, request):
+        try:
+            scope = inbox.write_apply_scope(request.data.get("scope"))
+        except (TypeError, ValueError) as error:
+            return Response({"error": str(error)}, status=400)
+        except OSError as error:
+            return Response({"error": f"could not save: {error}"}, status=500)
+        return Response({"scope": scope})

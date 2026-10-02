@@ -3,6 +3,15 @@
   window.__jfPanelMounted = true;
 
   // Inlined: a content script fetching its own extension files needs web_accessible_resources.
+  const LETTER_SIZES = [
+    ["off", "Don't write"],
+    ["very_short", "Very short"],
+    ["short", "Short"],
+    ["medium", "Medium"],
+    ["long", "High"],
+    ["max", "Max"],
+  ];
+
   const PANEL_CSS = `
 :host {
   all: initial;
@@ -251,6 +260,31 @@
   display: none;
 }
 
+
+.jf-size {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.jf-size-head {
+  display: flex;
+  justify-content: space-between;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 13px;
+}
+
+.jf-size-head strong {
+  color: #ffffff;
+  font-weight: normal;
+}
+
+.jf-range {
+  width: 100%;
+  margin: 0;
+  accent-color: #ffffff;
+  cursor: pointer;
+}
 
 .jf-hint {
   margin: 0;
@@ -608,6 +642,14 @@
     });
     generateClBtn.textContent = "Generate cover letter";
 
+    const sizeLabel = h("strong", { id: "jf-cl-size-label" });
+    const sizeSlider = h("input", {
+      type: "range", id: "jf-cl-size", class: "jf-range", min: "0", max: String(LETTER_SIZES.length - 1),
+      step: "1", "aria-label": "Cover letter size",
+    });
+    const sizeHead = h("div", { class: "jf-size-head" }, [h("span", {}, ["Cover letter size"]), sizeLabel]);
+    const sizeBox = h("div", { class: "jf-size" }, [sizeHead, sizeSlider]);
+
     const coverLetterPreview = h("textarea", { id: "jf-cover-letter-preview", class: "jf-textarea", readonly: "", hidden: "" });
 
     const scanLogEl = h("pre", { id: "jf-scan-log", class: "jf-log jf-log-mini", hidden: "" });
@@ -616,6 +658,7 @@
       scanBtn,
       rescanBtn,
       linkedInStepsBtn,
+      sizeBox,
       generateClBtn,
       coverLetterPreview,
       scanLogEl,
@@ -1166,6 +1209,25 @@
       send("openManage", {});
     });
 
+    const showLetterSize = (index) => {
+      const [, label] = LETTER_SIZES[index] || LETTER_SIZES[3];
+      $("jf-cl-size").value = String(index);
+      $("jf-cl-size-label").textContent = label;
+    };
+    browser.storage.local
+      .get("coverLetterSize")
+      .then((stored) => {
+        const index = LETTER_SIZES.findIndex(([key]) => key === stored.coverLetterSize);
+        showLetterSize(index === -1 ? 3 : index);
+      })
+      .catch(() => showLetterSize(3));
+    $("jf-cl-size").addEventListener("input", (e) => showLetterSize(Number(e.target.value)));
+    $("jf-cl-size").addEventListener("change", (e) => {
+      const [key] = LETTER_SIZES[Number(e.target.value)] || LETTER_SIZES[3];
+      logEvent("CHANGE", { id: "cl-size", value: key });
+      browser.storage.local.set({ coverLetterSize: key });
+    });
+
     $("jf-cv-select").addEventListener("change", (e) => {
       logEvent("CHANGE", { id: "cv-select", value: e.target.value });
       if ($("jf-scan-btn").dataset.mode === "scan") {
@@ -1372,6 +1434,10 @@
     $("jf-generate-cl-btn").addEventListener("click", async () => {
       logEvent("CLICK", { id: "generate-cl-btn" });
       if (!lastApplicationId) return;
+      if ($("jf-cl-size").value === "0") {
+        setStatus("Cover letter size is set to Don't write. Move the slider to generate one.");
+        return;
+      }
       setStatus("Generating cover letter...");
       $("jf-generate-cl-btn").disabled = true;
 

@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from agent.cover_letter import DEFAULT_SIZE
+
 
 @dataclass(frozen=True)
 class ScanRequestDTO:
@@ -11,6 +13,7 @@ class ScanRequestDTO:
     about_text: str = ""
     eeo_answers: list[dict] = field(default_factory=list)
     screenshot: str = ""
+    cover_letter_size: str = DEFAULT_SIZE
 
 
 @dataclass(frozen=True)

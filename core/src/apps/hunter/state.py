@@ -10,7 +10,7 @@ from django.db import DatabaseError
 from django.db.models import Q
 from django.utils import timezone
 
-from . import evidence
+from . import evidence, inbox
 from .models import ResumeLink, SiteLesson, Vacancy
 from .sources import LOGIN_SITES
 
@@ -117,7 +117,8 @@ def data_snapshot() -> dict:
         "config": {
             "sources": list(settings.JOB_SOURCE_URLS),
             "headless": settings.HUNTER_HEADLESS,
-            "min_score": settings.HUNTER_MIN_SCORE,
+            "min_score": inbox.min_score(),
+            "apply_scope": inbox.read_apply_scope(),
             "max_applies_per_run": settings.HUNTER_MAX_APPLIES_PER_RUN,
             "max_new_per_run": settings.HUNTER_MAX_NEW_PER_RUN,
             "max_applies_per_day": settings.HUNTER_MAX_APPLIES_PER_DAY,

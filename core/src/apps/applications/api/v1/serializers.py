@@ -1,5 +1,7 @@
 from rest_framework import serializers
 
+from agent.cover_letter import DEFAULT_SIZE, SIZES
+
 
 class FormFieldSerializer(serializers.Serializer):
     ref = serializers.CharField()
@@ -38,6 +40,7 @@ class ScanRequestSerializer(serializers.Serializer):
         default="",
     )
     eeo_answers = EeoAnswerSerializer(many=True, required=False, default=list)
+    cover_letter_size = serializers.ChoiceField(choices=SIZES, required=False, default=DEFAULT_SIZE)
 
 
 class FileAttachmentSerializer(serializers.Serializer):
@@ -67,6 +70,7 @@ class GenerateCoverLetterRequestSerializer(serializers.Serializer):
     application_id = serializers.IntegerField()
     page_text = serializers.CharField(required=False, allow_blank=True, default="")
     about_text = serializers.CharField(required=False, allow_blank=True, default="")
+    size = serializers.ChoiceField(choices=SIZES, required=False, default=DEFAULT_SIZE)
 
 
 class GenerateCoverLetterResponseSerializer(serializers.Serializer):

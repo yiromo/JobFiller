@@ -282,6 +282,7 @@ def apply(
     status: ResponseStatus,
     notify=None,
     on_submit=None,
+    applicant=None,
 ) -> tuple:
     page.goto(url, wait_until="domcontentloaded")
     _captcha_gate(page, notify)

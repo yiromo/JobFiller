@@ -35,7 +35,10 @@ def capture(page, key: str, trace: list | None = None) -> bool:
     target = folder(key)
     if target is None:
         return False
-    target.mkdir(parents=True, exist_ok=True)
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return False
     saved = False
     with suppress(PlaywrightError, OSError):
         (target / "page.html").write_text(page.content())

@@ -11,7 +11,15 @@ from apps.cvs.models import Cv
 from apps.hunter import evidence, inbox, navigator, notify, service, state
 from apps.hunter.models import ResumeLink, Vacancy
 from apps.hunter.service import RunSummary, letter_language
-from apps.hunter.sources import ADAPTERS, adapter_for, hh, indeed, linkedin, missing_contract
+from apps.hunter.sources import (
+    ADAPTERS,
+    adapter_for,
+    dsml,
+    hh,
+    indeed,
+    linkedin,
+    missing_contract,
+)
 
 
 class HhParsingTests(SimpleTestCase):
@@ -146,7 +154,10 @@ class FakeAdapter:
     def pause(self, page, low, high):
         pass
 
-    def apply(self, page, url, resume_title, letter, status, notify=None, on_submit=None):
+    def apply(
+        self, page, url, resume_title, letter, status, notify=None, on_submit=None, applicant=None
+    ):
+        self.applicant = applicant
         if not self.outcome[0]:
             return self.outcome
         on_submit()
@@ -409,6 +420,9 @@ class NavigatorRoutingTests(LinkedCvCase):
         vacancy.refresh_from_db()
         navigate.assert_not_called()
         self.assertEqual(vacancy.status, Vacancy.Status.NEEDS_REVIEW)
+        self.assertEqual(
+            set(adapter.applicant), {"name", "email", "phone", "city", "cv_path", "linkedin"}
+        )
 
     def test_questionnaire_goes_straight_to_the_navigator(self):
         self.vacancy("10")
@@ -633,3 +647,187 @@ class EeoInboxViewTests(SimpleTestCase):
                 "/api/v1/hunter/eeo/", {"answers": "nope"}, content_type="application/json"
             )
             self.assertEqual(bad.status_code, 400)
+
+
+class LetterSizeInboxTests(SimpleTestCase):
+    def test_size_round_trips_and_rejects_unknown_values(self):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            override_settings(DATA_DIR=Path(directory)),
+        ):
+            self.assertEqual(self.client.get("/api/v1/hunter/letter/").json(), {"size": "medium"})
+            response = self.client.put(
+                "/api/v1/hunter/letter/", {"size": "short"}, content_type="application/json"
+            )
+            self.assertEqual(response.json(), {"size": "short"})
+            self.assertEqual(inbox.read_letter_size(), "short")
+            bad = self.client.put(
+                "/api/v1/hunter/letter/", {"size": "huge"}, content_type="application/json"
+            )
+            self.assertEqual(bad.status_code, 400)
+            self.assertEqual(inbox.read_letter_size(), "short")
+
+    def test_off_still_writes_a_very_short_letter_when_one_is_required(self):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            override_settings(DATA_DIR=Path(directory)),
+        ):
+            inbox.write_letter_size("off")
+            self.assertEqual(service.letter_size(SimpleNamespace(letter_required=False)), "off")
+            self.assertEqual(
+                service.letter_size(SimpleNamespace(letter_required=True)), "very_short"
+            )
+
+
+class DsmlAdapterTests(SimpleTestCase):
+    def test_job_urls_with_a_language_prefix_resolve_to_one_id(self):
+        uuid = "22d5af9c-fe3c-4c5f-8335-f7d69590581b"
+        self.assertTrue(dsml.handles("https://dsml.kz/jobs"))
+        self.assertFalse(dsml.handles("https://notdsml.kz/jobs"))
+        for path in (f"/jobs/{uuid}", f"/ru/jobs/{uuid}", f"/kk/jobs/{uuid}"):
+            self.assertEqual(dsml.vacancy_id(f"https://dsml.kz{path}#apply"), uuid)
+        self.assertIsNone(dsml.vacancy_id("https://dsml.kz/jobs"))
+
+    def test_heading_splits_into_title_and_employer(self):
+        self.assertEqual(
+            dsml.split_heading("Data Scientist/Senior at Institute of AI (ISSAI)"),
+            ("Data Scientist/Senior", "Institute of AI (ISSAI)"),
+        )
+        self.assertEqual(dsml.split_heading("AI Engineer"), ("AI Engineer", ""))
+
+    def test_applicant_details_come_from_the_cv_and_settings(self):
+        self.assertEqual(
+            dsml.linkedin_url("see linkedin.com/in/jane-doe for more"),
+            "https://linkedin.com/in/jane-doe",
+        )
+        self.assertEqual(dsml.linkedin_url("no profile"), "")
+        note = dsml.contact_note({"phone": "+7 700", "city": "Astana, Kazakhstan"})
+        self.assertEqual(note, "Phone: +7 700. Based in Astana, Kazakhstan (UTC+5)")
+
+    def test_scripted_apply_refuses_without_a_cv_file_or_email(self):
+        status = SimpleNamespace(letter_max_length=1200)
+        self.assertIn("no stored file", dsml.apply(None, "", "", "", status, applicant={})[1])
+        missing_email = {"cv_path": "/x.pdf", "email": ""}
+        self.assertIn("no email", dsml.apply(None, "", "", "", status, applicant=missing_email)[1])
+
+    def test_confirmation_accepts_site_and_generic_success_phrases(self):
+        self.assertEqual(
+            dsml.confirmation("Application sent to the hiring contact"), "Application sent"
+        )
+        self.assertTrue(dsml.confirmation("Thank you for your application!"))
+        self.assertEqual(dsml.confirmation("Please add an email or Telegram"), "")
+
+
+@override_settings(MIMO_API_KEY="key", HUNTER_MIN_SCORE=75, HUNTER_BROAD_MIN_SCORE=60)
+class ApplyScopeTests(LinkedCvCase):
+    def setUp(self):
+        super().setUp()
+        self.directory = tempfile.TemporaryDirectory()
+        self.data = override_settings(DATA_DIR=Path(self.directory.name))
+        self.data.enable()
+
+    def tearDown(self):
+        self.data.disable()
+        self.directory.cleanup()
+
+    def test_scope_round_trips_and_sets_the_threshold(self):
+        self.assertEqual(self.client.get("/api/v1/hunter/scope/").json(), {"scope": "broad"})
+        self.assertEqual(inbox.min_score(), 60)
+        for scope, threshold in (("relevant", 75), ("all", 0)):
+            response = self.client.put(
+                "/api/v1/hunter/scope/", {"scope": scope}, content_type="application/json"
+            )
+            self.assertEqual(response.json(), {"scope": scope})
+            self.assertEqual(inbox.min_score(), threshold)
+        bad = self.client.put(
+            "/api/v1/hunter/scope/", {"scope": "every"}, content_type="application/json"
+        )
+        self.assertEqual(bad.status_code, 400)
+
+    def test_unsent_rows_follow_the_threshold_both_ways(self):
+        held = self.vacancy("30", status=Vacancy.Status.BELOW_THRESHOLD)
+        Vacancy.objects.filter(pk=held.pk).update(match_score=65)
+        sent = self.vacancy("31", status=Vacancy.Status.BELOW_THRESHOLD)
+        Vacancy.objects.filter(pk=sent.pk).update(match_score=65, submitted_at=timezone.now())
+        service.apply_scope_threshold()
+        held.refresh_from_db()
+        sent.refresh_from_db()
+        self.assertEqual(held.status, Vacancy.Status.READY)
+        self.assertEqual(sent.status, Vacancy.Status.BELOW_THRESHOLD)
+        inbox.write_apply_scope("relevant")
+        service.apply_scope_threshold()
+        held.refresh_from_db()
+        self.assertEqual(held.status, Vacancy.Status.BELOW_THRESHOLD)
+
+    def test_apply_to_all_falls_back_to_a_cv_only_when_scoring_answered(self):
+        inbox.write_apply_scope("all")
+        poor = self.vacancy("32", status=Vacancy.Status.BELOW_THRESHOLD, cv=False)
+        failed = self.vacancy("33", status=Vacancy.Status.BELOW_THRESHOLD, cv=False)
+        ranked = {str(poor.id): (None, None, "Unrelated role.")}
+        with patch("apps.hunter.service.rank_jobs", return_value=ranked):
+            service.score_vacancies([poor, failed], [self.link])
+        poor.refresh_from_db()
+        failed.refresh_from_db()
+        self.assertEqual((poor.cv_id, poor.match_score, poor.status), (self.cv.id, 0, "ready"))
+        self.assertIsNone(failed.cv_id)
+        self.assertEqual(failed.status, Vacancy.Status.BELOW_THRESHOLD)
+
+    def tailoring_case(self, score=65, uses_links=False, external_id="34"):
+        vacancy = self.vacancy(external_id)
+        Vacancy.objects.filter(pk=vacancy.pk).update(match_score=score)
+        vacancy.refresh_from_db()
+        return vacancy, SimpleNamespace(USES_RESUME_LINKS=uses_links)
+
+    def test_tailoring_runs_only_for_scope_matches_on_upload_sites(self):
+        vacancy, adapter = self.tailoring_case()
+        self.assertTrue(service.needs_tailoring(adapter, vacancy))
+        self.assertFalse(service.needs_tailoring(SimpleNamespace(USES_RESUME_LINKS=True), vacancy))
+        strong, _ = self.tailoring_case(score=80, external_id="35")
+        self.assertFalse(service.needs_tailoring(adapter, strong))
+        unlinked = Cv.objects.create(file="cvs/b.pdf", original_filename="Tailored b.pdf")
+        vacancy.cv = unlinked
+        self.assertFalse(service.needs_tailoring(adapter, vacancy))
+
+    def test_a_tailored_cv_that_adds_skills_is_discarded(self):
+        vacancy, _ = self.tailoring_case()
+        tailored = Cv.objects.create(file="cvs/t.pdf", original_filename="Tailored.pdf")
+        cv_service = SimpleNamespace(
+            generate_from=lambda *args, **kwargs: (tailored, ["Kubernetes"], []),
+            delete=lambda cv_id: Cv.objects.filter(pk=cv_id).delete(),
+        )
+        with patch("apps.hunter.service.CvsContainer.cv_service", return_value=cv_service):
+            service.tailor_cv(vacancy, lambda line: None)
+        vacancy.refresh_from_db()
+        self.assertEqual(vacancy.cv_id, self.cv.id)
+        self.assertFalse(Cv.objects.filter(pk=tailored.pk).exists())
+
+    def test_an_accepted_tailored_cv_replaces_the_vacancy_cv(self):
+        vacancy, _ = self.tailoring_case()
+        tailored = Cv.objects.create(file="cvs/t.pdf", original_filename="Tailored.pdf")
+        cv_service = SimpleNamespace(
+            generate_from=lambda *args, **kwargs: (tailored, [], ["Wording not found"])
+        )
+        with patch("apps.hunter.service.CvsContainer.cv_service", return_value=cv_service):
+            service.tailor_cv(vacancy, lambda line: None)
+        vacancy.refresh_from_db()
+        self.assertEqual(vacancy.cv_id, tailored.id)
+        self.assertIn("Tailored CV: Tailored.pdf (from a.pdf)", vacancy.match_reason)
+
+    def test_the_navigator_is_told_to_upload_a_tailored_cv(self):
+        vacancy, _ = self.tailoring_case()
+        self.assertEqual(service.tailored_note(vacancy), "")
+        vacancy.cv = Cv.objects.create(file="cvs/t.pdf", original_filename="Tailored.pdf")
+        self.assertIn("replace any preselected résumé", service.tailored_note(vacancy))
+
+    def test_a_closed_posting_is_skipped_without_applying(self):
+        vacancy, _ = self.tailoring_case(score=90, external_id="36")
+        adapter = FakeAdapter(
+            SimpleNamespace(impossible=True, already_applied=False, resume_hashes={"hash"})
+        )
+        result = service.apply_one(
+            None, adapter, vacancy, {}, lambda line: None, RunSummary(), False
+        )
+        vacancy.refresh_from_db()
+        self.assertFalse(result)
+        self.assertEqual(vacancy.status, Vacancy.Status.SKIPPED)
+        self.assertEqual(adapter.applied, [])

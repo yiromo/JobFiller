@@ -7,6 +7,7 @@ from pathlib import Path
 from camoufox.fingerprints import get_random_preset
 from camoufox.pkgman import installed_verstr
 from camoufox.sync_api import Camoufox
+from camoufox.webgl import sample_webgl
 from django.conf import settings
 from playwright.sync_api import Error as PlaywrightError
 
@@ -29,15 +30,33 @@ def write_private(path: Path, text: str) -> None:
     os.replace(temporary, path)
 
 
+PRESET_ATTEMPTS = 25
+
+
+def launchable(preset: dict) -> bool:
+    webgl = preset.get("webgl") or {}
+    try:
+        sample_webgl("lin", webgl.get("unmaskedVendor"), webgl.get("unmaskedRenderer"))
+    except ValueError:
+        return False
+    return True
+
+
 def fingerprint_for(site: str) -> dict:
     path = profile_dir(site) / FINGERPRINT_FILE
     if path.exists():
-        return json.loads(path.read_text())
-    preset = get_random_preset(os="linux", ff_version=installed_verstr().split(".", 1)[0])
-    if not preset:
-        raise RuntimeError("Camoufox has no fingerprint presets; run `camoufox fetch`.")
-    write_private(path, json.dumps(preset))
-    return preset
+        pinned = json.loads(path.read_text())
+        if launchable(pinned):
+            return pinned
+    version = installed_verstr().split(".", 1)[0]
+    for _ in range(PRESET_ATTEMPTS):
+        preset = get_random_preset(os="linux", ff_version=version)
+        if not preset:
+            raise RuntimeError("Camoufox has no fingerprint presets; run `camoufox fetch`.")
+        if launchable(preset):
+            write_private(path, json.dumps(preset))
+            return preset
+    raise RuntimeError("Camoufox offered no Linux preset with known WebGL data.")
 
 
 def save_session(site: str, context) -> None:

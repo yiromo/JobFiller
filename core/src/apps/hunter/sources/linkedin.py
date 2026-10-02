@@ -186,7 +186,9 @@ def open_for_apply(page, url: str) -> None:
     open_job(page, vacancy_id(url) or "")
 
 
-def apply(page, url, resume_title, letter, status, notify=None, on_submit=None) -> tuple:
+def apply(
+    page, url, resume_title, letter, status, notify=None, on_submit=None, applicant=None
+) -> tuple:
     return False, "LinkedIn Easy Apply runs through the navigator; it is off for LinkedIn."
 
 

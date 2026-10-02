@@ -243,6 +243,106 @@ function renderHunterVacancies() {
     `${shown}${items.length} matching · ${hunterSnapshot?.vacancies?.length || 0} most recently updated vacancies.`;
 }
 
+const APPLY_SCOPES = [
+  ["relevant", "Only relevant", "Applies only to strong matches for your CVs."],
+  [
+    "broad",
+    "As much as it can",
+    "Also applies to adjacent roles (a backend developer to fullstack jobs, for example) and writes a CV tailored to the role when the fit is not strong.",
+  ],
+  ["all", "Apply to all", "Applies to every job it finds, even unrelated ones."],
+];
+const ALL_SCOPE_WARNING =
+  "Apply to all sends an application to every job the agent finds, including jobs that are not relevant to you at all. Recruiters will see your name on unrelated applications, and the daily cap will be used up quickly.\n\nSwitch to Apply to all?";
+const hunterScope = document.getElementById("hunter-scope");
+let hunterScopeSaved = 1;
+let hunterScopeLoaded = false;
+
+function showHunterScope(index) {
+  const [, label, hint] = APPLY_SCOPES[index] || APPLY_SCOPES[1];
+  hunterScope.value = String(index);
+  document.getElementById("hunter-scope-label").textContent = label;
+  document.getElementById("hunter-scope-hint").textContent = hint;
+}
+
+async function loadHunterScope() {
+  const response = await fetch(`${CORE_URL}/api/v1/hunter/scope/`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const { scope } = await response.json();
+  const index = APPLY_SCOPES.findIndex(([key]) => key === scope);
+  hunterScopeSaved = index === -1 ? 1 : index;
+  showHunterScope(hunterScopeSaved);
+  hunterScopeLoaded = true;
+}
+
+hunterScope.addEventListener("input", () => showHunterScope(Number(hunterScope.value)));
+hunterScope.addEventListener("change", async () => {
+  const index = Number(hunterScope.value);
+  const status = document.getElementById("hunter-scope-status");
+  if (APPLY_SCOPES[index][0] === "all" && !window.confirm(ALL_SCOPE_WARNING)) {
+    showHunterScope(hunterScopeSaved);
+    status.textContent = "Kept the previous setting.";
+    return;
+  }
+  const [scope, label] = APPLY_SCOPES[index];
+  try {
+    const response = await fetch(`${CORE_URL}/api/v1/hunter/scope/`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope }),
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    hunterScopeSaved = index;
+    status.textContent = `Saved: ${label}. The agent uses it from its next cycle.`;
+  } catch (err) {
+    showHunterScope(hunterScopeSaved);
+    status.textContent = `Could not save (${err.message}).`;
+  }
+});
+
+const LETTER_SIZES = [
+  ["off", "Don't write"],
+  ["very_short", "Very short"],
+  ["short", "Short"],
+  ["medium", "Medium"],
+  ["long", "High"],
+  ["max", "Max"],
+];
+const hunterLetterSize = document.getElementById("hunter-letter-size");
+let hunterLetterLoaded = false;
+
+function showHunterLetterSize(index) {
+  const [, label] = LETTER_SIZES[index] || LETTER_SIZES[3];
+  hunterLetterSize.value = String(index);
+  document.getElementById("hunter-letter-size-label").textContent = label;
+}
+
+async function loadHunterLetterSize() {
+  const response = await fetch(`${CORE_URL}/api/v1/hunter/letter/`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const { size } = await response.json();
+  const index = LETTER_SIZES.findIndex(([key]) => key === size);
+  showHunterLetterSize(index === -1 ? 3 : index);
+  hunterLetterLoaded = true;
+}
+
+hunterLetterSize.addEventListener("input", () => showHunterLetterSize(Number(hunterLetterSize.value)));
+hunterLetterSize.addEventListener("change", async () => {
+  const [size, label] = LETTER_SIZES[Number(hunterLetterSize.value)] || LETTER_SIZES[3];
+  const status = document.getElementById("hunter-letter-status");
+  try {
+    const response = await fetch(`${CORE_URL}/api/v1/hunter/letter/`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ size }),
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    status.textContent = `Saved: ${label}. Applies to letters the agent writes from now on.`;
+  } catch (err) {
+    status.textContent = `Could not save (${err.message}).`;
+  }
+});
+
 async function loadHunter() {
   let data = null;
   try {
@@ -256,6 +356,16 @@ async function loadHunter() {
     return;
   }
   hunterSnapshot = data;
+  if (!hunterScopeLoaded) {
+    loadHunterScope().catch((err) => {
+      document.getElementById("hunter-scope-status").textContent = `Could not load (${err.message}).`;
+    });
+  }
+  if (!hunterLetterLoaded) {
+    loadHunterLetterSize().catch((err) => {
+      document.getElementById("hunter-letter-status").textContent = `Could not load (${err.message}).`;
+    });
+  }
   renderHunterHeader(data);
   renderHunterVacancies();
   setAgentAvailable(true);

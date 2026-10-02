@@ -7,9 +7,20 @@ from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
+OFF = "off"
+LENGTHS = {
+    "very_short": "60-100 words, a single short paragraph.",
+    "short": "120-180 words, two short paragraphs.",
+    "medium": "250-400 words, three or four paragraphs.",
+    "long": "400-550 words, four or five paragraphs.",
+    "max": "600-800 words, five or six paragraphs.",
+}
+SIZES = (OFF, *LENGTHS)
+DEFAULT_SIZE = "medium"
+
 _SYSTEM_PROMPT = """You write professional cover letters using ONLY facts grounded in the \
 candidate's CV, for the specific job posting given. Rules:
-- 250-400 words, three or four paragraphs.
+- {length}
 - Never invent employers, dates, numbers, or skills that are not in the CV.
 - Never state availability, start date, salary, work format (office/remote/hybrid), relocation, \
 or schedule commitments unless the CV states them explicitly.
@@ -32,6 +43,8 @@ def generate(
     applicant_name: str,
     about_text: str = "",
     language: str = "",
+    size: str = DEFAULT_SIZE,
+    max_chars: int = 0,
 ) -> str:
     client = OpenAI(api_key=settings.MIMO_API_KEY, base_url=settings.MIMO_BASE_URL)
     about_block = (
@@ -50,7 +63,7 @@ def generate(
         messages=[
             {
                 "role": "system",
-                "content": _SYSTEM_PROMPT
+                "content": system_prompt(size, max_chars)
                 + (
                     f"\nWrite the whole letter in {language}, including the greeting, "
                     'which replaces "Dear Hiring Team,".'
@@ -63,6 +76,13 @@ def generate(
         timeout=45,
     )
     return response.choices[0].message.content.strip()
+
+
+def system_prompt(size: str, max_chars: int = 0) -> str:
+    length = LENGTHS.get(size, LENGTHS[DEFAULT_SIZE])
+    if max_chars:
+        length += f" The whole letter must stay under {max_chars} characters."
+    return _SYSTEM_PROMPT.replace("{length}", length)
 
 
 def render_docx(text: str) -> bytes:

@@ -9,6 +9,7 @@ from apps.applications.container import ApplicationsContainer
 from apps.applications.dto import ScanRequestDTO
 from apps.applications.services.application_service import (
     ApplicationNotFoundError,
+    CoverLetterOffError,
     MimoNotConfiguredError,
     NoCvOnApplicationError,
     SearchNotConfiguredError,
@@ -43,6 +44,7 @@ class ApplicationScanView(APIView):
             about_text=serializer.validated_data["about_text"],
             screenshot=serializer.validated_data["screenshot"],
             eeo_answers=[dict(row) for row in serializer.validated_data["eeo_answers"]],
+            cover_letter_size=serializer.validated_data["cover_letter_size"],
         )
         service = ApplicationsContainer.application_service()
         result = service.scan(payload)
@@ -60,9 +62,14 @@ class GenerateCoverLetterView(APIView):
                 application_id=serializer.validated_data["application_id"],
                 page_text=serializer.validated_data["page_text"],
                 about_text=serializer.validated_data["about_text"],
+                size=serializer.validated_data["size"],
             )
         except ApplicationNotFoundError:
             raise Http404
+        except CoverLetterOffError:
+            return Response(
+                {"detail": "cover letters are set to Off"}, status=status.HTTP_400_BAD_REQUEST
+            )
         except NoCvOnApplicationError:
             return Response(
                 {"detail": "select a CV and re-scan before generating a cover letter"},

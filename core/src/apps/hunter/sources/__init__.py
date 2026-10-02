@@ -1,8 +1,8 @@
-from . import hh, indeed, linkedin
+from . import dsml, hh, indeed, linkedin
 from .base import CONTRACT
 
-ADAPTERS = (hh, linkedin, indeed)
-LOGIN_SITES = (hh, linkedin, indeed)
+ADAPTERS = (hh, linkedin, indeed, dsml)
+LOGIN_SITES = (hh, linkedin, indeed, dsml)
 
 
 def adapter_for(url: str):

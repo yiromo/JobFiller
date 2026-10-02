@@ -359,3 +359,19 @@ select {
   opacity: 0.4;
   cursor: default;
 }
+
+.letter-size {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  max-width: 420px;
+}
+
+.letter-size input {
+  flex: 1;
+  cursor: pointer;
+}
+
+.letter-size strong {
+  min-width: 90px;
+}

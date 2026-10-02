@@ -1,6 +1,7 @@
 import random
 import re
 import time
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import timedelta
 
@@ -11,6 +12,9 @@ from openai import OpenAIError
 from playwright.sync_api import Error as PlaywrightError
 
 from agent import cover_letter
+from agent.cv_writer import CvGenerationError
+from apps.cvs.container import CvsContainer
+from apps.cvs.models import Cv
 from apps.opportunities.service import rank_jobs
 from apps.opportunities.telegraph import TelegraphPage
 
@@ -18,7 +22,7 @@ from . import evidence, inbox
 from .browser import open_browser
 from .models import ResumeLink, Vacancy
 from .navigator import CONFIRMED_RE, PAGE_TEXT_JS, REHEARSED, Navigator, host_of
-from .sources import adapter_for
+from .sources import adapter_for, dsml
 from .sources.base import CaptchaError
 from .state import sent_last_day
 
@@ -43,6 +47,15 @@ LATIN_RE = re.compile(r"[a-z]", re.IGNORECASE)
 
 def first_line(error: BaseException) -> str:
     return (str(error).strip().splitlines() or [type(error).__name__])[0]
+
+
+TAILOR_INSTRUCTIONS = (
+    "Tailor this CV for the position below. Reorder and reword the existing experience, projects "
+    "and skills so the parts relevant to this role come first. Keep every employer, job title, "
+    "date and number exactly as in the source CV, and do not add any technology, tool, language "
+    "or skill that the source CV does not already list."
+)
+TAILOR_REJECT_WARNINGS = ("Employment title", "Dropped")
 
 
 def navigator_mode(site: str = "") -> str:
@@ -79,6 +92,65 @@ def duplicate_of(vacancy: Vacancy) -> Vacancy | None:
     return next((other for other in sent if role_key(other.title) == key), None)
 
 
+def needs_tailoring(adapter, vacancy) -> bool:
+    return (
+        bool(settings.MIMO_API_KEY)
+        and not adapter.USES_RESUME_LINKS
+        and vacancy.match_score is not None
+        and vacancy.match_score < settings.HUNTER_MIN_SCORE
+        and ResumeLink.objects.filter(cv_id=vacancy.cv_id).exists()
+    )
+
+
+def first_words(text: str, count: int) -> str:
+    return " ".join(re.findall(r"[A-Za-z0-9+#]+", text)[:count])
+
+
+def tailor_cv(vacancy, log) -> None:
+    service = CvsContainer.cv_service()
+    try:
+        result = service.generate_from(
+            vacancy.cv_id,
+            TAILOR_INSTRUCTIONS,
+            position_text=vacancy.text,
+            filename=f"{vacancy.cv.full_name or 'CV'} {first_words(vacancy.title, 3)}",
+        )
+    except CvGenerationError as error:
+        log(f"  tailored CV failed for {vacancy.title}: {first_line(error)}; using the original")
+        return
+    if result is None:
+        return
+    tailored, added, warnings = result
+    invented = added or [w for w in warnings if w.startswith(TAILOR_REJECT_WARNINGS)]
+    if invented:
+        service.delete(tailored.id)
+        log(f"  tailored CV for {vacancy.title} changed facts ({invented[0]}); using the original")
+        return
+    original = vacancy.cv.original_filename
+    vacancy.cv = Cv.objects.get(pk=tailored.id)
+    vacancy.match_reason = (
+        f"{vacancy.match_reason} Tailored CV: {tailored.original_filename} (from {original})."
+    )[:2000]
+    vacancy.save(update_fields=["cv", "match_reason", "updated_at"])
+    log(f"  tailored CV for {vacancy.title}: {tailored.original_filename}")
+
+
+def tailored_note(vacancy) -> str:
+    if ResumeLink.objects.filter(cv_id=vacancy.cv_id).exists():
+        return ""
+    return (
+        "\nThe upload file is a CV tailored to this job: replace any preselected résumé with it "
+        "using the upload action."
+    )
+
+
+def letter_size(status) -> str:
+    size = inbox.read_letter_size()
+    if size == cover_letter.OFF and status.letter_required:
+        return "very_short"
+    return size
+
+
 def letter_language(text: str) -> str:
     return "Russian" if len(CYRILLIC_RE.findall(text)) > len(LATIN_RE.findall(text)) else ""
 
@@ -96,6 +168,7 @@ def scoring_preferences() -> str:
 def score_vacancies(vacancies: list[Vacancy], links: list[ResumeLink]) -> None:
     cvs = list({link.cv_id: link.cv for link in links}.values())
     resume_for = {(link.source, link.cv_id): link.resume_id for link in links}
+    threshold = inbox.min_score()
     for start in range(0, len(vacancies), SCORE_BATCH):
         batch = vacancies[start : start + SCORE_BATCH]
         try:
@@ -110,11 +183,13 @@ def score_vacancies(vacancies: list[Vacancy], links: list[ResumeLink]) -> None:
                 vacancy.match_reason = f"Scoring failed: {error}"[:2000]
         for vacancy in batch:
             cv, score, reason = ranked.get(str(vacancy.id), (None, None, vacancy.match_reason))
+            if cv is None and str(vacancy.id) in ranked and threshold == 0 and cvs:
+                cv, score = cvs[0], 0
             vacancy.cv = cv
             vacancy.resume_id = resume_for.get((vacancy.source, cv.id), "") if cv else ""
             vacancy.match_score = score
             vacancy.match_reason = reason or f"{UNSCORED_PREFIXES[0]}; is MIMO_API_KEY set?"
-            ready = score is not None and score >= settings.HUNTER_MIN_SCORE
+            ready = score is not None and score >= threshold
             if not ready:
                 vacancy.status = Vacancy.Status.BELOW_THRESHOLD
             elif vacancy.note:
@@ -122,6 +197,28 @@ def score_vacancies(vacancies: list[Vacancy], links: list[ResumeLink]) -> None:
             else:
                 vacancy.status = Vacancy.Status.READY
             vacancy.save()
+
+
+def apply_scope_threshold(log=None) -> None:
+    threshold = inbox.min_score()
+    unsent = Vacancy.objects.filter(
+        applied_at__isnull=True,
+        submitted_at__isnull=True,
+        note="",
+        match_score__isnull=False,
+        cv__isnull=False,
+    )
+    promoted = unsent.filter(
+        status=Vacancy.Status.BELOW_THRESHOLD, match_score__gte=threshold
+    ).update(status=Vacancy.Status.READY, updated_at=timezone.now())
+    demoted = unsent.filter(status=Vacancy.Status.READY, match_score__lt=threshold).update(
+        status=Vacancy.Status.BELOW_THRESHOLD, updated_at=timezone.now()
+    )
+    if log and (promoted or demoted):
+        log(
+            f"Apply scope {inbox.read_apply_scope()} (score >= {threshold}): "
+            f"{promoted} now ready, {demoted} held back."
+        )
 
 
 def unscored() -> list[Vacancy]:
@@ -301,6 +398,12 @@ def apply_one(
         log(f"  {adapter.NAME} returned no response info; stopping sends until the next run.")
         return None
     resume_missing = adapter.USES_RESUME_LINKS and vacancy.resume_id not in status.resume_hashes
+    if status.impossible and not status.already_applied:
+        vacancy.status = Vacancy.Status.SKIPPED
+        vacancy.note = f"{adapter.NAME} no longer accepts applications for this job."
+        vacancy.save()
+        log(f"  SKIP    {vacancy.title}: {vacancy.note}")
+        return False
     if status.already_applied or resume_missing:
         done = status.already_applied
         reason = (
@@ -313,14 +416,19 @@ def apply_one(
             summary.review.append(vacancy)
         log(f"  {vacancy.title}: {reason}")
         return False
+    if needs_tailoring(adapter, vacancy):
+        tailor_cv(vacancy, log)
     letter = vacancy.cover_letter
-    if not letter and settings.MIMO_API_KEY and adapter.WANTS_LETTER:
+    size = letter_size(status)
+    if not letter and settings.MIMO_API_KEY and adapter.WANTS_LETTER and size != cover_letter.OFF:
         try:
             letter = cover_letter.generate(
                 vacancy.cv.raw_text,
                 vacancy.text,
                 vacancy.cv.full_name or "",
                 language=letter_language(vacancy.text),
+                size=size,
+                max_chars=status.letter_max_length,
             )
         except MODEL_ERRORS as error:
             log(f"  cover letter failed for {vacancy.title}: {error}")
@@ -367,6 +475,7 @@ def apply_one(
                 status,
                 notify=log if headed else None,
                 on_submit=mark_submitted,
+                applicant=applicant_for(vacancy.cv),
             )
             if not applied and not submitted:
                 evidence.capture(page, evidence.key_for(vacancy))
@@ -401,6 +510,8 @@ def apply_one(
         note = f"Browser error: {first_line(error)}"
         if submitted:
             note += f" (after Submit; check {adapter.NAME} before resending)"
+        with suppress(PlaywrightError):
+            evidence.capture(page, evidence.key_for(vacancy))
     if rehearse:
         Vacancy.objects.filter(pk=vacancy.pk).update(
             status=original_status, cover_letter=vacancy.cover_letter
@@ -419,7 +530,8 @@ def navigate(
     adapter.open_for_apply(page, vacancy.url)
     navigator = Navigator(
         page,
-        goal=adapter.navigator_goal(vacancy.title, resume_title, letter, status),
+        goal=adapter.navigator_goal(vacancy.title, resume_title, letter, status)
+        + tailored_note(vacancy),
         cv_text=vacancy.cv.raw_text or "",
         job_text=vacancy.text,
         log=log,
@@ -483,6 +595,14 @@ def contact_for(cv) -> dict:
     }
 
 
+def applicant_for(cv) -> dict:
+    return {
+        **contact_for(cv),
+        "cv_path": cv_file_path(cv),
+        "linkedin": dsml.linkedin_url(cv.raw_text or ""),
+    }
+
+
 def cv_file_path(cv) -> str:
     try:
         return cv.file.path if cv.file else ""
@@ -535,6 +655,7 @@ def run_once(
         status=Vacancy.Status.APPLYING,
         updated_at__lt=timezone.now() - timedelta(hours=2),
     ).update(status=Vacancy.Status.NEEDS_REVIEW, note="Run stopped while applying; check the site.")
+    apply_scope_threshold(log)
     errors = []
     for adapter, urls in groups:
         try:

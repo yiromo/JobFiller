@@ -952,6 +952,11 @@ async function applyFillPlan(plan, fileByRef) {
   return { results, unresolved };
 }
 
+async function loadCoverLetterSize() {
+  const stored = await browser.storage.local.get("coverLetterSize");
+  return stored.coverLetterSize || "medium";
+}
+
 async function loadEeoSettings() {
   const stored = await browser.storage.local.get("eeoAnswers");
   return (stored.eeoAnswers || []).filter((row) => row.match && row.answer);
@@ -1153,6 +1158,7 @@ async function handleScan(message, tabId) {
     }
   }
   const eeoSettings = await loadEeoSettings();
+  const coverLetterSize = await loadCoverLetterSize();
   const response = await fetch(`${CORE_URL}/api/v1/applications/scan/`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1164,6 +1170,7 @@ async function handleScan(message, tabId) {
       form_snapshot: formSnapshot,
       cv_id: message.cvId,
       eeo_answers: eeoSettings,
+      cover_letter_size: coverLetterSize,
     }),
   });
   if (!response.ok) throw new Error(`core returned ${response.status}`);
@@ -1360,6 +1367,7 @@ async function handleGenerateCoverLetter(message) {
       application_id: message.applicationId,
       page_text: message.pageText,
       about_text: message.aboutText,
+      size: await loadCoverLetterSize(),
     }),
   });
   const data = await response.json();

@@ -138,6 +138,7 @@ OPPORTUNITY_MIN_SCORE = config("OPPORTUNITY_MIN_SCORE", default=75, cast=int)
 JOB_SOURCE_URLS = config("JOB_SOURCE_URLS", default="", cast=Csv())
 HUNTER_HEADLESS = config("HUNTER_HEADLESS", default="virtual")
 HUNTER_MIN_SCORE = config("HUNTER_MIN_SCORE", default=75, cast=int)
+HUNTER_BROAD_MIN_SCORE = config("HUNTER_BROAD_MIN_SCORE", default=50, cast=int)
 HUNTER_MAX_APPLIES_PER_RUN = config("HUNTER_MAX_APPLIES_PER_RUN", default=10, cast=int)
 HUNTER_MAX_NEW_PER_RUN = config("HUNTER_MAX_NEW_PER_RUN", default=40, cast=int)
 HUNTER_MAX_APPLIES_PER_DAY = config("HUNTER_MAX_APPLIES_PER_DAY", default=50, cast=int)
@@ -146,6 +147,7 @@ HUNTER_NAVIGATOR_BY_SITE = {
     "hh": config("HUNTER_NAVIGATOR_HH", default=""),
     "linkedin": config("HUNTER_NAVIGATOR_LINKEDIN", default="rehearse"),
     "indeed": config("HUNTER_NAVIGATOR_INDEED", default="rehearse"),
+    "dsml": config("HUNTER_NAVIGATOR_DSML", default=""),
 }
 HUNTER_CONTACT_PHONE = config("HUNTER_CONTACT_PHONE", default="")
 HUNTER_CONTACT_CITY = config("HUNTER_CONTACT_CITY", default="")

@@ -37,6 +37,10 @@ class SearchNotConfiguredError(Exception):
     pass
 
 
+class CoverLetterOffError(Exception):
+    pass
+
+
 class ApplicationService:
     def __init__(
         self,
@@ -76,7 +80,11 @@ class ApplicationService:
                 (
                     {"cover_letter_upload", "cover_letter_type"},
                     lambda: self._resolve_cover_letter(
-                        base_plan, cv, payload.page_text, payload.about_text
+                        base_plan,
+                        cv,
+                        payload.page_text,
+                        payload.about_text,
+                        payload.cover_letter_size,
                     ),
                 )
             )
@@ -137,16 +145,22 @@ class ApplicationService:
 
     @staticmethod
     def _resolve_cover_letter(
-        field_mapping: list[dict], cv: CvDTO, page_text: str, about_text: str
+        field_mapping: list[dict],
+        cv: CvDTO,
+        page_text: str,
+        about_text: str,
+        size: str = cover_letter.DEFAULT_SIZE,
     ) -> list[dict]:
         placeholders = {"cover_letter_upload", "cover_letter_type"}
         if not any(item["action"] in placeholders for item in field_mapping):
             return field_mapping
 
         text = None
-        if settings.MIMO_API_KEY:
+        if settings.MIMO_API_KEY and size != cover_letter.OFF:
             try:
-                text = cover_letter.generate(cv.raw_text, page_text, cv.full_name, about_text)
+                text = cover_letter.generate(
+                    cv.raw_text, page_text, cv.full_name, about_text, size=size
+                )
             except Exception:
                 logger.exception("Cover letter generation failed; leaving fields skipped")
 
@@ -193,7 +207,15 @@ class ApplicationService:
 
         return resolved
 
-    def regenerate_cover_letter(self, application_id: int, page_text: str, about_text: str) -> dict:
+    def regenerate_cover_letter(
+        self,
+        application_id: int,
+        page_text: str,
+        about_text: str,
+        size: str = cover_letter.DEFAULT_SIZE,
+    ) -> dict:
+        if size == cover_letter.OFF:
+            raise CoverLetterOffError
         record = self._repo.get(application_id)
         if record is None:
             raise ApplicationNotFoundError
@@ -205,7 +227,7 @@ class ApplicationService:
         if not settings.MIMO_API_KEY:
             raise MimoNotConfiguredError
 
-        text = cover_letter.generate(cv.raw_text, page_text, cv.full_name, about_text)
+        text = cover_letter.generate(cv.raw_text, page_text, cv.full_name, about_text, size=size)
 
         entries = [
             self._cover_letter_entry(field, cv, text)

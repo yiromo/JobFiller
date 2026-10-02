@@ -1,5 +1,54 @@
 # Progress log
 
+- **First broad-scope cycle** — 123 rows became ready. hh sent 4 before its submit captcha;
+  LinkedIn sent 2 (incl. the retried interrupted one) and held 7 on employer sites (sign-up walls,
+  geo-block, stalls, Cloudflare); Indeed held 5; dsml.kz scored 1 of 5 above 50 (the rest are
+  on-site) and failed on a click timeout before sending. Fixes: tailored CV files are named
+  `<Name>_<first three title words>.pdf` (a 90-character "Tailored_…" name was rejected by an
+  upload field and would have shown recruiters the word "Tailored"); dsml fields are focused by
+  `press_sequentially` after a centring scroll instead of a click, and submit falls back to
+  `form.requestSubmit()`; `apply_one` saves page evidence on a browser error too.
+
+- **Apply scope slider** — Manage → Job agent has "Only relevant / As much as it can / Apply to
+  all", saved through `PUT /api/v1/hunter/scope/` to `hunter-inbox/scope.json` (default "As much
+  as it can"); choosing "Apply to all" asks for confirmation first and snaps back on cancel. Scope
+  is only a threshold (75 / `HUNTER_BROAD_MIN_SCORE`=50 / 0): changing the scoring prompt as well
+  would have made old and new scores incomparable. Each run re-sorts unsent, unflagged rows into
+  ready or below-threshold, so moving back to "Only relevant" stops 50–74 rows too. In "Apply to
+  all" a job the scorer gave no CV gets the first linked CV at score 0 (not when scoring failed).
+  A row ready only because of the scope gets a CV tailored to the job through
+  `CvService.generate_from` before the letter is written, on sites that upload a file (not hh,
+  which sends its own résumé); a rewrite that adds skills or changes an employment title is deleted
+  and the original CV is used. Tailored CVs live in the host DB, unlinked, so a retry doesn't
+  tailor again. `inbox.py` now stores both slider values through one `read_choice`/`write_choice`.
+  The navigator goal tells it to replace a preselected résumé with the tailored file, since Easy
+  Apply would otherwise keep LinkedIn's stored one. Promoted rows can be days old, so `apply_one`
+  now skips a posting the site reports closed instead of spending a navigator run on it.
+
+- **dsml.kz adapter** — `sources/dsml.py` crawls `dsml.kz/jobs` (cards with a `#apply` link, a
+  visible "Load more" when present), reads the job page up to "Related open jobs" so other postings
+  don't reach the scorer, and sends through the "Apply without profile" guest form: first/last
+  name and email from the CV, the CV file, the LinkedIn URL found in the CV text, a cover note at
+  the agent's letter size capped at 1200 characters, and a contact note with phone and city.
+  Scripted apply needed the CV path and contact, so `apply_one` now passes `applicant=` to every
+  adapter. Selectors are id prefixes and hrefs because the site also serves `/ru` and `/kk`.
+  The guest form stays available when signed in; `hunter_login dsml` detects the Supabase
+  `sb-…-auth-token` cookie. A first `hunter_login dsml` crashed: Camoufox's random preset named a
+  WebGL pair (Mesa / GeForce 8800 GTX) missing from its own data, so `fingerprint_for` now keeps
+  drawing until the pair is launchable and re-pins an unlaunchable saved one. A fill-only run with
+  the real session filled every field and stopped before "Send quick apply".
+
+- **Cover letter size slider** — `agent/cover_letter.generate` takes `size` (`off`, `very_short`,
+  `short`, `medium`, `long`, `max`; shown as Don't write … High … Max) and an optional `max_chars`;
+  `medium` keeps the old 250-400 words, so every caller without a size is unchanged. The panel's
+  Scanner tab has a slider stored as `coverLetterSize` in `storage.local`; `background.js` sends it
+  as `cover_letter_size` on scan and `size` on Generate, and `off` leaves letter fields skipped
+  without a model call. The Manage agent tab has its own slider saved through
+  `PUT /api/v1/hunter/letter/` to `hunter-inbox/letter.json`; the hunter reads it per vacancy and
+  caps the letter at hh's `letterMaxLength`. With `off`, a vacancy that requires a letter still gets
+  a very short one. Letters already stored on a vacancy are reused, so the slider only changes new
+  ones.
+
 - **Stuck Indeed retries, and bare "Agree" boxes** — the three held Indeed Apply jobs were retried on
   the fixed navigator: the radio fix carried 4fd4b6b748b4746d through its questions to "Review your
   application", where the page stalled and, after the one reload, Cloudflare's check appeared; the

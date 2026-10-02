@@ -42,7 +42,7 @@ uv run ruff format .
 uv run python manage.py test                                   # all Django tests
 uv run python manage.py test apps.opportunities.tests          # one module (or add .Class.test_name)
 uv run python manage.py sync_telegram_jobs [--days N]          # ingest the Telegram channel
-uv run python manage.py hunter_login hh|linkedin|indeed       # visible browser: log in once per site
+uv run python manage.py hunter_login hh|linkedin|indeed|dsml  # visible browser: log in once per site
 uv run python manage.py hh_resumes [--link CV_ID=HASH]         # list/link hh résumés
 uv run python manage.py hunt [--apply] [--headed] [--loop MIN] # hh.kz agent (dry run by default)
 uv run python manage.py hunt --vacancy ID [--rehearse]         # send one row (or rehearse: never submits)
@@ -112,7 +112,7 @@ Don't put DB queries or business logic in views — mirror an existing app. Apps
   `type=submit`/model flag). `SiteLesson` notes are rewritten after each run and fed into the
   next; they must never carry send/stop rules. `evidence.py` keeps page HTML, a screenshot and
   the step trace per vacancy under `data/hunter/pages/`, served by `evidence/<id>/<file>`.
-  Adapters (`sources/hh.py`, `linkedin.py`, `indeed.py`) implement `sources/base.CONTRACT`; each
+  Adapters (`sources/hh.py`, `linkedin.py`, `indeed.py`, `dsml.py`) implement `sources/base.CONTRACT`; each
   site has its own browser profile and `hunter_login SITE`. LinkedIn and Indeed have no scripted
   apply, always go through the navigator, and default to `HUNTER_NAVIGATOR_<SITE>=rehearse`.
   LinkedIn serves a client-rendered variant without `data-view-name` after the first navigation
@@ -121,13 +121,29 @@ Don't put DB queries or business logic in views — mirror an existing app. Apps
   URL plus `vjk=<jk>`, which shows the job in the side panel. Only visible `a[data-jk]` cards
   count: Indeed plants an invisible trap link. The captcha guard must stay visibility-based:
   both sites carry invisible reCAPTCHA Enterprise frames that are not a challenge.
+  `sources/dsml.py` (dsml.kz) is scripted: it fills the "Apply without profile" guest form
+  (name, email, CV file, LinkedIn from the CV, cover note ≤1200, phone/city contact note, no
+  Telegram) from the `applicant` dict `apply_one` passes to every adapter's `apply`. The site has
+  `/ru` and `/kk` routes, so it selects by `guest-apply-*` id prefixes and `#apply` hrefs, never by
+  button text. A guest send never shows up as "applied" on reload, so `apply` itself decides
+  success from the form's live message or the form being replaced. `browser.fingerprint_for`
+  only pins presets whose WebGL pair Camoufox has data for; others crash the launch.
   The navigator's consent and EEO rules differ from the extension's scan path by the user's
   explicit choice (2026-10-01): it may tick privacy-notice and personal-data-processing
   acknowledgments (`privacy_acknowledgment`), never certifications, terms or other attestations;
   and it answers a demographic question only when the chosen option matches the user's own saved
   answer (`eeo_problem`). Those answers come from the extension's Settings through
-  `PUT /api/v1/hunter/eeo/`, which writes `data/hunter-inbox/eeo.json`: the one writable path
-  into the hunter, bind-mounted read-write into the Docker `core`. Keep everything else read-only.
+  `PUT /api/v1/hunter/eeo/`, which writes `data/hunter-inbox/eeo.json`. The Manage agent tab's
+  cover-letter size goes the same way (`PUT /api/v1/hunter/letter/` → `letter.json`). The
+  `hunter-inbox` directory is the one writable path into the hunter, bind-mounted read-write into
+  the Docker `core`. Keep everything else read-only. The agent tab's apply scope (`PUT /api/v1/hunter/scope/` →
+  `scope.json`: `relevant` = `HUNTER_MIN_SCORE`, `broad` = `HUNTER_BROAD_MIN_SCORE`, `all` = 0) is
+  a threshold only: the scoring prompt never changes with it, so stored scores stay comparable and
+  `apply_scope_threshold` re-sorts unsent rows both ways each run. A row ready only because of the
+  scope gets a CV tailored by `cv_writer` on upload sites; one that adds skills or changes a title
+  is deleted and the original CV is used. Letter sizes (`off`, `very_short` … `max`)
+  live in `agent/cover_letter.LENGTHS`; the panel's slider is `coverLetterSize` in
+  `storage.local`, read by `background.js` for every scan, so Telegram auto-apply follows it too.
 
 `agent/` (`core/src/agent/`) is a **plain module, not a Django app** — it has no models. Its
 functions are called directly from `applications`/`cvs` services (not DI-injected — there's
