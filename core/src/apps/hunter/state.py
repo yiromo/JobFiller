@@ -10,7 +10,7 @@ from django.db import DatabaseError
 from django.db.models import Q
 from django.utils import timezone
 
-from . import evidence, inbox
+from . import captcha, evidence, inbox
 from .models import ResumeLink, SiteLesson, Vacancy
 from .sources import LOGIN_SITES
 
@@ -123,6 +123,7 @@ def data_snapshot() -> dict:
             "max_new_per_run": settings.HUNTER_MAX_NEW_PER_RUN,
             "max_applies_per_day": settings.HUNTER_MAX_APPLIES_PER_DAY,
             "notify_telegram": settings.HUNTER_NOTIFY_TELEGRAM,
+            "notify_desktop": settings.HUNTER_NOTIFY_DESKTOP,
             "navigator": settings.HUNTER_NAVIGATOR,
             "navigator_by_site": {
                 site: mode for site, mode in settings.HUNTER_NAVIGATOR_BY_SITE.items() if mode
@@ -138,6 +139,7 @@ def data_snapshot() -> dict:
         ],
         "session_saved_at": session_saved_at(),
         "sessions": {adapter.NAME: session_saved_at(adapter.SITE) for adapter in LOGIN_SITES},
+        "captcha_cooldowns": captcha.active_cooldowns(),
         "lessons": [
             {
                 "host": lesson.host,

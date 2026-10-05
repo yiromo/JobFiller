@@ -1,3 +1,4 @@
+import math
 import random
 import re
 import time
@@ -18,7 +19,7 @@ from apps.cvs.models import Cv
 from apps.opportunities.service import rank_jobs
 from apps.opportunities.telegraph import TelegraphPage
 
-from . import evidence, inbox
+from . import captcha, evidence, inbox
 from .browser import open_browser
 from .models import ResumeLink, Vacancy
 from .navigator import CONFIRMED_RE, PAGE_TEXT_JS, REHEARSED, Navigator, host_of
@@ -27,6 +28,9 @@ from .sources.base import CaptchaError
 from .state import sent_last_day
 
 SCORE_BATCH = 8
+RETRY_WAIT = timedelta(minutes=35)
+RETRY_PASSES = 2
+WAIT_LOG_SECONDS = 300
 DUPLICATE_DAYS = 60
 MODEL_ERRORS = (OpenAIError, ValueError, TypeError, AttributeError, KeyError)
 UNSCORED_PREFIXES = ("Not scored", "Scoring failed")
@@ -352,6 +356,8 @@ def apply_ready(
         statuses.append(Vacancy.Status.NEEDS_REVIEW)
         queue = queue.filter(external_id=only)
     queue = queue.filter(status__in=statuses).exclude(cv=None)
+    if adapter.MAX_SENDS_PER_RUN and not only and not rehearse:
+        limit = min(limit, adapter.MAX_SENDS_PER_RUN)
     attempted = False
     for vacancy in queue.order_by("-match_score", "id")[:limit]:
         twin = None if only else duplicate_of(vacancy)
@@ -362,7 +368,7 @@ def apply_ready(
             log(f"  SKIP    {vacancy.title}: {vacancy.note}")
             continue
         if attempted:
-            time.sleep(random.uniform(20, 60))
+            time.sleep(random.uniform(*adapter.SEND_GAP))
         claimed = Vacancy.objects.filter(pk=vacancy.pk, status__in=statuses).update(
             status=Vacancy.Status.APPLYING, updated_at=timezone.now()
         )
@@ -492,18 +498,19 @@ def apply_one(
                         mode == "rehearse",
                         mark_submitted,
                     )
-    except CaptchaError:
+    except CaptchaError as error:
         if rehearse:
             Vacancy.objects.filter(pk=vacancy.pk).update(status=original_status)
             raise
         vacancy.status = Vacancy.Status.NEEDS_REVIEW
+        vacancy.submitted_at = None
         vacancy.note = (
-            f"{adapter.NAME} asked for a captcha before sending; nothing was submitted. Stop the "
-            "service (`systemctl --user stop job-filler-hunter`), then send it with "
-            f"`hunt --apply --headed --vacancy {vacancy.external_id}`."
+            f"{adapter.NAME} asked for a captcha before sending; nothing was submitted. Use "
+            "Send in the Job agent app to send it in a visible browser."
         )
         vacancy.save()
         summary.review.append(vacancy)
+        error.vacancy = vacancy
         raise
     except PlaywrightError as error:
         applied = False
@@ -519,6 +526,8 @@ def apply_one(
         log(f"  REHEARSAL {vacancy.title}: {note}")
         return False
     finish(vacancy, applied, note)
+    if applied:
+        captcha.record_send(adapter.SITE)
     (summary.applied if applied else summary.review).append(vacancy)
     log(f"  {'APPLIED' if applied else 'REVIEW '} {vacancy.title}: {note}")
     return True
@@ -656,21 +665,120 @@ def run_once(
         updated_at__lt=timezone.now() - timedelta(hours=2),
     ).update(status=Vacancy.Status.NEEDS_REVIEW, note="Run stopped while applying; check the site.")
     apply_scope_threshold(log)
-    errors = []
+    errors: dict = {}
+    unattended = apply and not only and not rehearse and not headed
     for adapter, urls in groups:
-        try:
-            run_site(
-                adapter, urls, links, apply, limit, max_pages, log, only, headed, rehearse, summary
-            )
-        except RuntimeError as error:
-            log(f"{adapter.NAME}: {error}")
-            errors.append(f"{adapter.NAME}: {error}" if len(groups) > 1 else str(error))
+        problem = try_site(
+            adapter, urls, links, apply, limit, max_pages, log, only, headed, rehearse, summary
+        )
+        if problem:
+            errors[adapter.SITE] = (adapter, problem)
+    if unattended:
+        retry_paused(groups, links, limit, max_pages, log, summary, errors)
     if errors:
-        raise RuntimeError("; ".join(errors))
+        raise RuntimeError(
+            "; ".join(
+                f"{adapter.NAME}: {problem}" if len(groups) > 1 else problem
+                for adapter, problem in errors.values()
+            )
+        )
     return summary
 
 
-def run_site(adapter, urls, links, apply, limit, max_pages, log, only, headed, rehearse, summary):
+def try_site(
+    adapter, urls, links, apply, limit, max_pages, log, only, headed, rehearse, summary, crawl=True
+) -> str:
+    unattended = apply and not only and not rehearse and not headed and adapter.HEADED_CAPTCHA
+    try:
+        try:
+            run_site(
+                adapter,
+                urls,
+                links,
+                apply,
+                limit,
+                max_pages,
+                log,
+                only,
+                headed,
+                rehearse,
+                summary,
+                crawl=crawl,
+            )
+        except CaptchaError as error:
+            held = getattr(error, "vacancy", None)
+            if not (unattended and held and captcha.ask_to_solve(adapter, held, log)):
+                raise
+            assisted_apply(adapter, links, held, limit, log, summary)
+    except CaptchaError as error:
+        held = getattr(error, "vacancy", None)
+        if not (unattended and held):
+            log(f"{adapter.NAME}: {error}")
+            return str(error)
+        requeue(held, summary)
+        until = captcha.start_cooldown(adapter.SITE)
+        attempt, total = captcha.attempt_of(adapter.SITE)
+        again = (
+            f" Trying again at {timezone.localtime(until):%H:%M %Z} (wait {attempt} of {total})."
+            if until
+            else ""
+        )
+        log(f"{adapter.NAME}: {error}{again}")
+        return str(error)
+    except RuntimeError as error:
+        log(f"{adapter.NAME}: {error}")
+        return str(error)
+    return ""
+
+
+def requeue(vacancy, summary) -> None:
+    Vacancy.objects.filter(pk=vacancy.pk, status=Vacancy.Status.NEEDS_REVIEW).update(
+        status=Vacancy.Status.READY, note="", submitted_at=None, updated_at=timezone.now()
+    )
+    summary.review = [v for v in summary.review if v.pk != vacancy.pk]
+
+
+def wait_until(until, adapter, log) -> None:
+    while (remaining := (until - timezone.now()).total_seconds()) > 0:
+        log(f"Waiting {math.ceil(remaining / 60)} min before trying {adapter.NAME} again.")
+        time.sleep(min(remaining, WAIT_LOG_SECONDS))
+
+
+def retry_paused(groups, links, limit, max_pages, log, summary, errors) -> None:
+    for _ in range(RETRY_PASSES):
+        due = []
+        for adapter, urls in groups:
+            until = captcha.due_at(adapter.SITE) if adapter.HEADED_CAPTCHA else None
+            waiting = Vacancy.objects.filter(source=adapter.SITE, status=Vacancy.Status.READY)
+            if until and until - timezone.now() <= RETRY_WAIT and waiting.exclude(cv=None).exists():
+                due.append((until, adapter, urls))
+        if not due:
+            return
+        until, adapter, urls = min(due, key=lambda item: item[0])
+        wait_until(until, adapter, log)
+        problem = try_site(
+            adapter,
+            urls,
+            links,
+            True,
+            limit,
+            max_pages,
+            log,
+            "",
+            False,
+            False,
+            summary,
+            crawl=False,
+        )
+        if problem:
+            errors[adapter.SITE] = (adapter, problem)
+        else:
+            errors.pop(adapter.SITE, None)
+
+
+def run_site(
+    adapter, urls, links, apply, limit, max_pages, log, only, headed, rehearse, summary, crawl=True
+):
     with open_browser(adapter.SITE, headless=False if headed else None) as context:
         page = context.pages[0] if context.pages else context.new_page()
         page.goto(adapter.origin(urls[0]), wait_until="domcontentloaded")
@@ -678,7 +786,7 @@ def run_site(adapter, urls, links, apply, limit, max_pages, log, only, headed, r
             raise RuntimeError(
                 f"The {adapter.NAME} profile is not logged in; run hunter_login {adapter.SITE}."
             )
-        if not only:
+        if not only and crawl:
             reconcile(page, adapter, log, summary)
             resume_hashes = [link.resume_id for link in links if link.source == adapter.SITE]
             created = []
@@ -691,11 +799,41 @@ def run_site(adapter, urls, links, apply, limit, max_pages, log, only, headed, r
             score_vacancies(pending, links)
             summary.review += [v for v in pending if v.status == Vacancy.Status.NEEDS_REVIEW]
             report(list(Vacancy.objects.filter(pk__in=[v.pk for v in created])), log)
-        if apply:
+        cooling = None if only or rehearse or headed else captcha.cooling_until(adapter.SITE)
+        if apply and cooling:
+            log(
+                f"{adapter.NAME} asked for a captcha recently; trying again at "
+                f"{timezone.localtime(cooling):%H:%M %Z}."
+            )
+        elif apply:
             apply_ready(page, adapter, limit, links, log, summary, only, headed, rehearse)
         else:
             ready = Vacancy.objects.filter(source=adapter.SITE, status=Vacancy.Status.READY).count()
             log(f"Dry run: {ready} {adapter.NAME} vacancies ready; rerun with --apply to send.")
+
+
+def assisted_apply(adapter, links, vacancy, limit, log, summary) -> None:
+    sent_before = {v.pk for v in summary.applied}
+    with open_browser(adapter.SITE, headless=False) as context:
+        page = context.pages[0] if context.pages else context.new_page()
+        page.goto(adapter.origin(vacancy.url), wait_until="domcontentloaded")
+        if not adapter.is_logged_in(page):
+            raise RuntimeError(
+                f"The {adapter.NAME} profile is not logged in; run hunter_login {adapter.SITE}."
+            )
+        apply_ready(page, adapter, 1, links, log, summary, vacancy.external_id, headed=True)
+        if not any(v.pk == vacancy.pk for v in summary.applied):
+            return
+        summary.review = [v for v in summary.review if v.pk != vacancy.pk]
+        captcha.clear_cooldown(adapter.SITE)
+        tried = sum(1 for v in [*summary.applied, *summary.review] if v.source == adapter.SITE)
+        remaining = max(0, min(limit, adapter.MAX_SENDS_PER_RUN or limit) - tried)
+        if remaining:
+            apply_ready(page, adapter, remaining, links, log, summary, headed=True)
+    log(
+        f"{adapter.NAME}: sent {len([v for v in summary.applied if v.pk not in sent_before])} "
+        "with your help."
+    )
 
 
 def report(vacancies: list[Vacancy], log) -> None:

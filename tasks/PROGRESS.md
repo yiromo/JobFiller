@@ -1,5 +1,42 @@
 # Progress log
 
+- **Captcha retry ladder and navigator budget** — an ignored captcha no longer parks the job: it
+  goes back to the queue and hh is retried after 5 min, then 30 min, 1 h, 3 h and 8 h, asking
+  the user again each time; a clean send resets the ladder and remembers which wait worked. Short
+  waits are spent on the other sites and retried at the end of the same run; the 31 held hh
+  captcha jobs were requeued. The hh per-run cap of 5 was lifted again (the run limit applies).
+  Navigator: a submit or apply button is no longer refused because the form's footer says "I
+  certify" (5+ Greenhouse forms were filled and then blocked); optional fields get one try and
+  required ones three, and a used-up or refused field disappears from what the model sees (one
+  form spent 25 minutes on an optional School dropdown and a race question). LinkedIn reads the
+  employer from the company link: titles with "|" in them had produced employers like "Python,
+  SQL, RAG, AWS" (those duplicate skips were the same company reposting, so they stand).
+
+- **Captcha help, hh pacing, dsml.kz paging** — a captcha no longer just parks the job: the agent
+  posts a critical GNOME notification ("hh.kz needs you to solve a captcha", button "Open
+  browser") and waits up to 5 minutes. On a click it reopens the hh profile in a visible window,
+  resends that job, waits while the user solves the captcha, and keeps sending (up to the per-run
+  limit) while they are there. Holds no longer set `submitted_at`, which had inflated the daily
+  cap (31 old holds corrected). hh waits 60–150 s between sends. The desktop app shows the pause.
+  dsml.kz only read page 1 of 46 (it looked for a "Load more" button that the site does not
+  have); it now follows `/jobs/page/N` and finds 46 Quick Apply jobs instead of 8. A headed
+  Camoufox window was confirmed to open from the systemd user service.
+
+- **Desktop app and GNOME notifications** — run summaries now arrive as GNOME notifications
+  ("Sent 3 · 2 need you") instead of Telegram, which stays available behind
+  `HUNTER_NOTIFY_TELEGRAM`. `desktop/job_agent.py` is a libadwaita app with three tabs: "Needs
+  you" groups every held job by what the user has to do, with open/applied/retry/skip actions,
+  a "Send…" button that pauses the agent and runs `hunt --headed --vacancy` so the user solves an
+  hh.kz captcha themselves ("Send all" queues every hh captcha hold in one paused session), and
+  "It was sent"/"Not sent" for unconfirmed submits; "Sent" lists
+  recent applications against the daily cap; "Agent" shows status with pause/resume, per-site
+  log in (pausing the agent around `hunter_login`), and recent activity. Pausing or a headed run
+  warns when the agent is mid-run, since stopping it then can cut off a send. Stop, headed run
+  and restart go out as one shell child logging to `~/.cache/job-agent/task.log`, so the agent
+  restarts even if the app is closed mid-task. The app refreshes when `status.json` changes and
+  once a minute. Known gap: `sent_last_day` counts `submitted_at`, which hh captcha holds also
+  carry although nothing went out, so the daily cap is overstated (30 vs 22 real on 2026-10-06).
+
 - **First broad-scope cycle** — 123 rows became ready. hh sent 4 before its submit captcha;
   LinkedIn sent 2 (incl. the retried interrupted one) and held 7 on employer sites (sign-up walls,
   geo-block, stalls, Cloudflare); Indeed held 5; dsml.kz scored 1 of 5 above 50 (the rest are

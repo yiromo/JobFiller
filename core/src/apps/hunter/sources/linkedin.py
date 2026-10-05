@@ -10,6 +10,9 @@ USES_RESUME_LINKS = False
 SCRIPTED_APPLY = False
 WANTS_LETTER = False
 RECHECK_BATCH = 5
+HEADED_CAPTCHA = False
+SEND_GAP = (20, 60)
+MAX_SENDS_PER_RUN = 0
 NAVIGABLE = ()
 SESSION_COOKIE = "li_at"
 PAGE_SIZE = 25
@@ -48,8 +51,12 @@ JOB_JS = """
     return /^apply\\b/i.test(label) && !/easy apply/i.test(label);
   });
   const main = document.querySelector("main") || document.body;
+  const company = [...main.querySelectorAll('a[href*="/company/"]')]
+    .map(link => clean(link.innerText))
+    .find(Boolean);
   return {
     title: document.title,
+    company: company || "",
     about: clean((document.querySelector(about) || {}).innerText || ""),
     top: clean(main.innerText).slice(0, 6000),
     easy: !!document.querySelector(easy),
@@ -155,7 +162,7 @@ def read_vacancy(page, url: str) -> VacancyPage:
     job = open_job(page, vacancy_id(url) or "")
     parts = [part.strip() for part in job["title"].split("|")]
     title = parts[0] if parts else ""
-    employer = parts[1] if len(parts) > 2 else ""
+    employer = job.get("company") or (parts[-2] if len(parts) > 2 else "")
     body = job["about"] or job["top"]
     text = "\n".join(part for part in (title, employer, job["top"][:600], body) if part)
     return VacancyPage(

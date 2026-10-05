@@ -1,14 +1,17 @@
+import json
 import tempfile
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+from django.conf import settings
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
 from apps.cvs.models import Cv
-from apps.hunter import evidence, inbox, navigator, notify, service, state
+from apps.hunter import captcha, evidence, inbox, navigator, notify, review, service, state
+from apps.hunter.management.commands import agent_desk
 from apps.hunter.models import ResumeLink, Vacancy
 from apps.hunter.service import RunSummary, letter_language
 from apps.hunter.sources import (
@@ -20,6 +23,7 @@ from apps.hunter.sources import (
     linkedin,
     missing_contract,
 )
+from apps.hunter.sources.base import CaptchaError
 
 
 class HhParsingTests(SimpleTestCase):
@@ -139,6 +143,9 @@ class FakeAdapter:
     WANTS_LETTER = True
     RECHECK_BATCH = 30
     NAVIGABLE = hh.NAVIGABLE
+    HEADED_CAPTCHA = True
+    SEND_GAP = (0, 0)
+    MAX_SENDS_PER_RUN = 0
 
     def __init__(self, status, outcome=(True, "Applied on hh.kz.")):
         self.status = status
@@ -158,6 +165,9 @@ class FakeAdapter:
         self, page, url, resume_title, letter, status, notify=None, on_submit=None, applicant=None
     ):
         self.applicant = applicant
+        if isinstance(self.outcome, Exception):
+            on_submit()
+            raise self.outcome
         if not self.outcome[0]:
             return self.outcome
         on_submit()
@@ -831,3 +841,592 @@ class ApplyScopeTests(LinkedCvCase):
         self.assertFalse(result)
         self.assertEqual(vacancy.status, Vacancy.Status.SKIPPED)
         self.assertEqual(adapter.applied, [])
+
+
+class AgentDeskTests(LinkedCvCase):
+    def setUp(self):
+        super().setUp()
+        self.directory = tempfile.TemporaryDirectory()
+        self.data = override_settings(DATA_DIR=Path(self.directory.name))
+        self.data.enable()
+
+    def tearDown(self):
+        self.data.disable()
+        self.directory.cleanup()
+
+    def held(self, external_id, note, source="hh", submitted=False):
+        vacancy = self.vacancy(external_id, status=Vacancy.Status.NEEDS_REVIEW)
+        Vacancy.objects.filter(pk=vacancy.pk).update(
+            note=note, source=source, submitted_at=timezone.now() if submitted else None
+        )
+        vacancy.refresh_from_db()
+        return vacancy
+
+    def trace(self, vacancy, steps):
+        folder = evidence.folder(evidence.key_for(vacancy))
+        folder.mkdir(parents=True)
+        (folder / "trace.json").write_text(json.dumps(steps))
+
+    def test_holds_are_sorted_by_what_the_user_has_to_do(self):
+        captcha = self.held(
+            "40", "hh.kz asked for a captcha before sending; nothing was submitted."
+        )
+        unsure = self.held(
+            "41",
+            "Navigator done: ok. LinkedIn does not report the response; check it before resending.",
+            source="linkedin",
+        )
+        wall = self.held(
+            "42", "Navigator stuck: a 'Create your free account' wall.", source="linkedin"
+        )
+        legal = self.held("43", "Navigator stuck: cannot go on.", source="linkedin")
+        self.trace(
+            legal,
+            [
+                {
+                    "action": "click",
+                    "result": "refused: legal consent and attestation boxes are "
+                    "the candidate's own click",
+                },
+                {"action": "stuck", "result": ""},
+            ],
+        )
+        stuck = self.held("44", "Navigator stuck: No result after 60 steps.", source="linkedin")
+        office = self.held("45", "Office job in another region; hh.kz warns about relocation.")
+        kinds = [review.kind_of(v) for v in (captcha, unsure, wall, legal, stuck, office)]
+        self.assertEqual(
+            kinds,
+            [
+                review.CAPTCHA,
+                review.UNCONFIRMED,
+                review.ACCOUNT,
+                review.QUESTION,
+                review.STUCK,
+                review.OTHER,
+            ],
+        )
+
+    def test_resolving_moves_only_rows_still_held(self):
+        vacancy = self.held("50", "Navigator stuck: No result after 60 steps.")
+        self.assertEqual(review.resolve(vacancy.pk, review.APPLIED), "")
+        vacancy.refresh_from_db()
+        self.assertEqual(vacancy.status, Vacancy.Status.APPLIED)
+        self.assertIsNotNone(vacancy.applied_at)
+        self.assertIn("no longer waiting", review.resolve(vacancy.pk, review.SKIPPED))
+        other = self.held("51", "Navigator stuck: No result after 60 steps.")
+        self.assertEqual(review.resolve(other.pk, review.SKIPPED), "")
+        other.refresh_from_db()
+        self.assertEqual(other.status, Vacancy.Status.SKIPPED)
+
+    def test_retry_after_submit_needs_the_user_to_say_it_was_not_sent(self):
+        unsure = self.held("60", "Navigator stuck: x check it before resending.", submitted=True)
+        self.assertIn("confirm it was not sent", review.resolve(unsure.pk, review.RETRY))
+        self.assertEqual(review.resolve(unsure.pk, review.RETRY, not_sent=True), "")
+        unsure.refresh_from_db()
+        self.assertEqual(unsure.status, Vacancy.Status.READY)
+        self.assertIsNone(unsure.submitted_at)
+        self.assertEqual(unsure.note, "")
+        captcha = self.held(
+            "61", "hh.kz asked for a captcha before sending; nothing was submitted.", submitted=True
+        )
+        self.assertEqual(review.resolve(captcha.pk, review.RETRY), "")
+
+    def test_listing_marks_only_hh_captchas_as_sendable(self):
+        self.held("70", "hh.kz asked for a captcha before sending; nothing was submitted.")
+        self.held(
+            "71",
+            "LinkedIn asked for a captcha before sending; nothing was submitted.",
+            source="linkedin",
+        )
+        rows = {row["external_id"]: row for row in agent_desk.listing()["held"]}
+        self.assertTrue(rows["70"]["send_visible"])
+        self.assertFalse(rows["71"]["send_visible"])
+        self.assertEqual(rows["71"]["kind"], review.CAPTCHA)
+
+    def test_logged_out_sites_come_from_the_agent_log(self):
+        line = "2026-10-05 18:51:34 UTC Indeed: The Indeed profile is not logged in; run it."
+        agent = {"recent_log": [line], "last_error": line[24:]}
+        self.assertEqual(agent_desk.logged_out(agent), ["indeed"])
+        self.assertEqual(agent_desk.logged_out({}), [])
+        session = settings.DATA_DIR / "browser" / "indeed" / "session.json"
+        session.parent.mkdir(parents=True)
+        later = datetime(2026, 10, 5, 19, 0, tzinfo=UTC).timestamp()
+        session.write_text(json.dumps({"saved_at": later}))
+        self.assertEqual(agent_desk.logged_out(agent), [])
+
+
+class DesktopNotifyTests(SimpleTestCase):
+    def test_title_counts_sent_and_held(self):
+        sent = SimpleNamespace(title="Dev", employer="Acme")
+        held = SimpleNamespace(title="Ops", employer="B")
+        title, body = notify.desktop_text(RunSummary(applied=[sent], review=[held, held]))
+        self.assertEqual(title, "Sent 1 · 2 need you")
+        self.assertIn("✓ Dev — Acme", body)
+        self.assertEqual(notify.desktop_text(RunSummary()), ("", ""))
+
+    def test_long_runs_are_cut_to_a_few_lines(self):
+        jobs = [SimpleNamespace(title=f"Job {n}", employer="E") for n in range(9)]
+        _, body = notify.desktop_text(RunSummary(applied=jobs))
+        self.assertEqual(len(body.splitlines()), notify.DESKTOP_LINES)
+        self.assertIn("and 5 more", body)
+
+    @override_settings(HUNTER_NOTIFY_DESKTOP=True, HUNTER_NOTIFY_TELEGRAM=False)
+    def test_publish_calls_notify_send_with_the_app_entry(self):
+        sent = SimpleNamespace(title="Dev", employer="Acme")
+        with (
+            patch("apps.hunter.notify.shutil.which", return_value="/usr/bin/notify-send"),
+            patch("apps.hunter.notify.subprocess.run") as run,
+        ):
+            self.assertEqual(notify.publish(RunSummary(applied=[sent])), ["the desktop"])
+        argv = run.call_args.args[0]
+        self.assertIn(f"--hint=string:desktop-entry:{notify.APP_ID}", argv)
+        self.assertIn("Sent 1", argv)
+
+    @override_settings(HUNTER_NOTIFY_DESKTOP=False, HUNTER_NOTIFY_TELEGRAM=False)
+    def test_nothing_is_sent_when_both_channels_are_off(self):
+        with patch("apps.hunter.notify.subprocess.run") as run:
+            self.assertEqual(
+                notify.publish(RunSummary(applied=[SimpleNamespace(title="Dev", employer="Acme")])),
+                [],
+            )
+        run.assert_not_called()
+
+
+class CaptchaHelpTests(LinkedCvCase):
+    def setUp(self):
+        super().setUp()
+        self.directory = tempfile.TemporaryDirectory()
+        self.data = override_settings(DATA_DIR=Path(self.directory.name))
+        self.data.enable()
+        self.status = hh.parse_status({"resumes": {"1": {"hash": "hash"}}})
+
+    def tearDown(self):
+        self.data.disable()
+        self.directory.cleanup()
+
+    def test_a_captcha_hold_names_the_vacancy_and_is_not_counted_as_sent(self):
+        vacancy = self.vacancy("80")
+        adapter = FakeAdapter(self.status, CaptchaError("hh.kz asked for a captcha on submit."))
+        with self.assertRaises(CaptchaError) as caught:
+            service.apply_ready(None, adapter, 10, [self.link], lambda line: None, RunSummary())
+        vacancy.refresh_from_db()
+        self.assertEqual(caught.exception.vacancy.pk, vacancy.pk)
+        self.assertEqual(vacancy.status, Vacancy.Status.NEEDS_REVIEW)
+        self.assertIsNone(vacancy.submitted_at)
+        self.assertIn(review.CAPTCHA_NOTE, vacancy.note)
+        self.assertEqual(state.sent_last_day(), 0)
+
+    def run_once_with(self, error, answered):
+        adapter = FakeAdapter(self.status)
+        error.vacancy = self.vacancy("81", status=Vacancy.Status.NEEDS_REVIEW)
+        with (
+            patch("apps.hunter.service.site_groups", return_value=[(adapter, ["u"])]),
+            patch("apps.hunter.service.run_site", side_effect=error),
+            patch("apps.hunter.service.captcha.ask_to_solve", return_value=answered) as ask,
+            patch("apps.hunter.service.assisted_apply") as assisted,
+            patch("apps.hunter.service.retry_paused"),
+        ):
+            try:
+                service.run_once(apply=True, limit=5, max_pages=1, log=lambda line: None)
+                failed = None
+            except RuntimeError as raised:
+                failed = raised
+        return ask, assisted, failed
+
+    def test_an_answered_ask_opens_the_assisted_send(self):
+        ask, assisted, failed = self.run_once_with(CaptchaError("captcha"), answered=True)
+        ask.assert_called_once()
+        assisted.assert_called_once()
+        self.assertIsNone(failed)
+        self.assertIsNone(captcha.cooling_until("hh"))
+
+    def test_an_unanswered_ask_pauses_the_site(self):
+        _, assisted, failed = self.run_once_with(CaptchaError("captcha"), answered=False)
+        assisted.assert_not_called()
+        self.assertIsNotNone(failed)
+        self.assertIsNotNone(captcha.cooling_until("hh"))
+
+    def test_a_captcha_on_an_employer_page_does_not_pause_the_site(self):
+        error = CaptchaError("captcha")
+        error.vacancy = self.vacancy("84", status=Vacancy.Status.NEEDS_REVIEW)
+        adapter = FakeAdapter(self.status)
+        adapter.HEADED_CAPTCHA = False
+        with (
+            patch("apps.hunter.service.site_groups", return_value=[(adapter, ["u"])]),
+            patch("apps.hunter.service.run_site", side_effect=error),
+            patch("apps.hunter.service.captcha.ask_to_solve") as ask,
+            self.assertRaises(RuntimeError),
+        ):
+            service.run_once(apply=True, limit=5, max_pages=1, log=lambda line: None)
+        ask.assert_not_called()
+        self.assertIsNone(captcha.cooling_until("hh"))
+
+    def assisted(self, adapter, held, summary):
+        browser = MagicMock()
+        browser.__enter__.return_value.pages = [MagicMock()]
+        adapter.is_logged_in = lambda page: True
+        with patch("apps.hunter.service.open_browser", return_value=browser) as opened:
+            service.assisted_apply(adapter, [self.link], held, 3, lambda line: None, summary)
+        self.assertEqual(opened.call_args.kwargs, {"headless": False})
+
+    def test_assisted_send_clears_the_hold_and_keeps_going(self):
+        held = self.vacancy("85", status=Vacancy.Status.NEEDS_REVIEW)
+        Vacancy.objects.filter(pk=held.pk).update(match_score=95)
+        for number in ("86", "87", "88"):
+            self.vacancy(number)
+        captcha.start_cooldown("hh")
+        summary = RunSummary(review=[held])
+        adapter = FakeAdapter(self.status)
+        with patch("apps.hunter.service.time.sleep"):
+            self.assisted(adapter, held, summary)
+        held.refresh_from_db()
+        self.assertEqual(held.status, Vacancy.Status.APPLIED)
+        self.assertNotIn(held.pk, [v.pk for v in summary.review])
+        self.assertIsNone(captcha.cooling_until("hh"))
+        self.assertEqual(len(adapter.applied), 3)
+        self.assertEqual(adapter.applied[0], held.url)
+
+    def test_an_unsolved_assisted_send_raises_for_the_pause(self):
+        held = self.vacancy("89", status=Vacancy.Status.NEEDS_REVIEW)
+        adapter = FakeAdapter(self.status, CaptchaError("The captcha was not solved."))
+        with self.assertRaises(CaptchaError):
+            self.assisted(adapter, held, RunSummary())
+
+    def run_site_with(self, only=""):
+        adapter = FakeAdapter(self.status)
+        adapter.is_logged_in = lambda page: True
+        adapter.expand_source = lambda url, hashes: []
+        browser = MagicMock()
+        browser.__enter__.return_value.pages = [MagicMock()]
+        with (
+            patch("apps.hunter.service.open_browser", return_value=browser),
+            patch("apps.hunter.service.reconcile"),
+            patch("apps.hunter.service.unscored", return_value=[]),
+            patch("apps.hunter.service.score_vacancies"),
+            patch("apps.hunter.service.report"),
+            patch("apps.hunter.service.apply_ready") as apply_ready,
+        ):
+            service.run_site(
+                adapter,
+                ["u"],
+                [self.link],
+                True,
+                5,
+                1,
+                lambda line: None,
+                only,
+                False,
+                False,
+                RunSummary(),
+            )
+        return apply_ready
+
+    def test_a_paused_site_still_crawls_but_does_not_send(self):
+        captcha.start_cooldown("hh")
+        self.run_site_with().assert_not_called()
+        self.run_site_with(only="81").assert_called_once()
+        captcha.clear_cooldown("hh")
+        self.run_site_with().assert_called_once()
+
+    @override_settings(HUNTER_CAPTCHA_BACKOFF_MINUTES="")
+    def test_an_empty_ladder_never_pauses(self):
+        self.assertIsNone(captcha.start_cooldown("hh"))
+        self.assertIsNone(captcha.cooling_until("hh"))
+
+    def test_sends_per_run_follow_the_site_limit(self):
+        self.vacancy("82")
+        self.vacancy("83")
+        adapter = FakeAdapter(self.status)
+        adapter.MAX_SENDS_PER_RUN = 1
+        service.apply_ready(None, adapter, 10, [self.link], lambda line: None, RunSummary())
+        self.assertEqual(len(adapter.applied), 1)
+
+
+class DesktopAskTests(SimpleTestCase):
+    def ask(self, output="", timeout=False):
+        process = MagicMock()
+        if timeout:
+            process.communicate.side_effect = [
+                notify.subprocess.TimeoutExpired("notify-send", 1),
+                ("17\n", None),
+            ]
+        else:
+            process.communicate.return_value = (output, None)
+        with (
+            override_settings(HUNTER_NOTIFY_DESKTOP=True),
+            patch("apps.hunter.notify.shutil.which", return_value="/usr/bin/tool"),
+            patch("apps.hunter.notify.subprocess.Popen", return_value=process),
+            patch("apps.hunter.notify.close_desktop") as close,
+        ):
+            answered = notify.ask_desktop("t", "b", "Open browser", 1)
+        return answered, close
+
+    def test_only_a_click_counts_as_yes(self):
+        self.assertTrue(self.ask("17\nanswer\n")[0])
+        self.assertTrue(self.ask("17\ndefault\n")[0])
+        self.assertFalse(self.ask("17\n")[0])
+
+    def test_an_unanswered_ask_is_withdrawn(self):
+        answered, close = self.ask(timeout=True)
+        self.assertFalse(answered)
+        close.assert_called_once_with("17")
+
+
+class DsmlPagingTests(SimpleTestCase):
+    def test_page_links_keep_the_language_prefix_and_filters(self):
+        self.assertEqual(dsml.page_url("https://dsml.kz/jobs", 1), "https://dsml.kz/jobs")
+        self.assertEqual(
+            dsml.page_url("https://dsml.kz/ru/jobs/", 3), "https://dsml.kz/ru/jobs/page/3"
+        )
+        self.assertEqual(
+            dsml.page_url("https://dsml.kz/jobs/page/4#jobs-results?x", 2),
+            "https://dsml.kz/jobs/page/2",
+        )
+        self.assertEqual(
+            dsml.page_url("https://dsml.kz/jobs?type=remote", 2),
+            "https://dsml.kz/jobs/page/2?type=remote",
+        )
+
+    def test_crawl_stops_at_the_first_page_without_quick_apply(self):
+        page = MagicMock()
+        page.title.return_value = "Jobs"
+        cards = [
+            [{"href": "/jobs/11111111-1111-1111-1111-111111111111#apply", "heading": "A at B"}],
+            [],
+        ]
+        page.evaluate.side_effect = lambda script, *args: (
+            cards.pop(0) if script == dsml.CARDS_JS else True
+        )
+        with patch("apps.hunter.sources.dsml.pause"):
+            found = dsml.crawl(page, "https://dsml.kz/jobs", 1)
+        self.assertEqual([item.title for item in found], ["A"])
+        self.assertEqual(page.goto.call_count, 2)
+
+
+class NavigatorBudgetTests(TestCase):
+    def element(self, **fields):
+        base = {"ref": "1", "tag": "button", "type": "button", "text": "", "label": "", "group": ""}
+        return {**base, **fields}
+
+    def test_submit_buttons_are_judged_by_their_own_text(self):
+        footer = "By submitting I certify that the information above is true and I agree."
+        send = self.element(type="submit", text="Submit application", submit=True, group=footer)
+        self.assertEqual(navigator.vet({"action": "click"}, send, {"x.com"}, False), "")
+        box = self.element(tag="input", type="checkbox", label="Yes", group=footer)
+        self.assertIn("refused", navigator.vet({"action": "check"}, box, {"x.com"}, False))
+        agree = self.element(text="I agree to the terms")
+        self.assertIn("refused", navigator.vet({"action": "click"}, agree, {"x.com"}, False))
+
+    def test_required_fields_are_recognised_by_star_or_flag(self):
+        self.assertTrue(navigator.is_required({"label": "First Name*"}))
+        self.assertTrue(navigator.is_required({"label": "School", "required": True}))
+        self.assertFalse(navigator.is_required({"label": "School"}))
+        same = navigator.field_key({"tag": "input", "label": "*", "group": "Phone"})
+        other = navigator.field_key({"tag": "input", "label": "*", "group": "City"})
+        self.assertNotEqual(same, other)
+
+    def run_navigator(self, elements, decisions):
+        page = MagicMock()
+        page.url = "https://jobs.example.com/apply"
+        page.context.pages = [page]
+        page.evaluate.side_effect = lambda script, *args: (
+            [dict(e) for e in elements] if script == navigator.OUTLINE_JS else ""
+        )
+        seen = []
+
+        def decide(nav, shown):
+            seen.append([e["label"] for e in shown])
+            return decisions.pop(0) if decisions else {"action": "stuck", "thought": "end"}
+
+        with (
+            override_settings(MIMO_API_KEY="k"),
+            patch.object(navigator.Navigator, "decide", autospec=True, side_effect=decide),
+            patch.object(navigator.Navigator, "act", return_value="ok"),
+        ):
+            nav = navigator.Navigator(
+                page, goal="apply", cv_text="", job_text="", log=lambda line: None
+            )
+            nav.max_steps = 10
+            nav.loop()
+        return seen
+
+    def test_an_optional_field_gets_one_try_and_a_required_one_three(self):
+        elements = [
+            self.element(ref="1", tag="input", type="text", label="School"),
+            self.element(ref="2", tag="input", type="text", label="First Name*"),
+        ]
+        decisions = [
+            {"action": "fill", "ref": "1", "value": "AITU"},
+            {"action": "fill", "ref": "2", "value": "A"},
+            {"action": "fill", "ref": "2", "value": "B"},
+            {"action": "fill", "ref": "2", "value": "C"},
+        ]
+        seen = self.run_navigator(elements, decisions)
+        self.assertEqual(seen[0], ["School", "First Name*"])
+        self.assertEqual(seen[1], ["First Name*"])
+        self.assertEqual(seen[4], [])
+
+    def test_a_refused_field_is_hidden_from_the_model(self):
+        elements = [self.element(ref="1", tag="input", type="password", label="Password")]
+        seen = self.run_navigator(elements, [{"action": "fill", "ref": "1", "value": "x"}])
+        self.assertEqual(seen, [["Password"], []])
+
+
+class LinkedInEmployerTests(SimpleTestCase):
+    def read(self, title, company):
+        job = {"title": title, "company": company, "about": "", "top": "", "easy": True}
+        job["external"] = False
+        with patch("apps.hunter.sources.linkedin.open_job", return_value=job):
+            return linkedin.read_vacancy(None, "https://www.linkedin.com/jobs/view/1/")
+
+    def test_the_company_link_wins_over_pipes_in_the_title(self):
+        title = (
+            "Mid Product Engineer (Backend) | Python, SQL, RAG, AWS | UK remote | Owen | LinkedIn"
+        )
+        self.assertEqual(self.read(title, "Owen Thomas").employer, "Owen Thomas")
+        self.assertEqual(self.read(title, "").employer, "Owen")
+        self.assertEqual(self.read(title, "").title, "Mid Product Engineer (Backend)")
+
+
+@override_settings(HUNTER_CAPTCHA_BACKOFF_MINUTES="5,30,60,180,480")
+class CaptchaLadderTests(SimpleTestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.data = override_settings(DATA_DIR=Path(self.directory.name))
+        self.data.enable()
+
+    def tearDown(self):
+        self.data.disable()
+        self.directory.cleanup()
+
+    def minutes(self):
+        return round((captcha.due_at("hh") - timezone.now()).total_seconds() / 60)
+
+    def test_ignored_captchas_climb_the_ladder_and_stop_at_the_top(self):
+        waits = []
+        for _ in range(7):
+            captcha.start_cooldown("hh")
+            waits.append(self.minutes())
+        self.assertEqual(waits, [5, 30, 60, 180, 480, 480, 480])
+        self.assertEqual(captcha.attempt_of("hh"), (5, 5))
+
+    def test_a_send_remembers_the_wait_that_worked_and_slowly_forgets_it(self):
+        captcha.start_cooldown("hh")
+        captcha.start_cooldown("hh")
+        captcha.record_send("hh")
+        self.assertIsNone(captcha.due_at("hh"))
+        captcha.start_cooldown("hh")
+        self.assertEqual(self.minutes(), 30)
+        captcha.record_send("hh")
+        captcha.record_send("hh")
+        captcha.start_cooldown("hh")
+        self.assertEqual(self.minutes(), 5)
+
+    def test_a_solved_captcha_clears_the_wait_but_keeps_the_lesson(self):
+        captcha.write_cooldowns({"hh": {"start": 2}})
+        captcha.start_cooldown("hh")
+        self.assertEqual(self.minutes(), 60)
+        captcha.clear_cooldown("hh")
+        self.assertIsNone(captcha.due_at("hh"))
+        self.assertEqual(captcha.site_state("hh"), {"start": 2})
+
+
+class CaptchaRetryTests(LinkedCvCase):
+    def setUp(self):
+        super().setUp()
+        self.directory = tempfile.TemporaryDirectory()
+        self.data = override_settings(
+            DATA_DIR=Path(self.directory.name), HUNTER_CAPTCHA_BACKOFF_MINUTES="5,30,60"
+        )
+        self.data.enable()
+        self.adapter = FakeAdapter(hh.parse_status({"resumes": {"1": {"hash": "hash"}}}))
+
+    def tearDown(self):
+        self.data.disable()
+        self.directory.cleanup()
+
+    def test_an_ignored_captcha_puts_the_job_back_in_the_queue(self):
+        error = CaptchaError("captcha")
+        error.vacancy = self.vacancy("90", status=Vacancy.Status.NEEDS_REVIEW)
+        summary = RunSummary(review=[error.vacancy])
+        with (
+            patch("apps.hunter.service.run_site", side_effect=error),
+            patch("apps.hunter.service.captcha.ask_to_solve", return_value=False),
+        ):
+            problem = service.try_site(
+                self.adapter,
+                ["u"],
+                [self.link],
+                True,
+                5,
+                1,
+                lambda line: None,
+                "",
+                False,
+                False,
+                summary,
+            )
+        error.vacancy.refresh_from_db()
+        self.assertEqual(problem, "captcha")
+        self.assertEqual(error.vacancy.status, Vacancy.Status.READY)
+        self.assertEqual(summary.review, [])
+        self.assertIsNotNone(captcha.cooling_until("hh"))
+
+    def test_a_manual_headed_send_that_fails_stays_held(self):
+        error = CaptchaError("captcha")
+        error.vacancy = self.vacancy("91", status=Vacancy.Status.NEEDS_REVIEW)
+        with patch("apps.hunter.service.run_site", side_effect=error):
+            service.try_site(
+                self.adapter,
+                ["u"],
+                [self.link],
+                True,
+                5,
+                1,
+                lambda line: None,
+                "91",
+                True,
+                False,
+                RunSummary(),
+            )
+        error.vacancy.refresh_from_db()
+        self.assertEqual(error.vacancy.status, Vacancy.Status.NEEDS_REVIEW)
+        self.assertIsNone(captcha.due_at("hh"))
+
+    def retry(self, errors):
+        groups = [(self.adapter, ["u"])]
+        with (
+            patch("apps.hunter.service.try_site", return_value="") as attempt,
+            patch("apps.hunter.service.time.sleep") as sleep,
+        ):
+            service.retry_paused(groups, [self.link], 5, 1, lambda line: None, RunSummary(), errors)
+        return attempt, sleep
+
+    def test_a_due_site_with_jobs_waiting_is_retried_and_its_error_cleared(self):
+        self.vacancy("92")
+        captcha.start_cooldown("hh")
+        errors = {"hh": (self.adapter, "captcha")}
+        with patch(
+            "apps.hunter.service.timezone.now",
+            side_effect=[
+                timezone.now(),
+                timezone.now() + timedelta(minutes=6),
+                timezone.now() + timedelta(minutes=6),
+                timezone.now() + timedelta(minutes=6),
+            ],
+        ):
+            attempt, _ = self.retry(errors)
+        attempt.assert_called()
+        self.assertEqual(attempt.call_args.kwargs, {"crawl": False})
+        self.assertEqual(errors, {})
+
+    def test_nothing_waiting_or_a_long_wait_means_no_retry(self):
+        captcha.start_cooldown("hh")
+        attempt, _ = self.retry({})
+        attempt.assert_not_called()
+        self.vacancy("93")
+        captcha.write_cooldowns(
+            {"hh": {"until": (timezone.now() + timedelta(hours=2)).isoformat(), "step": 2}}
+        )
+        attempt, _ = self.retry({})
+        attempt.assert_not_called()

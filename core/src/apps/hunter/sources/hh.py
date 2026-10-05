@@ -13,6 +13,9 @@ USES_RESUME_LINKS = True
 SCRIPTED_APPLY = True
 WANTS_LETTER = True
 RECHECK_BATCH = 30
+HEADED_CAPTCHA = True
+SEND_GAP = (60, 150)
+MAX_SENDS_PER_RUN = 0
 VACANCY_ID_RE = re.compile(r"/vacancy/(\d+)")
 SUBMIT = '[data-qa="vacancy-response-submit-popup"]'
 LETTER = '[data-qa="vacancy-response-popup-form-letter-input"]'
@@ -322,7 +325,7 @@ def apply(
     outcome = _wait_after_submit(page, 20000)
     if outcome == "captcha":
         if notify is None:
-            raise CaptchaError("hh.kz asked for a captcha on submit; rerun with --headed.")
+            raise CaptchaError("hh.kz asked for a captcha on submit.")
         notify("hh.kz asked for a captcha: solve it in the browser window to send the response.")
         try:
             page.wait_for_selector(SUBMIT, state="detached", timeout=HUMAN_CAPTCHA_WAIT_MS)

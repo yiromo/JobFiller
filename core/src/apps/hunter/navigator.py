@@ -2,6 +2,7 @@ import base64
 import json
 import random
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
@@ -94,6 +95,7 @@ ACTIONS = {
 TARGETED = {"click", "fill", "select", "check", "upload"}
 TYPED_LIMIT = 300
 SHORT_LABEL = 25
+FIELD_TRIES_REQUIRED = 3
 AGREE_WORDS = ("agree", "accept", "acknowledge", "согласен", "принимаю")
 WAIT_BEFORE_RELOAD = 3
 WAIT_LIMIT = 6
@@ -302,6 +304,9 @@ Rules:
   matches after one try, pick "Other" when offered; otherwise leave an optional field empty and
   move on, and reply "stuck" naming a required one. Never retry the same field more than twice.
 - Skip optional fields the CV cannot answer; required fields are marked with * or "required".
+  The harness gives each optional field one try and each required field three, and removes a
+  field from the element list once it is used up or refused. A required field that disappeared
+  that way means you are stuck: say so and name it.
 - Salary questions: use candidate_facts or the CV's figure, otherwise write that it is negotiable.
 - Match the language of the question (Russian question, Russian answer).
 - Privacy-notice and personal-data-processing acknowledgments may be ticked. Never tick any
@@ -378,7 +383,8 @@ def vet(
         or element.get("type") in CHOICE_TYPES
         or element.get("role") in CHOICE_ROLES
     )
-    context = own if len(own.strip()) > SHORT_LABEL else f"{own} {element.get('group', '')}"
+    short = len(own.strip()) <= SHORT_LABEL
+    context = f"{own} {element.get('group', '')}" if choice and short else own
     attestation = matches(context, (*ATTESTATION_KEYWORDS, *CERTIFY_KEYWORDS, *AGREE_WORDS))
     attestation = attestation and not privacy_acknowledgment(context)
     if attestation and action in {"click", "check"}:
@@ -425,6 +431,27 @@ def eeo_problem(decision: dict, element: dict, haystack: str, eeo: list) -> str:
     if chosen and (chosen in answer or answer in chosen):
         return ""
     return f"refused: that option does not match your saved answer for {row['match']!r}"
+
+
+def field_key(element: dict) -> tuple:
+    name = element.get("label") or element.get("text") or ""
+    return (element.get("tag", ""), name.strip()[:80].lower(), str(element.get("group", ""))[:80])
+
+
+def is_required(element: dict) -> bool:
+    label = f"{element.get('label', '')} {element.get('text', '')}"
+    return bool(element.get("required")) or "*" in label or "required" in label.lower()
+
+
+def counts_as_attempt(action: str, element: dict) -> bool:
+    if action in {"fill", "select", "check"}:
+        return True
+    choice = (
+        element.get("tag") in CHOICE_TAGS
+        or element.get("type") in CHOICE_TYPES
+        or element.get("role") in CHOICE_ROLES
+    )
+    return action == "click" and choice
 
 
 def is_final_submit(decision: dict, element: dict) -> bool:
@@ -509,9 +536,13 @@ class Navigator:
         last_view = None
         waits = 0
         reloaded = False
+        attempts: Counter = Counter()
+        blocked: set = set()
         for step in range(1, self.max_steps + 1):
             self.guard_captcha()
-            elements = self.page.evaluate(OUTLINE_JS, 120)
+            elements = [
+                e for e in self.page.evaluate(OUTLINE_JS, 120) if field_key(e) not in blocked
+            ]
             view = (self.page.url, json.dumps(elements, sort_keys=True))
             stale = stale + 1 if view == last_view else 0
             last_view = view
@@ -522,6 +553,8 @@ class Navigator:
             element = next((e for e in elements if e["ref"] == str(decision.get("ref"))), None)
             if element is None and action == "click" and not decision.get("ref"):
                 element = self.named_button(str(decision.get("value") or ""))
+                if element and field_key(element) in blocked:
+                    element = None
             entry = {
                 "step": step,
                 "url": self.page.url,
@@ -554,6 +587,8 @@ class Navigator:
                 return Result("rehearsed", f"{REHEARSED} {entry['target']}")
             if problem:
                 entry["result"] = problem
+                if element is not None:
+                    blocked.add(field_key(element))
                 continue
             waits = waits + 1 if action == "wait" else 0
             if waits >= WAIT_LIMIT:
@@ -581,6 +616,11 @@ class Navigator:
                 self.submitted = True
                 if self.on_submit:
                     self.on_submit()
+            if element and counts_as_attempt(action, element):
+                key = field_key(element)
+                attempts[key] += 1
+                if attempts[key] >= (FIELD_TRIES_REQUIRED if is_required(element) else 1):
+                    blocked.add(key)
             tabs = len(self.page.context.pages)
             entry["result"] = self.act(decision, element)
             self.page.wait_for_timeout(int(random.uniform(0.9, 2.6) * 1000))

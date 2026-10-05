@@ -87,13 +87,14 @@ class Command(BaseCommand):
                 if tracker:
                     tracker.log(f"ERROR {error}")
             repeated = bool(error) and error == last_error
-            text = notify.summary_text(
-                summary,
-                "" if repeated else error,
-                show_cap=summary.daily_cap_reached and not last_capped,
-            )
-            if options["apply"] and notify.send(text):
-                log("Sent the run summary to Telegram Saved Messages.")
+            if options["apply"]:
+                channels = notify.publish(
+                    summary,
+                    "" if repeated else error,
+                    show_cap=summary.daily_cap_reached and not last_capped,
+                )
+                if channels:
+                    log(f"Sent the run summary to {' and '.join(channels)}.")
             last_error = error
             last_capped = summary.daily_cap_reached
             if not options["loop"]:

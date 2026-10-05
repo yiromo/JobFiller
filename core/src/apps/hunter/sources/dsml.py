@@ -1,5 +1,5 @@
 import re
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit, urlunsplit
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
@@ -13,6 +13,9 @@ USES_RESUME_LINKS = False
 SCRIPTED_APPLY = True
 WANTS_LETTER = True
 RECHECK_BATCH = 5
+HEADED_CAPTCHA = False
+SEND_GAP = (20, 60)
+MAX_SENDS_PER_RUN = 0
 NAVIGABLE = ("The DSML guest form did not open",)
 BASE = "https://dsml.kz"
 COVER_LIMIT = 1200
@@ -27,6 +30,7 @@ APPLIED_RE = re.compile(
 CLOSED_RE = re.compile(r"\b(closed|no longer accepting|archived)\b|вакансия закрыта", re.IGNORECASE)
 CHALLENGE_RE = re.compile(r"Just a moment|Attention Required|Security Check", re.IGNORECASE)
 GUEST = "[id^='guest-apply-email-']"
+MIN_PAGES = 6
 
 CARDS_JS = r"""
 () => [...document.querySelectorAll("article")].map(card => {
@@ -37,17 +41,6 @@ CARDS_JS = r"""
     heading: heading ? heading.innerText.trim() : "",
   };
 }).filter(item => item.href)
-"""
-MORE_JS = r"""
-() => {
-  const more = [...document.querySelectorAll("main button")].find(button => {
-    const box = button.getBoundingClientRect();
-    return box.width > 0 && box.height > 0 && !button.disabled
-      && /load more|показать ещё|показать еще|тағы/i.test(button.innerText || "");
-  });
-  if (more) more.click();
-  return !!more;
-}
 """
 JOB_JS = r"""
 (guest) => {
@@ -156,27 +149,32 @@ def wait_for(page, selector: str, timeout_ms: int = 20000) -> bool:
     return False
 
 
+def page_url(search_url: str, number: int) -> str:
+    parts = urlsplit(search_url)
+    path = re.sub(r"/page/\d+/?$", "", parts.path).rstrip("/")
+    if number > 1:
+        path = f"{path}/page/{number}"
+    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, ""))
+
+
 def crawl(page, search_url: str, max_pages: int) -> list[Listing]:
-    page.goto(search_url, wait_until="domcontentloaded")
-    check_captcha(page)
-    wait_for(page, 'article a[href$="#apply"]')
-    pause(page, 1.5, 3.0)
-    for _ in range(max(max_pages - 1, 0)):
-        before = len(page.evaluate(CARDS_JS))
-        if not page.evaluate(MORE_JS):
-            break
-        page.wait_for_timeout(3000)
-        if len(page.evaluate(CARDS_JS)) == before:
-            break
     found: dict[str, Listing] = {}
-    for item in page.evaluate(CARDS_JS):
-        external_id = vacancy_id(item["href"].split("#")[0])
-        if not external_id or external_id in found:
-            continue
-        title, employer = split_heading(item["heading"])
-        found[external_id] = Listing(
-            external_id=external_id, url=job_url(external_id), title=title, employer=employer
-        )
+    for number in range(1, max(max_pages, MIN_PAGES) + 1):
+        page.goto(page_url(search_url, number), wait_until="domcontentloaded")
+        check_captcha(page)
+        wait_for(page, "article")
+        pause(page, 1.5, 3.0)
+        cards = page.evaluate(CARDS_JS)
+        if not cards:
+            break
+        for item in cards:
+            external_id = vacancy_id(item["href"].split("#")[0])
+            if not external_id or external_id in found:
+                continue
+            title, employer = split_heading(item["heading"])
+            found[external_id] = Listing(
+                external_id=external_id, url=job_url(external_id), title=title, employer=employer
+            )
     return list(found.values())
 
 

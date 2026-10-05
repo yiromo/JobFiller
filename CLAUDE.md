@@ -21,6 +21,10 @@ fix — that context belongs in the PROGRESS entry, not the source.
 - `extension/` — Firefox (Zen) WebExtension (Manifest V3). Manually triggered per page: user
   clicks "Scan" to read the form, then "Fill" to apply the plan `core` returns. The optional
   Telegram opportunity queue can also drive its scan/fill path and attempt a final submit.
+- `desktop/` — GNOME app for the hunter (`job_agent.py`, GTK4 + libadwaita on the system
+  `/usr/bin/python3`, since PyGObject is not in the uv venv). `install.sh` adds the launcher and
+  icon under `~/.local/share`. It never imports Django or opens the DB: every read and write goes
+  through `manage.py agent_desk list|resolve` (JSON on stdout) run with `uv` in `core/src`.
 
 The Telegram channel workflow lives in `apps.opportunities`; see `tasks/BACKLOG.md` for remaining
 multi-step ATS and Telegram bot-link coverage. It was explicitly requested by the user.
@@ -43,6 +47,7 @@ uv run python manage.py test                                   # all Django test
 uv run python manage.py test apps.opportunities.tests          # one module (or add .Class.test_name)
 uv run python manage.py sync_telegram_jobs [--days N]          # ingest the Telegram channel
 uv run python manage.py hunter_login hh|linkedin|indeed|dsml  # visible browser: log in once per site
+uv run python manage.py agent_desk list|resolve ID applied|skipped|retry  # desktop app bridge
 uv run python manage.py hh_resumes [--link CV_ID=HASH]         # list/link hh résumés
 uv run python manage.py hunt [--apply] [--headed] [--loop MIN] # hh.kz agent (dry run by default)
 uv run python manage.py hunt --vacancy ID [--rehearse]         # send one row (or rehearse: never submits)
@@ -99,7 +104,13 @@ Don't put DB queries or business logic in views — mirror an existing app. Apps
   `fingerprint.json`, `session.json` cookie snapshot); `sources/` holds one adapter per job site,
   picked by hostname from `JOB_SOURCE_URLS` (an hh homepage URL expands to per-résumé
   recommendation searches); `service.py` runs crawl → score → apply under a daily cap, and
-  `notify.py` posts run summaries to Telegram Saved Messages. It is fully
+  `notify.py` posts run summaries as GNOME notifications (`notify-send` with the
+  `kz.jobfiller.Agent` desktop-entry hint, so a click opens the desktop app;
+  `HUNTER_NOTIFY_DESKTOP`) and, only if `HUNTER_NOTIFY_TELEGRAM` is on, to Telegram Saved
+  Messages. `review.kind_of` sorts held rows by what the user must do (captcha, unconfirmed send,
+  question only they can answer, account wall, stuck, other) from code-written notes and the
+  trace's last `refused:` result before falling back to the navigator's own wording. A hold the
+  agent pressed Submit on is only requeued when the user says it was not sent. It is fully
   separate from `opportunities` on purpose: the extension polls `/opportunities/next/` and would
   claim hh rows. `state.py` makes `hunt --loop` publish `data/hunter/status.json`, and
   `GET /api/v1/hunter/` serves only that file (plus `up`), never the DB: the Docker `core` the
@@ -109,7 +120,7 @@ Don't put DB queries or business logic in views — mirror an existing app. Apps
   plus a numbered outline of the page's controls and executes one JSON action. Its safety rules
   live in `vet` (code, not prompt): captcha stops the run, consent/attestation and EEO answers are
   refused, off-site links are refused, and a rehearsal stops at the final submit (`data-qa`/
-  `type=submit`/model flag). `SiteLesson` notes are rewritten after each run and fed into the
+  `type=submit`/model flag). Attestation is judged on a control's own text, plus the surrounding question only for a short-labelled checkbox, radio or option, so a "Submit" button under an "I certify" footer goes through. Each field (keyed by tag, label and group, never `ref`) gets one try if optional and three if required (`required`, `*` or "required" in its label); a used-up or refused field is removed from the outline the model sees. `SiteLesson` notes are rewritten after each run and fed into the
   next; they must never carry send/stop rules. `evidence.py` keeps page HTML, a screenshot and
   the step trace per vacancy under `data/hunter/pages/`, served by `evidence/<id>/<file>`.
   Adapters (`sources/hh.py`, `linkedin.py`, `indeed.py`, `dsml.py`) implement `sources/base.CONTRACT`; each
@@ -125,7 +136,8 @@ Don't put DB queries or business logic in views — mirror an existing app. Apps
   (name, email, CV file, LinkedIn from the CV, cover note ≤1200, phone/city contact note, no
   Telegram) from the `applicant` dict `apply_one` passes to every adapter's `apply`. The site has
   `/ru` and `/kk` routes, so it selects by `guest-apply-*` id prefixes and `#apply` hrefs, never by
-  button text. A guest send never shows up as "applied" on reload, so `apply` itself decides
+  button text. The list is paginated as `/jobs/page/N` (no "Load more"); `crawl` walks at least
+  `MIN_PAGES` and stops at the first page with no Quick Apply card, since older pages have none. A guest send never shows up as "applied" on reload, so `apply` itself decides
   success from the form's live message or the form being replaced. `browser.fingerprint_for`
   only pins presets whose WebGL pair Camoufox has data for; others crash the launch.
   The navigator's consent and EEO rules differ from the extension's scan path by the user's
@@ -331,8 +343,20 @@ which splices them into the in-memory plan so a second Fill click doesn't repeat
   questionnaire flag and prior responses, so discovery never opens the response modal.
   `alreadyApplied` there stays false after a successful send while another résumé could still be
   used — a sent response is `negotiations.topicList`/`usedResumeIds`. A headless submit can get a
-  403 plus captcha; the agent stops (headless) or waits for the user (`--headed`), and captcha
-  solving must not be automated.
+  403 plus captcha, and captcha solving must not be automated: the user declined to have it
+  automated and it is the site's own bot check. What the agent does instead (`captcha.py`): it
+  asks on the desktop (`notify.ask_desktop`, a critical notification with an "Open browser"
+  button, `HUNTER_CAPTCHA_WAIT_MINUTES`); on a click it closes the virtual browser and
+  `assisted_apply` reopens the same profile visibly on the user's display, resends that row with
+  `headed=True` (the hh adapter waits for the captcha element to go away, nothing more) and keeps
+  sending while the user is there. Unanswered, the row goes back to `ready` (nothing was sent)
+  and the site waits on a ladder, `HUNTER_CAPTCHA_BACKOFF_MINUTES` (5, 30, 60, 180, 480): each
+  ignored captcha climbs a rung, a clean send resets it and remembers the rung that worked as
+  the next starting point (forgotten one rung per later clean send). `retry_paused` waits for
+  rungs due within 35 minutes at the end of a run (logging every 5 minutes so the heartbeat
+  stays fresh) and retries with `crawl=False`; longer rungs are picked up by later cycles.
+  Manual headed sends (`only`) ignore the wait and stay held if they fail. Only adapters with
+  `HEADED_CAPTCHA` get the ask. `SEND_GAP`/`MAX_SENDS_PER_RUN` pace each site.
 - **Refs don't survive a full re-render.** If the SPA re-renders the form between Scan and
   Fill, the stamped `data-jf-ref` attributes are gone — the fix is re-scanning, not retrying.
 - **`agent/option_resolver.py`'s EEO-safety is entirely because it never sees CV or page text** —
