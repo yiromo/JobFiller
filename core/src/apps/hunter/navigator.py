@@ -383,8 +383,14 @@ def vet(
         or element.get("type") in CHOICE_TYPES
         or element.get("role") in CHOICE_ROLES
     )
+    sends = (
+        element.get("submit")
+        or element.get("type") == "submit"
+        or decision.get("final_submit") is True
+        or bool(SUBMIT_RE.match(own.strip()))
+    )
     short = len(own.strip()) <= SHORT_LABEL
-    context = f"{own} {element.get('group', '')}" if choice and short else own
+    context = f"{own} {element.get('group', '')}" if short and not sends else own
     attestation = matches(context, (*ATTESTATION_KEYWORDS, *CERTIFY_KEYWORDS, *AGREE_WORDS))
     attestation = attestation and not privacy_acknowledgment(context)
     if attestation and action in {"click", "check"}:

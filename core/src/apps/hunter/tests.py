@@ -1216,6 +1216,11 @@ class NavigatorBudgetTests(TestCase):
         self.assertIn("refused", navigator.vet({"action": "check"}, box, {"x.com"}, False))
         agree = self.element(text="I agree to the terms")
         self.assertIn("refused", navigator.vet({"action": "click"}, agree, {"x.com"}, False))
+        terms = "Terms of service: you agree to binding arbitration."
+        proceed = self.element(text="Continue", group=terms)
+        self.assertIn("refused", navigator.vet({"action": "click"}, proceed, {"x.com"}, False))
+        apply = self.element(text="Apply now", group=terms)
+        self.assertEqual(navigator.vet({"action": "click"}, apply, {"x.com"}, False), "")
 
     def test_required_fields_are_recognised_by_star_or_flag(self):
         self.assertTrue(navigator.is_required({"label": "First Name*"}))
@@ -1404,19 +1409,12 @@ class CaptchaRetryTests(LinkedCvCase):
 
     def test_a_due_site_with_jobs_waiting_is_retried_and_its_error_cleared(self):
         self.vacancy("92")
-        captcha.start_cooldown("hh")
+        due = (timezone.now() - timedelta(minutes=1)).isoformat()
+        captcha.write_cooldowns({"hh": {"until": due, "step": 0, "start": 0}})
         errors = {"hh": (self.adapter, "captcha")}
-        with patch(
-            "apps.hunter.service.timezone.now",
-            side_effect=[
-                timezone.now(),
-                timezone.now() + timedelta(minutes=6),
-                timezone.now() + timedelta(minutes=6),
-                timezone.now() + timedelta(minutes=6),
-            ],
-        ):
-            attempt, _ = self.retry(errors)
+        attempt, sleep = self.retry(errors)
         attempt.assert_called()
+        sleep.assert_not_called()
         self.assertEqual(attempt.call_args.kwargs, {"crawl": False})
         self.assertEqual(errors, {})
 
@@ -1425,6 +1423,9 @@ class CaptchaRetryTests(LinkedCvCase):
         attempt, _ = self.retry({})
         attempt.assert_not_called()
         self.vacancy("93")
+        with override_settings(HUNTER_MAX_APPLIES_PER_DAY=0):
+            attempt, _ = self.retry({})
+        attempt.assert_not_called()
         captcha.write_cooldowns(
             {"hh": {"until": (timezone.now() + timedelta(hours=2)).isoformat(), "step": 2}}
         )

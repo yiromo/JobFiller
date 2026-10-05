@@ -750,7 +750,9 @@ def retry_paused(groups, links, limit, max_pages, log, summary, errors) -> None:
         for adapter, urls in groups:
             until = captcha.due_at(adapter.SITE) if adapter.HEADED_CAPTCHA else None
             waiting = Vacancy.objects.filter(source=adapter.SITE, status=Vacancy.Status.READY)
-            if until and until - timezone.now() <= RETRY_WAIT and waiting.exclude(cv=None).exists():
+            capped = sent_last_day() >= settings.HUNTER_MAX_APPLIES_PER_DAY
+            soon = until and until - timezone.now() <= RETRY_WAIT
+            if soon and not capped and waiting.exclude(cv=None).exists():
                 due.append((until, adapter, urls))
         if not due:
             return
