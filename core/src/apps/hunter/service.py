@@ -1,12 +1,15 @@
 import math
 import random
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import timedelta
 
 from django.conf import settings
+from django.db import connection
 from django.db.models import Q
 from django.utils import timezone
 from openai import OpenAIError
@@ -34,6 +37,7 @@ WAIT_LOG_SECONDS = 300
 DUPLICATE_DAYS = 60
 MODEL_ERRORS = (OpenAIError, ValueError, TypeError, AttributeError, KeyError)
 UNSCORED_PREFIXES = ("Not scored", "Scoring failed")
+STOPPING = threading.Event()
 
 
 @dataclass
@@ -225,13 +229,16 @@ def apply_scope_threshold(log=None) -> None:
         )
 
 
-def unscored() -> list[Vacancy]:
+def unscored(source: str) -> list[Vacancy]:
     reason_filter = Q(match_reason="")
     for prefix in UNSCORED_PREFIXES:
         reason_filter |= Q(match_reason__startswith=prefix)
     return list(
         Vacancy.objects.filter(
-            reason_filter, status=Vacancy.Status.BELOW_THRESHOLD, match_score__isnull=True
+            reason_filter,
+            source=source,
+            status=Vacancy.Status.BELOW_THRESHOLD,
+            match_score__isnull=True,
         )
     )
 
@@ -369,6 +376,12 @@ def apply_ready(
             continue
         if attempted:
             time.sleep(random.uniform(*adapter.SEND_GAP))
+        if STOPPING.is_set():
+            break
+        if not rehearse and sent_last_day() >= settings.HUNTER_MAX_APPLIES_PER_DAY:
+            summary.daily_cap_reached = True
+            log("Daily cap reached; stopping sends until the next run.")
+            break
         claimed = Vacancy.objects.filter(pk=vacancy.pk, status__in=statuses).update(
             status=Vacancy.Status.APPLYING, updated_at=timezone.now()
         )
@@ -637,7 +650,11 @@ def site_groups(only: str) -> list[tuple]:
         adapter = adapter_for(url)
         if adapter is not None:
             groups.setdefault(adapter.SITE, (adapter, []))[1].append(url)
-    return list(groups.values())
+    order = settings.HUNTER_SITE_PRIORITY
+    return sorted(
+        groups.values(),
+        key=lambda group: order.index(group[0].SITE) if group[0].SITE in order else len(order),
+    )
 
 
 def run_once(
@@ -667,13 +684,39 @@ def run_once(
     apply_scope_threshold(log)
     errors: dict = {}
     unattended = apply and not only and not rehearse and not headed
-    for adapter, urls in groups:
-        problem = try_site(
-            adapter, urls, links, apply, limit, max_pages, log, only, headed, rehearse, summary
-        )
-        if problem:
-            errors[adapter.SITE] = (adapter, problem)
-    if unattended:
+    lanes = 1 if only or headed or rehearse else min(settings.HUNTER_PARALLEL_SITES, len(groups))
+    if lanes <= 1:
+        for adapter, urls in groups:
+            if STOPPING.is_set():
+                break
+            problem = try_site(
+                adapter, urls, links, apply, limit, max_pages, log, only, headed, rehearse, summary
+            )
+            if problem:
+                errors[adapter.SITE] = (adapter, problem)
+    else:
+        with ThreadPoolExecutor(max_workers=lanes, thread_name_prefix="site") as pool:
+            futures = [
+                (
+                    adapter,
+                    pool.submit(
+                        lane, adapter, urls, links, apply, limit, max_pages, log, only, rehearse
+                    ),
+                )
+                for adapter, urls in groups
+            ]
+        failure = None
+        for adapter, future in futures:
+            if future.exception():
+                failure = failure or future.exception()
+                continue
+            part, problem = future.result()
+            merge(summary, part)
+            if problem:
+                errors[adapter.SITE] = (adapter, problem)
+        if failure:
+            raise failure
+    if unattended and not STOPPING.is_set():
         retry_paused(groups, links, limit, max_pages, log, summary, errors)
     if errors:
         raise RuntimeError(
@@ -683,6 +726,37 @@ def run_once(
             )
         )
     return summary
+
+
+def lane(adapter, urls, links, apply, limit, max_pages, log, only, rehearse) -> tuple:
+    summary = RunSummary()
+    if STOPPING.is_set():
+        return summary, ""
+    try:
+        problem = try_site(
+            adapter,
+            urls,
+            links,
+            apply,
+            limit,
+            max_pages,
+            lambda line: log(f"[{adapter.SITE}] {line}"),
+            only,
+            False,
+            rehearse,
+            summary,
+        )
+    finally:
+        connection.close()
+    return summary, problem
+
+
+def merge(summary: RunSummary, part: RunSummary) -> None:
+    summary.discovered += part.discovered
+    summary.applied += part.applied
+    summary.review += part.review
+    summary.reconciled += part.reconciled
+    summary.daily_cap_reached = summary.daily_cap_reached or part.daily_cap_reached
 
 
 def try_site(
@@ -797,11 +871,13 @@ def run_site(
                     budget = settings.HUNTER_MAX_NEW_PER_RUN - len(created)
                     created += discover(page, adapter, search_url, max_pages, log, budget)
             summary.discovered += len(created)
-            pending = unscored()
+            pending = unscored(adapter.SITE)
             score_vacancies(pending, links)
             summary.review += [v for v in pending if v.status == Vacancy.Status.NEEDS_REVIEW]
             report(list(Vacancy.objects.filter(pk__in=[v.pk for v in created])), log)
         cooling = None if only or rehearse or headed else captcha.cooling_until(adapter.SITE)
+        if STOPPING.is_set():
+            return
         if apply and cooling:
             log(
                 f"{adapter.NAME} asked for a captcha recently; trying again at "

@@ -1,5 +1,15 @@
 # Progress log
 
+- **Site priority and parallel lanes** — sites now run DSML.kz, Indeed, LinkedIn, hh.kz in that
+  order (`HUNTER_SITE_PRIORITY`), two at a time (`HUNTER_PARALLEL_SITES=2`): DSML and Indeed
+  start together and LinkedIn and hh take the lanes as they free up. The user ranks DSML and
+  Indeed first because their postings are more often real. An hh captcha ask now blocks only the
+  hh lane. Each send re-checks the daily cap (raised to 80 in the user's `.env`), so two lanes
+  overshoot it by at most one. Camoufox launches are serialized after one native crash
+  (`malloc(): unaligned tcache chunk`) in 12 runs of two concurrent virtual-display launches;
+  SQLite waits up to 30 s for a lock. Parallel lanes double the burst rate to MiMo, so 429s on
+  scoring may rise.
+
 - **dsml.kz sends failed on a stale page** — 6 of 7 dsml sends ended in "Locator.evaluate:
   Timeout 30000ms" with the guest form open and empty. `response_status` loads the job page, then
   CV tailoring and the cover letter take a minute or more, and `apply` reused that page because

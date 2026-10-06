@@ -357,6 +357,16 @@ which splices them into the in-memory plan so a second Fill click doesn't repeat
   stays fresh) and retries with `crawl=False`; longer rungs are picked up by later cycles.
   Manual headed sends (`only`) ignore the wait and stay held if they fail. Only adapters with
   `HEADED_CAPTCHA` get the ask. `SEND_GAP`/`MAX_SENDS_PER_RUN` pace each site.
+- **Sites run in priority order, two at a time.** `site_groups` sorts by `HUNTER_SITE_PRIORITY`
+  (`dsml,indeed,linkedin,hh`) and an unattended run hands the groups to a
+  `HUNTER_PARALLEL_SITES`-wide thread pool (manual `--vacancy`/`--headed`/`--rehearse` runs stay
+  on one thread). Each lane has its own `RunSummary`, merged after, its own DB connection (closed
+  at the end) and log lines prefixed `[site]`; `hunt`'s `log` holds a lock because `Tracker`
+  rewrites `status.json`. `unscored` is per site so two lanes never score the same rows, and
+  `apply_ready` re-checks the daily cap before every send since another lane may have used it.
+  `browser.LAUNCHING` serializes Camoufox start and close (two concurrent `headless="virtual"`
+  launches crashed the process once in a dozen tries). SIGTERM sets `service.STOPPING`: lanes
+  finish the send in progress and take no new one.
 - **Refs don't survive a full re-render.** If the SPA re-renders the form between Scan and
   Fill, the stamped `data-jf-ref` attributes are gone — the fix is re-scanning, not retrying.
 - **`agent/option_resolver.py`'s EEO-safety is entirely because it never sees CV or page text** —

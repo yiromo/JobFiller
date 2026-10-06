@@ -1,5 +1,6 @@
 import json
 import tempfile
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -1455,3 +1456,90 @@ class CaptchaRetryTests(LinkedCvCase):
         )
         attempt, _ = self.retry({})
         attempt.assert_not_called()
+
+
+class SitePriorityTests(LinkedCvCase):
+    @override_settings(
+        JOB_SOURCE_URLS=[
+            "https://astana.hh.kz/search/vacancy?text=python",
+            "https://www.linkedin.com/jobs/search/?keywords=python",
+            "https://kz.indeed.com/jobs?q=python",
+            "https://dsml.kz/jobs",
+        ],
+        HUNTER_SITE_PRIORITY=["dsml", "indeed", "linkedin", "hh"],
+    )
+    def test_sites_run_in_priority_order(self):
+        sites = [adapter.SITE for adapter, _ in service.site_groups("")]
+        self.assertEqual(sites, ["dsml", "indeed", "linkedin", "hh"])
+
+    def lanes(self, problems):
+        first, second = FakeAdapter(None), FakeAdapter(None)
+        first.SITE, first.NAME, second.SITE, second.NAME = "dsml", "DSML.kz", "indeed", "Indeed"
+        threads = {}
+
+        def try_site(adapter, urls, links, apply, limit, max_pages, log, *rest, **kwargs):
+            summary = rest[-1]
+            threads[adapter.SITE] = threading.current_thread().name
+            summary.discovered += 2
+            summary.applied.append(SimpleNamespace(pk=adapter.SITE, source=adapter.SITE))
+            log("sent")
+            return problems.get(adapter.SITE, "")
+
+        lines = []
+        summary = RunSummary()
+        with (
+            patch(
+                "apps.hunter.service.site_groups",
+                return_value=[(first, ["a"]), (second, ["b"])],
+            ),
+            patch("apps.hunter.service.try_site", side_effect=try_site),
+            patch("apps.hunter.service.retry_paused"),
+        ):
+            try:
+                service.run_once(
+                    apply=True, limit=5, max_pages=1, log=lines.append, summary=summary
+                )
+                failed = None
+            except RuntimeError as raised:
+                failed = raised
+        return summary, threads, lines, failed
+
+    @override_settings(HUNTER_PARALLEL_SITES=2)
+    def test_two_sites_run_in_parallel_lanes_and_their_results_merge(self):
+        summary, threads, lines, failed = self.lanes({"indeed": "not logged in"})
+        self.assertTrue(all(name.startswith("site") for name in threads.values()))
+        self.assertEqual(summary.discovered, 4)
+        self.assertEqual(sorted(item.pk for item in summary.applied), ["dsml", "indeed"])
+        self.assertEqual(sorted(lines), ["[dsml] sent", "[indeed] sent"])
+        self.assertIn("Indeed: not logged in", str(failed))
+
+    @override_settings(HUNTER_PARALLEL_SITES=1)
+    def test_one_lane_runs_sites_on_the_calling_thread(self):
+        _, threads, lines, failed = self.lanes({})
+        self.assertEqual(set(threads.values()), {threading.current_thread().name})
+        self.assertEqual(lines, ["sent", "sent"])
+        self.assertIsNone(failed)
+
+    @override_settings(HUNTER_MAX_APPLIES_PER_DAY=2)
+    def test_sends_stop_when_another_lane_fills_the_daily_cap(self):
+        first, second = self.vacancy("91"), self.vacancy("92")
+        adapter = FakeAdapter(hh.parse_status({"resumes": {"1": {"hash": "hash"}}}))
+        summary = RunSummary()
+        with patch("apps.hunter.service.sent_last_day", side_effect=[0, 0, 2]):
+            service.apply_ready(None, adapter, 10, [self.link], lambda line: None, summary)
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertEqual(
+            sorted([first.status, second.status]), [Vacancy.Status.APPLIED, Vacancy.Status.READY]
+        )
+        self.assertTrue(summary.daily_cap_reached)
+
+    def test_a_stop_request_ends_sends_after_the_current_one(self):
+        self.vacancy("93")
+        adapter = FakeAdapter(hh.parse_status({"resumes": {"1": {"hash": "hash"}}}))
+        service.STOPPING.set()
+        try:
+            service.apply_ready(None, adapter, 10, [self.link], lambda line: None, RunSummary())
+        finally:
+            service.STOPPING.clear()
+        self.assertEqual(Vacancy.objects.get(external_id="93").status, Vacancy.Status.READY)

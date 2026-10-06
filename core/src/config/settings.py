@@ -73,6 +73,7 @@ DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": DATA_DIR / "db.sqlite3",
+        "OPTIONS": {"timeout": 30},
     }
 }
 
@@ -142,6 +143,8 @@ HUNTER_BROAD_MIN_SCORE = config("HUNTER_BROAD_MIN_SCORE", default=50, cast=int)
 HUNTER_MAX_APPLIES_PER_RUN = config("HUNTER_MAX_APPLIES_PER_RUN", default=10, cast=int)
 HUNTER_MAX_NEW_PER_RUN = config("HUNTER_MAX_NEW_PER_RUN", default=40, cast=int)
 HUNTER_MAX_APPLIES_PER_DAY = config("HUNTER_MAX_APPLIES_PER_DAY", default=50, cast=int)
+HUNTER_SITE_PRIORITY = config("HUNTER_SITE_PRIORITY", default="dsml,indeed,linkedin,hh", cast=Csv())
+HUNTER_PARALLEL_SITES = config("HUNTER_PARALLEL_SITES", default=2, cast=int)
 HUNTER_NAVIGATOR = config("HUNTER_NAVIGATOR", default="on")
 HUNTER_NAVIGATOR_BY_SITE = {
     "hh": config("HUNTER_NAVIGATOR_HH", default=""),

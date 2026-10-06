@@ -1,5 +1,6 @@
 import json
 import os
+import threading
 import time
 from contextlib import contextmanager, suppress
 from pathlib import Path
@@ -13,6 +14,7 @@ from playwright.sync_api import Error as PlaywrightError
 
 FINGERPRINT_FILE = "fingerprint.json"
 SESSION_FILE = "session.json"
+LAUNCHING = threading.Lock()
 
 
 def profile_dir(site: str) -> Path:
@@ -85,14 +87,17 @@ def headless_mode(value: str):
 def open_browser(site: str, headless=None):
     if headless is None:
         headless = headless_mode(settings.HUNTER_HEADLESS)
-    with Camoufox(
+    browser = Camoufox(
         persistent_context=True,
         user_data_dir=str(profile_dir(site) / "firefox"),
         headless=headless,
         fingerprint_preset=fingerprint_for(site),
         locale=["ru-RU", "ru", "en-US"],
         humanize=True,
-    ) as context:
+    )
+    with LAUNCHING:
+        context = browser.__enter__()
+    try:
         if not context.cookies():
             restore_session(site, context)
         try:
@@ -100,3 +105,6 @@ def open_browser(site: str, headless=None):
         finally:
             with suppress(PlaywrightError):
                 save_session(site, context)
+    finally:
+        with LAUNCHING:
+            browser.__exit__(None, None, None)

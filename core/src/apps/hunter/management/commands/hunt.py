@@ -2,6 +2,7 @@ import os
 import random
 import signal
 import sys
+import threading
 import time
 from datetime import timedelta
 
@@ -10,9 +11,14 @@ from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
 from apps.hunter import notify
-from apps.hunter.service import RunSummary, first_line, run_once
+from apps.hunter.service import STOPPING, RunSummary, first_line, run_once
 from apps.hunter.sources.hh import CaptchaError
 from apps.hunter.state import Tracker
+
+
+def stop(*_) -> None:
+    STOPPING.set()
+    sys.exit(0)
 
 
 class Command(BaseCommand):
@@ -37,7 +43,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         os.environ.setdefault("DJANGO_ALLOW_ASYNC_UNSAFE", "true")
-        signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+        signal.signal(signal.SIGTERM, stop)
         if options["rehearse"] and not options["vacancy"]:
             raise CommandError("--rehearse needs --vacancy ID.")
         if options["rehearse"]:
@@ -46,10 +52,13 @@ class Command(BaseCommand):
         if options["loop"]:
             tracker = Tracker(apply=options["apply"], loop_minutes=options["loop"])
 
+        writing = threading.Lock()
+
         def log(line: str) -> None:
-            self.stdout.write(line)
-            if tracker:
-                tracker.log(line)
+            with writing:
+                self.stdout.write(line)
+                if tracker:
+                    tracker.log(line)
 
         try:
             self.run_loop(options, tracker, log)
