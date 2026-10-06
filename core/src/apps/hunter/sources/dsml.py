@@ -178,9 +178,9 @@ def crawl(page, search_url: str, max_pages: int) -> list[Listing]:
     return list(found.values())
 
 
-def open_job(page, url: str) -> dict:
+def open_job(page, url: str, fresh: bool = False) -> dict:
     target = job_url(vacancy_id(url) or "")
-    if page.url.split("#")[0] != target:
+    if fresh or page.url.split("#")[0] != target:
         page.goto(target, wait_until="domcontentloaded")
         check_captcha(page)
         wait_for(page, f"{GUEST}, main h1", 20000)
@@ -274,7 +274,8 @@ def apply(
         return False, "The CV has no stored file to upload to DSML.kz."
     if not applicant.get("email"):
         return False, "The CV has no email address for the DSML.kz contact field."
-    open_job(page, url)
+    open_job(page, url, fresh=True)
+    wait_for(page, GUEST, 15000)
     if not page.evaluate(OPEN_FORM_JS, GUEST):
         return False, "The DSML guest form did not open ('Apply without profile' is missing)."
     pause(page)

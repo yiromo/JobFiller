@@ -1202,6 +1202,30 @@ class DsmlPagingTests(SimpleTestCase):
         self.assertEqual([item.title for item in found], ["A"])
         self.assertEqual(page.goto.call_count, 2)
 
+    def test_apply_reloads_a_page_left_idle_and_waits_for_the_form(self):
+        uuid = "11111111-1111-1111-1111-111111111111"
+        page = MagicMock()
+        page.title.return_value = "Senior AI Engineer"
+        page.url = dsml.job_url(uuid)
+        calls = []
+
+        def evaluate(script, *args):
+            calls.append(script)
+            if script == dsml.JOB_JS:
+                return {"heading": "", "text": "", "guest": False, "status": "", "head": ""}
+            return script != dsml.OPEN_FORM_JS
+
+        page.evaluate.side_effect = evaluate
+        applicant = {"cv_path": "/tmp/cv.pdf", "email": "a@b.c"}
+        with patch("apps.hunter.sources.dsml.pause"):
+            applied, note = dsml.apply(page, page.url, "", "", None, applicant=applicant)
+        self.assertFalse(applied)
+        self.assertIn("did not open", note)
+        page.goto.assert_called_once()
+        waits = [index for index, script in enumerate(calls) if script.startswith("(s)")]
+        self.assertTrue(waits)
+        self.assertLess(waits[-1], calls.index(dsml.OPEN_FORM_JS))
+
 
 class NavigatorBudgetTests(TestCase):
     def element(self, **fields):

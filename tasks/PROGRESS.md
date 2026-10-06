@@ -1,5 +1,12 @@
 # Progress log
 
+- **dsml.kz sends failed on a stale page** — 6 of 7 dsml sends ended in "Locator.evaluate:
+  Timeout 30000ms" with the guest form open and empty. `response_status` loads the job page, then
+  CV tailoring and the cover letter take a minute or more, and `apply` reused that page because
+  the URL already matched. Reproduced: after ~90 s idle every Playwright locator action on the
+  page hangs while `page.evaluate` still answers (50 s idle is fine). `apply` now always reloads
+  the job page and waits for the guest form before filling it.
+
 - **Captcha retry ladder and navigator budget** — an ignored captcha no longer parks the job: it
   goes back to the queue and hh is retried after 5 min, then 30 min, 1 h, 3 h and 8 h, asking
   the user again each time; a clean send resets the ladder and remembers which wait worked. Short
