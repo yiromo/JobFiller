@@ -1,7 +1,7 @@
-from . import dsml, hh, indeed, linkedin
+from . import ats, dsml, hh, indeed, linkedin
 from .base import CONTRACT
 
-ADAPTERS = (hh, linkedin, indeed, dsml)
+ADAPTERS = (hh, linkedin, indeed, dsml, ats)
 LOGIN_SITES = (hh, linkedin, indeed, dsml)
 
 

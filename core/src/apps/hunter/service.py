@@ -15,16 +15,16 @@ from django.utils import timezone
 from openai import OpenAIError
 from playwright.sync_api import Error as PlaywrightError
 
-from agent import cover_letter
+from agent import cover_letter, cv_reviewer
 from agent.cv_writer import CvGenerationError
 from apps.cvs.container import CvsContainer
 from apps.cvs.models import Cv
 from apps.opportunities.service import rank_jobs
 from apps.opportunities.telegraph import TelegraphPage
 
-from . import captcha, evidence, inbox
+from . import captcha, evidence, inbox, review
 from .browser import open_browser
-from .models import ResumeLink, Vacancy
+from .models import MailMessage, ResumeLink, Vacancy
 from .navigator import CONFIRMED_RE, PAGE_TEXT_JS, REHEARSED, Navigator, host_of
 from .sources import adapter_for, dsml
 from .sources.base import CaptchaError
@@ -38,6 +38,8 @@ DUPLICATE_DAYS = 60
 MODEL_ERRORS = (OpenAIError, ValueError, TypeError, AttributeError, KeyError)
 UNSCORED_PREFIXES = ("Not scored", "Scoring failed")
 STOPPING = threading.Event()
+REFUSALS_RE = re.compile(r"refused this job (\d+) times?")
+REFUSAL_LIMIT = 3
 
 
 @dataclass
@@ -63,7 +65,27 @@ TAILOR_INSTRUCTIONS = (
     "date and number exactly as in the source CV, and do not add any technology, tool, language "
     "or skill that the source CV does not already list."
 )
-TAILOR_REJECT_WARNINGS = ("Employment title", "Dropped")
+TAILOR_REJECT_WARNINGS = ("Employment title", 'Dropped "(')
+FLAGSHIP_INSTRUCTIONS = (
+    "Write this CV for the position below at {employer} so that it matches the posting 100%. "
+    "Add every technology, tool, skill and practice the posting asks for: list them in the skills "
+    "section and use them in the bullets of the experiences where they fit the work. In the "
+    "candidate's own words: {stack} Add a programming language only if those words name it, and "
+    "never add {excluded}. The headline is the posting's role and level, such as \"Senior "
+    "Backend Engineer (Go)\", without team, product or employer names. Describe the scope of each role in the posting's terms. Skills lines hold "
+    "technology and tool names only. Bullets describe work done and its result, never personal "
+    "traits. Never copy a phrase of more than four words from the posting; write plainly, like "
+    "an engineer describing their own work. Keep every employer, employment title, date and "
+    "number exactly as in the source CV, and never state more total years of experience than "
+    "the dates show."
+)
+FLAGSHIP_SHORTER = (
+    "The last draft did not fit on one page: use at most 2 bullets per experience, each under 22 "
+    "words, a 2 sentence summary and at most 5 skill lines."
+)
+FLAGSHIP_DRAFTS = 3
+FLAGSHIP_MARK = "Flagship CV:"
+FLAGSHIP_HELD = review.CV_NOTE
 
 
 def navigator_mode(site: str = "") -> str:
@@ -98,6 +120,96 @@ def duplicate_of(vacancy: Vacancy) -> Vacancy | None:
     ).exclude(pk=vacancy.pk)
     key = role_key(vacancy.title)
     return next((other for other in sent if role_key(other.title) == key), None)
+
+
+def employer_in(vacancy: Vacancy, names: list[str]) -> str:
+    employer = vacancy.employer or ""
+    for name in names:
+        if name.strip() and re.search(rf"\b{re.escape(name.strip())}\b", employer, re.IGNORECASE):
+            return name.strip()
+    return ""
+
+
+def skipped_employer(vacancy: Vacancy) -> str:
+    return employer_in(vacancy, settings.HUNTER_SKIP_EMPLOYERS)
+
+
+def skipped_title(vacancy: Vacancy) -> str:
+    title = vacancy.title or ""
+    for phrase in settings.HUNTER_SKIP_TITLES:
+        phrase = phrase.strip()
+        if phrase and re.search(rf"(?<!\w){re.escape(phrase)}(?!\w)", title, re.IGNORECASE):
+            return phrase
+    return ""
+
+
+def excluded_skills(skills: list[str]) -> list[str]:
+    banned = {name.strip().lower() for name in settings.HUNTER_EXCLUDED_SKILLS if name.strip()}
+    return [
+        skill
+        for skill in skills
+        if banned & {part for part in re.split(r"[\s/,()]+", skill.lower()) if part}
+    ]
+
+
+def recent_rejection(vacancy: Vacancy) -> MailMessage | None:
+    if not vacancy.employer or settings.HUNTER_REJECTION_COOLDOWN_DAYS <= 0:
+        return None
+    since = timezone.now() - timedelta(days=settings.HUNTER_REJECTION_COOLDOWN_DAYS)
+    return (
+        MailMessage.objects.filter(kind="rejection", received_at__gte=since)
+        .filter(
+            Q(employer__iexact=vacancy.employer) | Q(vacancy__employer__iexact=vacancy.employer)
+        )
+        .order_by("-received_at")
+        .first()
+    )
+
+
+def skip_reason(vacancy: Vacancy) -> str:
+    twin = duplicate_of(vacancy)
+    if twin:
+        return f"Same role at {vacancy.employer} already applied: {twin.url}"
+    name = skipped_employer(vacancy)
+    if name:
+        return f"{vacancy.employer} matches the skip list ({name})."
+    phrase = skipped_title(vacancy)
+    if phrase:
+        return f'The title "{vacancy.title}" is not an engineering role ({phrase}).'
+    rejection = recent_rejection(vacancy)
+    if rejection:
+        return (
+            f"{vacancy.employer} sent a rejection on {rejection.received_at:%Y-%m-%d}; "
+            f"no new sends for {settings.HUNTER_REJECTION_COOLDOWN_DAYS} days."
+        )
+    return ""
+
+
+def referral_targets(limit: int = 20, days: int = 30) -> list[dict]:
+    since = timezone.now() - timedelta(days=days)
+    rows = Vacancy.objects.filter(
+        created_at__gte=since, match_score__gte=settings.HUNTER_MIN_SCORE
+    ).exclude(employer="")
+    best: dict[str, dict] = {}
+    for vacancy in rows.order_by("-match_score", "-created_at"):
+        key = vacancy.employer.casefold()
+        if key in best:
+            best[key]["roles"] += 1
+            continue
+        if skipped_employer(vacancy) or recent_rejection(vacancy):
+            best[key] = {"skip": True, "roles": 0}
+            continue
+        best[key] = {
+            "employer": vacancy.employer,
+            "score": vacancy.match_score,
+            "title": vacancy.title,
+            "url": vacancy.url,
+            "sent": bool(vacancy.applied_at or vacancy.submitted_at),
+            "roles": 1,
+        }
+    targets = [item for item in best.values() if not item.get("skip")]
+    targets.sort(key=lambda item: (-item["score"], -item["roles"]))
+    return targets[:limit]
 
 
 def needs_tailoring(adapter, vacancy) -> bool:
@@ -143,6 +255,121 @@ def tailor_cv(vacancy, log) -> None:
     log(f"  tailored CV for {vacancy.title}: {tailored.original_filename}")
 
 
+def is_flagship(adapter, vacancy) -> bool:
+    return (
+        bool(settings.MIMO_API_KEY)
+        and not adapter.USES_RESUME_LINKS
+        and FLAGSHIP_MARK not in vacancy.match_reason
+        and bool(employer_in(vacancy, settings.HUNTER_FLAGSHIP_EMPLOYERS))
+    )
+
+
+def flagship_instructions(employer: str) -> str:
+    return FLAGSHIP_INSTRUCTIONS.format(
+        employer=employer or "the employer",
+        stack=settings.HUNTER_STACK or "",
+        excluded=", ".join(settings.HUNTER_EXCLUDED_SKILLS) or "nothing",
+    )
+
+
+def names_employer(cv_text: str, employer: str) -> bool:
+    name = first_words(employer, 1)
+    header = " ".join((cv_text or "").splitlines()[1:3])
+    return bool(name) and bool(re.search(rf"\b{re.escape(name)}\b", header, re.IGNORECASE))
+
+
+def draft_rank(outcome: dict) -> tuple:
+    return len(outcome["partial"]), -outcome["fit_score"]
+
+
+def write_flagship_cv(source, posting: str, employer: str, title: str, log) -> tuple:
+    service = CvsContainer.cv_service()
+    base = flagship_instructions(employer)
+    instructions = base
+    findings: list[str] = []
+    outcome = None
+    best = None
+    for _ in range(FLAGSHIP_DRAFTS):
+        try:
+            result = service.generate_from(
+                source.id,
+                instructions,
+                position_text=posting,
+                filename=f"{source.full_name or 'CV'} {first_words(employer, 2)} "
+                f"{first_words(title, 3)}",
+            )
+        except CvGenerationError as error:
+            findings = [f"the CV writer failed: {first_line(error)}"]
+            instructions = f"{base} {FLAGSHIP_SHORTER}"
+            continue
+        if result is None:
+            return None, None, ["the source CV no longer exists"], []
+        draft, added, warnings = result
+        banned = excluded_skills(added)
+        changed = [w for w in warnings if w.startswith(TAILOR_REJECT_WARNINGS)]
+        if names_employer(draft.raw_text, employer):
+            changed.append(f"the headline names {employer}")
+        if banned or changed:
+            service.delete(draft.id)
+            findings = [f"the writer added {', '.join(banned)}" if banned else changed[0]]
+            instructions = f"{base} Do not list {', '.join(banned)}." if banned else base
+            continue
+        try:
+            outcome = cv_reviewer.review(
+                source.raw_text,
+                draft.raw_text,
+                posting,
+                employer,
+                settings.HUNTER_EXCLUDED_SKILLS,
+            )
+        except cv_reviewer.CvReviewError as error:
+            service.delete(draft.id)
+            findings = [first_line(error)]
+            break
+        log(
+            f"  flagship CV review for {title}: fit {outcome['fit_score']}, "
+            f"{len(outcome['problems'])} problems, {len(outcome['partial'])} partial"
+        )
+        if not outcome["passed"]:
+            service.delete(draft.id)
+            findings = outcome["problems"]
+            instructions = f"{base} {cv_reviewer.revision(outcome)}"
+            continue
+        if best and draft_rank(best[1]) <= draft_rank(outcome):
+            service.delete(draft.id)
+        else:
+            if best:
+                service.delete(best[0].id)
+            best = (draft, outcome, added)
+        if not outcome["partial"]:
+            break
+        instructions = f"{base} {cv_reviewer.revision(outcome)}"
+    if best:
+        return best[0], best[1], [], best[2]
+    return None, outcome, findings, []
+
+
+def flagship_cv(vacancy, log) -> bool:
+    original = vacancy.cv.original_filename
+    draft, outcome, findings, added = write_flagship_cv(
+        vacancy.cv, vacancy.text, vacancy.employer, vacancy.title, log
+    )
+    if draft is None:
+        finish(vacancy, False, f"{FLAGSHIP_HELD}: " + "; ".join(findings or ["no draft passed"]))
+        log(f"  REVIEW  {vacancy.title}: {vacancy.note}")
+        return False
+    extra = f" Added for this job: {', '.join(added)}." if added else ""
+    gaps = f" Cannot be written in: {', '.join(outcome['gaps'])}." if outcome["gaps"] else ""
+    vacancy.cv = Cv.objects.get(pk=draft.id)
+    vacancy.match_reason = (
+        f"{vacancy.match_reason} {FLAGSHIP_MARK} {draft.original_filename} (from {original}), "
+        f"reviewer fit {outcome['fit_score']}.{extra}{gaps}"
+    )[:2000]
+    vacancy.save(update_fields=["cv", "match_reason", "updated_at"])
+    log(f"  flagship CV for {vacancy.title}: {draft.original_filename}")
+    return True
+
+
 def tailored_note(vacancy) -> str:
     if ResumeLink.objects.filter(cv_id=vacancy.cv_id).exists():
         return ""
@@ -164,12 +391,26 @@ def letter_language(text: str) -> str:
 
 
 def scoring_preferences() -> str:
-    if not settings.HUNTER_FACTS:
+    if not settings.HUNTER_FACTS and not settings.HUNTER_STACK:
         return ""
+    stack = (
+        f" In the candidate's own words: {settings.HUNTER_STACK} Count these as skills the "
+        "candidate has even where the CV does not list them."
+        if settings.HUNTER_STACK
+        else ""
+    )
     return (
-        f"{settings.HUNTER_FACTS} The candidate applies to remote roles even when they are limited "
-        "to US or EU residents; do not lower the score for that. On-site or hybrid roles are a "
-        "major mismatch."
+        f"{settings.HUNTER_FACTS}{stack} Backend, fullstack and software developer roles fit best. "
+        "Roles that are not hands-on software engineering (project, product, program or delivery "
+        "management, scrum master, business analyst, no-code or low-code building, manual QA, "
+        "support, AI data labelling or training) are a major mismatch, and so are roles built "
+        f"mainly around {', '.join(settings.HUNTER_EXCLUDED_SKILLS) or 'nothing'}. The "
+        "candidate applies to remote roles even when they are limited to US or EU residents; do "
+        "not lower the score for that. Roles open worldwide, anywhere, "
+        "or to contractors and employer-of-record hires in any country fit the candidate's "
+        "location best; score them higher. A posting that requires at least 2 more years of "
+        "experience than the candidate's stated years for its main language or skill is a major "
+        "mismatch. On-site or hybrid roles are a major mismatch."
     )
 
 
@@ -246,7 +487,11 @@ def unscored(source: str) -> list[Vacancy]:
 def discover(page, adapter, search_url: str, max_pages: int, log, budget: int) -> list[Vacancy]:
     if budget <= 0:
         return []
-    listings = adapter.crawl(page, search_url, max_pages)
+    try:
+        listings = adapter.crawl(page, search_url, max_pages)
+    except (OSError, ValueError) as error:
+        log(f"{search_url}: search failed: {first_line(error)}")
+        return []
     known = set(
         Vacancy.objects.filter(
             source=adapter.SITE, external_id__in=[item.external_id for item in listings]
@@ -367,10 +612,10 @@ def apply_ready(
         limit = min(limit, adapter.MAX_SENDS_PER_RUN)
     attempted = False
     for vacancy in queue.order_by("-match_score", "id")[:limit]:
-        twin = None if only else duplicate_of(vacancy)
-        if twin:
+        reason = "" if only else skip_reason(vacancy)
+        if reason:
             vacancy.status = Vacancy.Status.SKIPPED
-            vacancy.note = f"Same role at {vacancy.employer} already applied: {twin.url}"
+            vacancy.note = reason
             vacancy.save()
             log(f"  SKIP    {vacancy.title}: {vacancy.note}")
             continue
@@ -391,6 +636,12 @@ def apply_ready(
             result = apply_one(
                 page, adapter, vacancy, titles, log, summary, headed, rehearse, forced=bool(only)
             )
+        except CaptchaError as error:
+            if not adapter.EMPLOYER_BOARDS or only or rehearse:
+                raise
+            log(f"  REVIEW  {vacancy.title}: {error}")
+            attempted = True
+            continue
         except (KeyboardInterrupt, SystemExit):
             finish(
                 vacancy,
@@ -435,7 +686,11 @@ def apply_one(
             summary.review.append(vacancy)
         log(f"  {vacancy.title}: {reason}")
         return False
-    if needs_tailoring(adapter, vacancy):
+    if not rehearse and is_flagship(adapter, vacancy):
+        if not flagship_cv(vacancy, log):
+            summary.review.append(vacancy)
+            return False
+    elif needs_tailoring(adapter, vacancy):
         tailor_cv(vacancy, log)
     letter = vacancy.cover_letter
     size = letter_size(status)
@@ -538,6 +793,22 @@ def apply_one(
         )
         log(f"  REHEARSAL {vacancy.title}: {note}")
         return False
+    if not applied and adapter.TRY_LATER and note.startswith(adapter.TRY_LATER):
+        found = REFUSALS_RE.search(vacancy.note or "")
+        refusals = (int(found.group(1)) if found else 0) + 1
+        times = "1 time" if refusals == 1 else f"{refusals} times"
+        note = f"{adapter.NAME} refused this job {times}; nothing was saved. {note}"
+        vacancy.submitted_at = None
+        if refusals < REFUSAL_LIMIT:
+            Vacancy.objects.filter(pk=vacancy.pk).update(
+                status=Vacancy.Status.READY,
+                note=note[:2000],
+                submitted_at=None,
+                cover_letter=vacancy.cover_letter,
+                updated_at=timezone.now(),
+            )
+            log(f"  LATER   {vacancy.title}: {note}")
+            return True
     finish(vacancy, applied, note)
     if applied:
         captcha.record_send(adapter.SITE)
@@ -553,7 +824,7 @@ def navigate(
     navigator = Navigator(
         page,
         goal=adapter.navigator_goal(vacancy.title, resume_title, letter, status)
-        + tailored_note(vacancy),
+        + ("" if adapter.EMPLOYER_BOARDS else tailored_note(vacancy)),
         cv_text=vacancy.cv.raw_text or "",
         job_text=vacancy.text,
         log=log,
@@ -564,18 +835,20 @@ def navigate(
         facts=settings.HUNTER_FACTS,
         external_hops=1 if status.external_apply else 0,
         eeo=inbox.answered_eeo(),
+        max_steps=settings.HUNTER_NAVIGATOR_EXTERNAL_STEPS if adapter.EMPLOYER_BOARDS else 0,
     )
     result = navigator.run()
     evidence.capture(navigator.page, evidence.key_for(vacancy), result.trace)
+    on_page = status.external_apply or adapter.EMPLOYER_BOARDS
     external_note = ""
-    if status.external_apply and (result.status == "done" or result.submitted):
+    if on_page and (result.status == "done" or result.submitted):
         external_note = confirm_external(navigator)
     navigator.close_opened()
     if result.status == "captcha" and not result.submitted:
         raise CaptchaError(result.note)
     if result.status == "rehearsed":
         return False, result.note
-    if status.external_apply and (result.status == "done" or result.submitted):
+    if on_page and (result.status == "done" or result.submitted):
         if external_note:
             return True, external_note
         return False, (

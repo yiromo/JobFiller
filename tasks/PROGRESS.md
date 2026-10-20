@@ -1,5 +1,141 @@
 # Progress log
 
+- **Flagship CVs match the posting 100%, by the user's choice** — the user decided the flagship
+  CV should claim every skill, level and scope the posting asks for. `FLAGSHIP_INSTRUCTIONS`
+  now tells the writer to add every technology and practice the posting names to the skills and
+  to the bullets where it fits, puts the posting's role and level in the headline (no team,
+  product or employer name: a draft headlined "... at GitLab" read as if the candidate worked
+  there, and `names_employer` now rejects it), and bans copying posting phrases and listing
+  traits as bullets. What stays fixed: employers, employment titles, dates and numbers (already
+  enforced by `_ungrounded_facts`), and no more total years than the dates show. Languages come
+  only from `HUNTER_STACK`, the user's own statement; anything on `HUNTER_EXCLUDED_SKILLS`
+  (C, C++, Rust in code; the user's `.env` adds Ruby, PHP, Kotlin and other languages they did
+  not name, since the writer added Ruby despite the prompt) rejects the draft in code. The
+  reviewer stopped being a fact-checker: a contradiction is only a changed record, impossible
+  years, a tool used before it existed, or one achievement at two employers. Must-haves are
+  skills the candidate must bring, not the role's future duties; `missing` fails a draft,
+  `partial` and high red flags feed the next draft, and `fixed_fact` (location, citizenship,
+  years) plus any excluded language never block. The best passing draft is kept (fewest partial,
+  then highest fit) and its added skills go into `match_reason` so the user can prepare for the
+  interview. A rendered project dropped to fit one page used to be read as a changed title,
+  since both warnings start with "Dropped"; the check now matches only `Dropped "(`. Scoring
+  counts the stack as real skills, treats PM, no-code and other non-engineering roles and
+  roles built on excluded languages as major mismatches, and `HUNTER_SKIP_TITLES` skips those
+  titles before sending. Live on GitLab: the Senior Go (Gitaly) role passed at reviewer fit 46
+  (34 under the honest rule), the Staff Full-Stack role passed with Node.js, Snowflake,
+  BigQuery and others added; Ruby and UK/US residency stayed as gaps.
+
+- **Gmail API for the work inbox, and one site at a time** — Google held app passwords on the
+  work account, so the user created an OAuth desktop client. `HUNTER_MAIL_ACCOUNTS` takes
+  `address:days:oauth` for it; `sync_gmail` lists `messages` with the same Gmail search as the
+  IMAP path (`-in:sent -in:drafts -in:chats newer_than:5d`, following `nextPageToken`), fetches
+  each new one as `format=raw` and runs it through the same parse, sort and store. Only the
+  `gmail.readonly` scope is asked for. The Gmail id is up to 64 bits and SQLite integers are
+  signed 64-bit, so the uid is the id masked to 63 bits under `uidvalidity` 1; the Takeout
+  rows already imported for this account are adopted by Message-ID instead of sorted again. A
+  missing or revoked sign-in logs "run mail_login ADDR again" and the other accounts still
+  sync. `HUNTER_PARALLEL_SITES` is 1 in the user's `.env`: two Camoufox browsers at once used
+  too much RAM.
+
+- **A CV written for each flagship job, checked by an adversarial reviewer** — for employers on
+  `HUNTER_FLAGSHIP_EMPLOYERS` (GitLab, GitHub, Microsoft and others where people read every CV;
+  the list is the user's to edit, since whether a company screens with AI cannot be detected),
+  `apply_one` on an upload site writes a CV for that posting before sending, in place of the
+  scope tailoring. The writer may reorder and reword toward the posting but never take its
+  scope, seniority or leadership phrases, and the headline stays the candidate's real level:
+  told only to "use the posting's own terms", the first live draft for a GitLab Staff role
+  headlined "Staff Fullstack Engineer (Golang / Node)". `agent/cv_reviewer.py` is one MiMo call
+  that sees only the source CV, the draft's extracted text (what an ATS shows), the posting, the
+  employer and today's date, never the writer's instructions. It plays a fact-checker (every
+  claim the source does not support, quoted) and that employer's hiring manager (each must-have
+  as covered, partial, in the source but left out, or not in the source; red flags; a fit
+  score). The verdict is computed in Python: a draft fails on any quoted claim that is really in
+  the draft, or any must-have the source has but the draft left out; real gaps never fail it.
+  Up to 3 drafts, each failure fed back as "remove or reword" and "bring forward" (never "add",
+  which the writer reads as permission for a new skill). A passing draft is attached and sent;
+  three failures delete the drafts and hold the job under a new desktop group, "CV did not pass
+  review". `hunter_cv --vacancy ID` runs it without sending. Live on GitLab's Gitaly Go role:
+  draft 1 had one claim the CV does not support, draft 2 passed with reviewer fit 34 (gaps: Git
+  internals, seniority). On a Staff Full-Stack GitLab role every draft failed, as it should.
+
+- **Fewer wasted sends, from the rejection analysis** — 511 agent sends brought 1 interview.
+  195 of 513 sends went to region-locked roles, roles asking for more years, or aggregators; the
+  user keeps sending to region-locked remote roles, so only the other two are cut. Before each send `skip_reason` now also skips employers on `HUNTER_SKIP_EMPLOYERS` (matched as
+  whole words, so "Turing" never catches "Manufacturing"; the default list is the reposters and
+  AI-trainer marketplaces with sends and no human reply: Jobgether 32 sends, TalentHop 10,
+  Wiraa 8) and any employer whose rejection email arrived in the last
+  `HUNTER_REJECTION_COOLDOWN_DAYS` (30). The cooldown is rejection-triggered, not one send per
+  company, because 2GIS answered from three separate teams on hh. The scoring prompt treats a
+  posting asking 2+ more years than `HUNTER_FACTS` states as a major mismatch and scores
+  worldwide, anywhere and contractor/EOR roles higher; by the user's choice it still does not
+  lower US/EU-resident-only remote roles. A remote board search asks Tavily for "(Remote OR
+  Worldwide OR Anywhere)" in the same query, so it costs no extra credits. `hunter_targets` lists
+  the 20 best-matching employers of the last 30 days for the user to ask for referrals, since
+  referred candidates reach an interview about 40% of the time against 3% cold. The CV template
+  maps its Font Awesome glyphs to spaces in the PDF text layer: parsed CVs began with
+  "♂¶ap-¶arker-alt" before the location, which every ATS showed the recruiter.
+
+- **The agent reads job email** — `apps/hunter/mail.py` reads the Gmail accounts in
+  `HUNTER_MAIL_ACCOUNTS` (`address:days:app-password`, `days` = `all` for a full backfill) over
+  IMAP with an app password, read-only: `[Gmail]/All Mail` (found by its `\All` flag) opened with
+  `readonly=True` and fetched with `BODY.PEEK`, so nothing is marked read, moved or sent. Gmail's
+  `X-GM-RAW` search does the window (`newer_than:5d`) and leaves out sent mail. New messages,
+  newest first and `HUNTER_MAIL_PER_RUN` per account per cycle, go to MiMo in batches of 15
+  (sender, subject, date, 1200 characters of text) and get one of `mail.KINDS`, the company and a
+  one-line summary; a failed call stores nothing, so those emails are sorted next time. Only the
+  headers, kind, company and summary are kept (`MailMessage`), never bodies, and logs carry counts
+  only. The company is matched to a sent or held job in code (suffixes like Inc/ТОО dropped,
+  subject words picking between roles, never an email older than the send), and a reply to a job
+  held as "not sure it was sent" marks it applied. Interviews, offers, tasks and requests from the
+  last two days raise one desktop notification; the desktop app's Mail tab lists the job email
+  with Open in Gmail (an `rfc822msgid:` search), Open the job and Done (`agent_desk mail-done`).
+  `hunt` sorts mail at the start of every cycle; `mail_sync --limit 0` sorts a whole backlog.
+  Live on the personal account: 281 emails from 5 days sorted (no email marked read), 48 of the
+  first 63 job replies linked to a job. Google holds app passwords for 7 days on an account
+  signed in from a new device, which blocked the work account; reading the Gmail website from a
+  bot browser was turned down, since automated access from yet another new device risks an
+  "unusual activity" lock. The user chose Google Takeout instead: `mail_import FILE --account
+  ADDR` reads a Takeout `.mbox` (or the `.zip`/`.tgz` around it), leaves out mail labelled Sent,
+  Drafts, Spam, Trash or Chat, keys each email by a hash of its Message-ID (stored with
+  `uidvalidity` 0) and can be rerun to continue after a MiMo failure. When IMAP later reaches the
+  same account, an imported row with the same Message-ID is adopted (given its IMAP uid) instead
+  of being sorted again.
+
+- **Ashby, Greenhouse and Lever job boards** — the user's "site:jobs.ashbyhq.com ("Frontend
+  Engineer" AND "Remote")" idea, now the top-priority source (`ats`). Searching google.com from
+  the agent would run into Google's bot check, so the search goes through Tavily (the key the
+  Analyze feature already uses) with `include_domains`; one query per board and title returned
+  14-32 postings live. Each company found is remembered and its whole board is read from the free
+  public JSON API on later runs, so new matching remote jobs appear without spending search
+  credits (one search per title per board a day: 15 of the 1000 monthly credits for 5 titles).
+  Applying is the navigator on the board's own form with no sign-in; it confirms a send from the
+  thank-you page, gets 60 steps, and a captcha holds only that job. Rehearsals on real forms
+  reached the final submit on Ashby (7 steps), Greenhouse (15) and Lever (16). Greenhouse's
+  react-select dropdowns first cost 10+ steps of clicking "No": the navigator's `select` on a
+  non-`<select>` now opens the field, types the answer and clicks the matching `role=option`, and
+  the prompt tells the model to use it. One Greenhouse rerun still stalled re-checking its cover
+  letter, so such a job lands in review. Evidence keys now replace `:` (board ids carry it, and
+  the key pattern refused them, so nothing was saved). The tailored-CV "replace the preselected
+  résumé" hint is not sent on job boards: it made the model remove its own upload.
+
+- **dsml.kz fills without locators** — the reload fix was not enough: in the first parallel run 1
+  DSML send went through and the next 5 failed the same way, on a freshly loaded page. Every
+  failing call returned an element handle (`locator.evaluate`, `fill`, `set_input_files`); every
+  call that kept working returned JSON (`page.evaluate`, evidence capture). It never reproduced
+  outside the agent, even replaying the whole lane, so the root cause is unknown. `apply` now
+  focuses fields and reads values back through `page.evaluate`, types with `page.keyboard`,
+  attaches the CV through a `DataTransfer` built from base64 (the form shows the file name, so
+  React took it), and clicks Send by coordinates after checking `elementFromPoint`. A lane replay
+  filled all 5 held jobs correctly up to Send.
+  Live, the fill then worked, but DSML accepted only the first guest send of the run and answered
+  "Failed to save guest application" to the 4 after it (every first send of a browser session has
+  gone through: 4 of 4). A failed send's note now carries the last non-GET server responses, and
+  the next refusal showed it is not a rate limit: the CV upload to storage returned 200 and
+  `POST /v1/careers/guest-applications` returned `502 upstream_error "Failed to save guest
+  application"`, on the first send of that run. It is DSML's backend failing. An adapter's
+  `TRY_LATER` note prefixes now put such a row back in the queue (`submitted_at` cleared, a
+  "refused this job N times" note) and move on to the next job; after 3 refusals the row is held.
+
 - **Site priority and parallel lanes** — sites now run DSML.kz, Indeed, LinkedIn, hh.kz in that
   order (`HUNTER_SITE_PRIORITY`), two at a time (`HUNTER_PARALLEL_SITES=2`): DSML and Indeed
   start together and LinkedIn and hh take the lanes as they free up. The user ranks DSML and

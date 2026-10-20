@@ -1,14 +1,16 @@
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
-from apps.hunter import captcha, evidence, review, state
-from apps.hunter.models import Vacancy
+from apps.hunter import captcha, evidence, mail, review, state
+from apps.hunter.models import MailMessage, Vacancy
 from apps.hunter.sources import ADAPTERS, LOGIN_SITES
 
 SENT_ROWS = 60
+MAIL_ROWS = 80
+MAIL_RECENT = timedelta(days=30)
 LOG_ROWS = 80
 LOG_STAMP = "%Y-%m-%d %H:%M:%S UTC"
 
@@ -46,6 +48,38 @@ def sent_payload(vacancy: Vacancy, names: dict) -> dict:
         "url": vacancy.url,
         "note": vacancy.note,
         "applied_at": state.encode(vacancy.applied_at),
+    }
+
+
+def mail_payload(message: MailMessage) -> dict:
+    vacancy = message.vacancy
+    return {
+        "id": message.pk,
+        "account": message.account,
+        "kind": message.kind,
+        "sender": message.sender,
+        "subject": message.subject,
+        "employer": message.employer,
+        "summary": message.summary,
+        "received_at": state.encode(message.received_at),
+        "gmail_url": mail.gmail_url(message),
+        "job_title": vacancy.title if vacancy else "",
+        "job_url": vacancy.url if vacancy else "",
+    }
+
+
+def mail_listing() -> dict:
+    shown = MailMessage.objects.filter(
+        kind__in=mail.SHOWN,
+        dismissed=False,
+        received_at__gte=datetime.now(UTC) - MAIL_RECENT,
+    ).select_related("vacancy")
+    return {
+        "accounts": [account.address for account in mail.accounts()],
+        "sorted": MailMessage.objects.count(),
+        "kinds": list(mail.SHOWN),
+        "urgent": list(mail.URGENT),
+        "rows": [mail_payload(message) for message in shown[:MAIL_ROWS]],
     }
 
 
@@ -116,6 +150,7 @@ def listing() -> dict:
         "sent": [
             sent_payload(vacancy, names) for vacancy in sent.order_by("-applied_at")[:SENT_ROWS]
         ],
+        "mail": mail_listing(),
     }
 
 
@@ -129,10 +164,18 @@ class Command(BaseCommand):
         resolve.add_argument("id", type=int)
         resolve.add_argument("action", choices=review.ACTIONS)
         resolve.add_argument("--not-sent", action="store_true")
+        done = commands.add_parser("mail-done")
+        done.add_argument("id", type=int)
 
     def handle(self, *args, **options):
         if options["command"] == "list":
             self.stdout.write(json.dumps(listing(), ensure_ascii=False))
+            return
+        if options["command"] == "mail-done":
+            problem = mail.dismiss(options["id"])
+            if problem:
+                raise CommandError(problem)
+            self.stdout.write(json.dumps({"ok": True}))
             return
         problem = review.resolve(options["id"], options["action"], options["not_sent"])
         if problem:

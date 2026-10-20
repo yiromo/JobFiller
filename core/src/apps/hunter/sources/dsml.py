@@ -1,6 +1,10 @@
+import base64
+import mimetypes
 import re
+from pathlib import Path
 from urllib.parse import urlparse, urlsplit, urlunsplit
 
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
 from ..navigator import CONFIRMED_RE
@@ -16,6 +20,8 @@ RECHECK_BATCH = 5
 HEADED_CAPTCHA = False
 SEND_GAP = (20, 60)
 MAX_SENDS_PER_RUN = 0
+TRY_LATER = ("DSML.kz answered: Failed to save",)
+EMPLOYER_BOARDS = False
 NAVIGABLE = ("The DSML guest form did not open",)
 BASE = "https://dsml.kz"
 COVER_LIMIT = 1200
@@ -235,28 +241,112 @@ def contact_note(applicant: dict) -> str:
     return ". ".join(parts)[:NOTE_LIMIT]
 
 
-CENTER_JS = "(node) => node.scrollIntoView({block: 'center'})"
-SUBMIT_JS = "(form) => form.requestSubmit()"
+FIRST_NAME = "[id^='guest-apply-first-name-']"
+LAST_NAME = "[id^='guest-apply-last-name-']"
+RESUME = "input[type=file][id^='guest-apply-resume-']"
+LINKEDIN = "[id^='guest-apply-linkedin-']"
+COVER = "[id^='guest-apply-cover-']"
+CONTACT = "[id^='guest-apply-contact-note-']"
+FOCUS_JS = r"""
+(selector) => {
+  const field = document.querySelector(selector);
+  if (!field) return false;
+  field.scrollIntoView({block: "center", behavior: "instant"});
+  field.focus();
+  return document.activeElement === field;
+}
+"""
+VALUE_JS = r"""
+(selector) => {
+  const field = document.querySelector(selector);
+  return field ? field.value : null;
+}
+"""
+ATTACH_JS = r"""
+([selector, name, type, data]) => {
+  const input = document.querySelector(selector);
+  if (!input) return "";
+  const bytes = Uint8Array.from(atob(data), c => c.charCodeAt(0));
+  const transfer = new DataTransfer();
+  transfer.items.add(new File([bytes], name, {type}));
+  input.files = transfer.files;
+  input.dispatchEvent(new Event("input", {bubbles: true}));
+  input.dispatchEvent(new Event("change", {bubbles: true}));
+  return input.files.length ? input.files[0].name : "";
+}
+"""
+SUBMIT_SCROLL_JS = r"""
+(guest) => {
+  const email = document.querySelector(guest);
+  const form = email ? email.closest("form") : null;
+  const button = form ? form.querySelector("button[type=submit]") : null;
+  if (!button) return false;
+  button.scrollIntoView({block: "center", behavior: "instant"});
+  return true;
+}
+"""
+SUBMIT_POINT_JS = r"""
+(guest) => {
+  const email = document.querySelector(guest);
+  const form = email ? email.closest("form") : null;
+  const button = form ? form.querySelector("button[type=submit]") : null;
+  if (!button) return null;
+  const box = button.getBoundingClientRect();
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+  const hit = document.elementFromPoint(x, y);
+  return {x, y, clear: !!hit && button.contains(hit)};
+}
+"""
+REQUEST_SUBMIT_JS = r"""
+(guest) => {
+  const email = document.querySelector(guest);
+  const form = email ? email.closest("form") : null;
+  if (!form) return false;
+  form.requestSubmit();
+  return true;
+}
+"""
 
 
-def type_into(page, selector: str, value: str) -> None:
+def type_into(page, selector: str, value: str, paste: bool = False) -> bool:
     if not value:
-        return
-    field = page.locator(selector).first
-    field.evaluate(CENTER_JS)
-    field.press_sequentially(value, delay=35)
+        return True
+    if not page.evaluate(FOCUS_JS, selector):
+        return False
+    if paste:
+        page.keyboard.insert_text(value)
+    else:
+        page.keyboard.type(value, delay=35)
     pause(page, 0.3, 0.9)
+    return page.evaluate(VALUE_JS, selector) == value
+
+
+def attach_cv(page, path: str) -> bool:
+    file = Path(path)
+    kind = mimetypes.guess_type(file.name)[0] or "application/octet-stream"
+    data = base64.b64encode(file.read_bytes()).decode()
+    return page.evaluate(ATTACH_JS, [RESUME, file.name, kind, data]) == file.name
 
 
 def press_submit(page) -> None:
-    form = page.locator(f"form:has({GUEST})").first
-    submit = form.locator("button[type=submit]").first
-    submit.evaluate(CENTER_JS)
-    pause(page, 0.5, 1.0)
-    try:
-        submit.click(timeout=10000)
-    except PlaywrightTimeout:
-        form.evaluate(SUBMIT_JS)
+    point = page.evaluate(SUBMIT_POINT_JS, GUEST)
+    if point and point["clear"]:
+        page.mouse.click(point["x"], point["y"])
+    else:
+        page.evaluate(REQUEST_SUBMIT_JS, GUEST)
+
+
+def server_answer(responses: list) -> str:
+    posts = [response for response in responses if response.request.method != "GET"][-2:]
+    answers = []
+    for response in posts:
+        try:
+            body = " ".join(response.text().split())[:200]
+        except PlaywrightError:
+            body = ""
+        answers.append(f"{response.status} {urlparse(response.url).path} {body}".strip())
+    return f" (server: {' | '.join(answers)})" if answers else ""
 
 
 def apply(
@@ -281,27 +371,37 @@ def apply(
     pause(page)
     name = applicant.get("name", "").split()
     first, last = (name[0], " ".join(name[1:])) if name else ("", "")
-    type_into(page, "[id^='guest-apply-first-name-']", first)
-    type_into(page, "[id^='guest-apply-last-name-']", last)
-    type_into(page, GUEST, applicant["email"])
-    page.locator("[id^='guest-apply-resume-']").first.set_input_files(applicant["cv_path"])
+    type_into(page, FIRST_NAME, first)
+    type_into(page, LAST_NAME, last)
+    if not type_into(page, GUEST, applicant["email"]):
+        return False, "The DSML.kz email field did not take the address."
+    if not attach_cv(page, applicant["cv_path"]):
+        return False, "The DSML.kz form did not take the CV file."
     pause(page)
-    type_into(page, "[id^='guest-apply-linkedin-']", applicant.get("linkedin", ""))
+    type_into(page, LINKEDIN, applicant.get("linkedin", ""))
     if letter:
-        cover = page.locator("[id^='guest-apply-cover-']").first
-        cover.evaluate(CENTER_JS)
-        cover.fill(letter[:COVER_LIMIT])
+        type_into(page, COVER, letter[:COVER_LIMIT], paste=True)
         pause(page)
-    note = contact_note(applicant)
-    if note:
-        contact = page.locator("[id^='guest-apply-contact-note-']").first
-        contact.evaluate(CENTER_JS)
-        contact.fill(note)
-        pause(page)
+    type_into(page, CONTACT, contact_note(applicant), paste=True)
+    if not page.evaluate(SUBMIT_SCROLL_JS, GUEST):
+        return False, "The DSML.kz guest form has no send button."
+    pause(page, 0.5, 1.0)
     if on_submit:
         on_submit()
-    press_submit(page)
-    return wait_for_outcome(page)
+    sent = []
+
+    def watch(response) -> None:
+        sent.append(response)
+
+    page.on("response", watch)
+    try:
+        press_submit(page)
+        applied, note = wait_for_outcome(page)
+    finally:
+        page.remove_listener("response", watch)
+    if not applied:
+        note += server_answer(sent)
+    return applied, note
 
 
 def confirmation(text: str) -> str:

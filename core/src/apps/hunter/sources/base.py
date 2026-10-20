@@ -13,6 +13,8 @@ CONTRACT = (
     "HEADED_CAPTCHA",
     "SEND_GAP",
     "MAX_SENDS_PER_RUN",
+    "TRY_LATER",
+    "EMPLOYER_BOARDS",
     "handles",
     "origin",
     "expand_source",

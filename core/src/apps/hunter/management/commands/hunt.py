@@ -10,7 +10,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
-from apps.hunter import notify
+from apps.hunter import mail, notify
 from apps.hunter.service import STOPPING, RunSummary, first_line, run_once
 from apps.hunter.sources.hh import CaptchaError
 from apps.hunter.state import Tracker
@@ -74,6 +74,11 @@ class Command(BaseCommand):
                 tracker.cycle_started()
             summary = RunSummary()
             error = ""
+            if not options["vacancy"] and not options["headed"]:
+                try:
+                    mail.sync(log)
+                except mail.SYNC_ERRORS as mail_error:
+                    log(f"Mail: {type(mail_error).__name__}: {first_line(mail_error)}")
             try:
                 run_once(
                     apply=options["apply"],

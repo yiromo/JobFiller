@@ -324,11 +324,15 @@ def _project_entries(projects: list[dict]) -> str:
     return "\n\n    \\vspace{0.03cm}\n\n".join(blocks)
 
 
+def _without_gpa_label(value) -> str:
+    return re.sub(r"^\s*GPA\s*:?\s*", "", str(value), flags=re.IGNORECASE)
+
+
 def _education_section(education: dict, languages: list[dict]) -> str:
     if not education.get("degree") and not education.get("school"):
         return ""
     gpa = (
-        f" \\textbar{{}} GPA: \\textbf{{{_escape(education['gpa'])}}}"
+        f" \\textbar{{}} GPA: \\textbf{{{_escape(_without_gpa_label(education['gpa']))}}}"
         if education.get("gpa")
         else ""
     )
@@ -455,6 +459,11 @@ def _build_tex(data: dict, contact: dict) -> str:
 
 \ifPDFTeX
     \input{{glyphtounicode}}
+    \pdfglyphtounicode{{map-marker-alt}}{{0020}}
+    \pdfglyphtounicode{{envelope}}{{0020}}
+    \pdfglyphtounicode{{phone}}{{0020}}
+    \pdfglyphtounicode{{linkedin}}{{0020}}
+    \pdfglyphtounicode{{github}}{{0020}}
     \pdfgentounicode=1
     \usepackage[T1]{{fontenc}}
     \usepackage[utf8]{{inputenc}}

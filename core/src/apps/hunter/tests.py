@@ -1,3 +1,4 @@
+import base64
 import json
 import tempfile
 import threading
@@ -10,14 +11,26 @@ from django.conf import settings
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
+from agent import cv_reviewer
 from apps.cvs.models import Cv
-from apps.hunter import captcha, evidence, inbox, navigator, notify, review, service, state
+from apps.hunter import (
+    captcha,
+    evidence,
+    inbox,
+    mail,
+    navigator,
+    notify,
+    review,
+    service,
+    state,
+)
 from apps.hunter.management.commands import agent_desk
-from apps.hunter.models import ResumeLink, Vacancy
+from apps.hunter.models import MailMessage, ResumeLink, Vacancy
 from apps.hunter.service import RunSummary, letter_language
 from apps.hunter.sources import (
     ADAPTERS,
     adapter_for,
+    ats,
     dsml,
     hh,
     indeed,
@@ -147,6 +160,8 @@ class FakeAdapter:
     HEADED_CAPTCHA = True
     SEND_GAP = (0, 0)
     MAX_SENDS_PER_RUN = 0
+    TRY_LATER = ()
+    EMPLOYER_BOARDS = False
 
     def __init__(self, status, outcome=(True, "Applied on hh.kz.")):
         self.status = status
@@ -240,6 +255,63 @@ class ApplyReadyTests(LinkedCvCase):
         self.assertEqual(adapter.applied, ["https://astana.hh.kz/vacancy/20"])
         self.assertEqual(second.status, Vacancy.Status.SKIPPED)
         self.assertIn("already applied", second.note)
+
+    def test_skip_list_employers_are_skipped_by_whole_word(self):
+        aggregator = self.vacancy("30")
+        maker = self.vacancy("31")
+        Vacancy.objects.filter(pk=aggregator.pk).update(employer="Prolific Academic Ltd")
+        Vacancy.objects.filter(pk=maker.pk).update(employer="Hexagon Manufacturing Intelligence")
+        adapter = FakeAdapter(hh.parse_status({"resumes": {"1": {"hash": "hash"}}}))
+        with patch("apps.hunter.service.time.sleep"):
+            self.run_apply(adapter)
+        aggregator.refresh_from_db()
+        self.assertEqual(aggregator.status, Vacancy.Status.SKIPPED)
+        self.assertIn("skip list (Prolific)", aggregator.note)
+        self.assertEqual(adapter.applied, ["https://astana.hh.kz/vacancy/31"])
+
+    def test_an_employer_that_rejected_recently_is_skipped_and_others_are_not(self):
+        rejected = self.vacancy("40")
+        again = self.vacancy("41")
+        Vacancy.objects.filter(pk__in=[rejected.pk, again.pk]).update(employer="Prima")
+        Vacancy.objects.filter(pk=again.pk).update(employer="2GIS")
+        MailMessage.objects.create(
+            account="a@example.com",
+            uidvalidity=1,
+            uid=1,
+            kind="rejection",
+            employer="prima",
+            received_at=timezone.now() - timedelta(days=3),
+        )
+        MailMessage.objects.create(
+            account="a@example.com",
+            uidvalidity=1,
+            uid=2,
+            kind="rejection",
+            employer="2GIS",
+            received_at=timezone.now() - timedelta(days=45),
+        )
+        adapter = FakeAdapter(hh.parse_status({"resumes": {"1": {"hash": "hash"}}}))
+        with patch("apps.hunter.service.time.sleep"):
+            self.run_apply(adapter)
+        rejected.refresh_from_db()
+        self.assertEqual(rejected.status, Vacancy.Status.SKIPPED)
+        self.assertIn("sent a rejection on", rejected.note)
+        self.assertEqual(adapter.applied, ["https://astana.hh.kz/vacancy/41"])
+
+    def test_referral_targets_rank_employers_and_leave_out_skipped_ones(self):
+        for external_id, employer, score in [
+            ("50", "Acme", 92),
+            ("51", "Acme", 80),
+            ("52", "Jobgether", 99),
+            ("53", "Globex", 85),
+            ("54", "Initech", 60),
+        ]:
+            row = self.vacancy(external_id)
+            Vacancy.objects.filter(pk=row.pk).update(employer=employer, match_score=score)
+        targets = service.referral_targets()
+        self.assertEqual([item["employer"] for item in targets], ["Acme", "Globex"])
+        self.assertEqual(targets[0]["roles"], 2)
+        self.assertEqual(targets[0]["score"], 92)
 
     def test_rows_without_a_cv_are_never_claimed(self):
         orphan = self.vacancy("4", cv=False)
@@ -1227,6 +1299,53 @@ class DsmlPagingTests(SimpleTestCase):
         self.assertTrue(waits)
         self.assertLess(waits[-1], calls.index(dsml.OPEN_FORM_JS))
 
+    def test_apply_fills_the_form_without_element_handles(self):
+        uuid = "11111111-1111-1111-1111-111111111111"
+        page = MagicMock()
+        page.title.return_value = "Senior AI Engineer"
+        typed = {}
+        page.keyboard.type.side_effect = lambda value, delay: typed.update(last=value)
+        page.keyboard.insert_text.side_effect = lambda value: typed.update(last=value)
+
+        def evaluate(script, *args):
+            if script == dsml.JOB_JS:
+                return {"heading": "", "text": "", "guest": True, "status": "", "head": ""}
+            if script == dsml.VALUE_JS:
+                return typed.get("last")
+            if script == dsml.ATTACH_JS:
+                return args[0][1]
+            if script == dsml.SUBMIT_POINT_JS:
+                return {"x": 10, "y": 20, "clear": True}
+            return True
+
+        page.evaluate.side_effect = evaluate
+        submitted = []
+        with tempfile.NamedTemporaryFile(suffix=".pdf") as cv:
+            applicant = {"cv_path": cv.name, "email": "a@b.c", "name": "Jane Doe"}
+            with (
+                patch("apps.hunter.sources.dsml.pause"),
+                patch(
+                    "apps.hunter.sources.dsml.wait_for_outcome",
+                    return_value=(True, "Applied on DSML.kz."),
+                ),
+            ):
+                result = dsml.apply(
+                    page,
+                    dsml.job_url(uuid),
+                    "",
+                    "A short letter.",
+                    None,
+                    on_submit=lambda: submitted.append(True),
+                    applicant=applicant,
+                )
+        self.assertEqual(result, (True, "Applied on DSML.kz."))
+        page.locator.assert_not_called()
+        page.evaluate_handle.assert_not_called()
+        page.keyboard.type.assert_any_call("a@b.c", delay=35)
+        page.keyboard.insert_text.assert_any_call("A short letter.")
+        page.mouse.click.assert_called_once_with(10, 20)
+        self.assertEqual(submitted, [True])
+
 
 class NavigatorBudgetTests(TestCase):
     def element(self, **fields):
@@ -1246,6 +1365,34 @@ class NavigatorBudgetTests(TestCase):
         self.assertIn("refused", navigator.vet({"action": "click"}, proceed, {"x.com"}, False))
         apply = self.element(text="Apply now", group=terms)
         self.assertEqual(navigator.vet({"action": "click"}, apply, {"x.com"}, False), "")
+
+    def picker(self, counts):
+        page = MagicMock()
+        options = {}
+
+        def by_role(role, name, exact=False):
+            found = MagicMock()
+            found.count.return_value = counts.get(exact, 0)
+            options[exact] = found
+            return found
+
+        page.get_by_role.side_effect = by_role
+        nav = navigator.Navigator.__new__(navigator.Navigator)
+        nav.page = page
+        return nav, page, options
+
+    def test_a_dropdown_without_the_option_fails_without_pressing_enter(self):
+        nav, page, _ = self.picker({True: 0, False: 3})
+        result = nav.pick_option(MagicMock(), "No")
+        self.assertTrue(result.startswith("failed: no option named"))
+        pressed = [call.args[0] for call in page.keyboard.press.call_args_list]
+        self.assertNotIn("Enter", pressed)
+        self.assertIn("Escape", pressed)
+
+    def test_a_dropdown_picks_the_exact_option(self):
+        nav, _, options = self.picker({True: 1})
+        self.assertEqual(nav.pick_option(MagicMock(), "No"), "ok")
+        options[True].first.click.assert_called_once()
 
     def test_required_fields_are_recognised_by_star_or_flag(self):
         self.assertTrue(navigator.is_required({"label": "First Name*"}))
@@ -1543,3 +1690,1011 @@ class SitePriorityTests(LinkedCvCase):
         finally:
             service.STOPPING.clear()
         self.assertEqual(Vacancy.objects.get(external_id="93").status, Vacancy.Status.READY)
+
+
+class TryLaterTests(LinkedCvCase):
+    def run_refused(self):
+        status = hh.parse_status({"resumes": {"1": {"hash": "hash"}}})
+        adapter = FakeAdapter(status, (False, "Site said: Failed to save (server: 502 /x)"))
+        adapter.TRY_LATER = ("Site said: Failed to save",)
+        original = adapter.apply
+
+        def apply(*args, **kwargs):
+            kwargs["on_submit"]()
+            return original(*args, **kwargs)
+
+        adapter.apply = apply
+        lines = []
+        summary = RunSummary()
+        service.apply_ready(None, adapter, 10, [self.link], lines.append, summary)
+        return summary, lines
+
+    def test_a_refused_send_goes_back_in_the_queue_and_the_next_job_is_tried(self):
+        first, second = self.vacancy("95"), self.vacancy("96")
+        Vacancy.objects.filter(pk=first.pk).update(match_score=99)
+        summary, lines = self.run_refused()
+        first.refresh_from_db()
+        second.refresh_from_db()
+        for row in (first, second):
+            self.assertEqual(row.status, Vacancy.Status.READY)
+            self.assertIsNone(row.submitted_at)
+            self.assertIn("refused this job 1 time;", row.note)
+        self.assertEqual(summary.review, [])
+        self.assertEqual(sum(line.startswith("  LATER") for line in lines), 2)
+
+    def test_a_job_refused_three_times_is_held(self):
+        row = self.vacancy("97")
+        for _ in range(3):
+            summary, _ = self.run_refused()
+        row.refresh_from_db()
+        self.assertEqual(row.status, Vacancy.Status.NEEDS_REVIEW)
+        self.assertIsNone(row.submitted_at)
+        self.assertIn("refused this job 3 times", row.note)
+        self.assertEqual([item.pk for item in summary.review], [row.pk])
+
+    def test_the_server_answer_names_the_last_non_get_responses(self):
+        def response(method, status, url, body):
+            item = MagicMock(status=status, url=url)
+            item.request.method = method
+            item.text.return_value = body
+            return item
+
+        answers = [
+            response("GET", 200, "https://dsml.kz/a.js", "code"),
+            response("POST", 429, "https://dsml.kz/jobs/x", "Too   many\nrequests"),
+        ]
+        self.assertEqual(dsml.server_answer(answers), " (server: 429 /jobs/x Too many requests)")
+        self.assertEqual(dsml.server_answer(answers[:1]), "")
+
+
+ASHBY_JOB = "https://jobs.ashbyhq.com/acme/5bf4629b-d2ee-4129-980f-e31b96185c9c"
+
+
+class AtsSourceTests(SimpleTestCase):
+    def setUp(self):
+        ats.CACHE.clear()
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        override = override_settings(
+            DATA_DIR=Path(folder.name), TAVILY_API_KEY="key", HUNTER_ATS_SEARCH_HOURS=24
+        )
+        override.enable()
+        self.addCleanup(override.disable)
+
+    def test_job_links_are_reduced_to_one_canonical_posting(self):
+        cases = {
+            "http://jobs.ashbyhq.com/acme/5BF4629B-d2ee-4129-980f-e31b96185c9c/application": (
+                ASHBY_JOB
+            ),
+            "https://boards.greenhouse.io/inflect/jobs/4717912006?gh_src=x": (
+                "https://job-boards.greenhouse.io/inflect/jobs/4717912006"
+            ),
+            "https://jobs.lever.co/qonto/1fb7a10a-9377-47d4-99f6-e826880c3a6b/apply": (
+                "https://jobs.lever.co/qonto/1fb7a10a-9377-47d4-99f6-e826880c3a6b"
+            ),
+        }
+        for link, canonical in cases.items():
+            self.assertEqual(ats.job_url(*ats.parse_job(link)), canonical, link)
+        self.assertIsNone(ats.parse_job("https://jobs.ashbyhq.com/acme"))
+        self.assertIs(adapter_for(ASHBY_JOB), ats)
+        self.assertEqual(ats.apply_url(ASHBY_JOB), f"{ASHBY_JOB}/application")
+
+    def test_a_source_url_expands_to_one_search_per_title(self):
+        urls = ats.expand_source("https://jobs.lever.co/?q=Backend+Engineer&q=Go+Developer", [])
+        self.assertEqual(
+            [ats.search_terms(url) for url in urls],
+            [("lever", "Backend Engineer", "Remote"), ("lever", "Go Developer", "Remote")],
+        )
+
+    def test_a_remote_search_also_asks_for_worldwide_roles(self):
+        with patch("apps.hunter.sources.ats.get_json", return_value={"results": []}) as get:
+            ats.search("ashby", "Backend Engineer", "Remote")
+            ats.search("ashby", "Backend Engineer", "Berlin")
+        queries = [call.args[1]["query"] for call in get.call_args_list]
+        self.assertEqual(
+            queries,
+            ['"Backend Engineer" (Remote OR Worldwide OR Anywhere)', '"Backend Engineer" Berlin'],
+        )
+
+    def test_titles_match_across_hyphens_and_spacing(self):
+        self.assertTrue(ats.title_matches("Full-Stack Engineer", "Senior Fullstack Engineer"))
+        self.assertTrue(ats.title_matches("Full-Stack Engineer", "Full Stack Software Engineer"))
+        self.assertFalse(ats.title_matches("Full-Stack Engineer", "Frontend Engineer"))
+
+    def test_search_titles_name_the_employer(self):
+        self.assertEqual(
+            ats.hit_names("ashby", "Backend Engineer @ Fathom", "fathom.video"),
+            ("Backend Engineer", "Fathom"),
+        )
+        self.assertEqual(
+            ats.hit_names("lever", "Qonto - Go Backend Engineer - remote", "qonto"),
+            ("Go Backend Engineer - remote", "Qonto"),
+        )
+        self.assertEqual(
+            ats.hit_names("greenhouse", "Job Application for Backend Engineer at Inflect", "x"),
+            ("Backend Engineer", "Inflect"),
+        )
+
+    def crawl(self, hits):
+        listing = [
+            {"id": "5bf4629b-d2ee-4129-980f-e31b96185c9c", "title": "Backend Engineer"},
+            {
+                "id": "11111111-2222-3333-4444-555555555555",
+                "title": "Senior Backend Engineer",
+                "workplaceType": "Remote",
+            },
+            {
+                "id": "66666666-2222-3333-4444-555555555555",
+                "title": "Backend Engineer, Berlin",
+                "workplaceType": "OnSite",
+            },
+            {
+                "id": "77777777-2222-3333-4444-555555555555",
+                "title": "Designer",
+                "workplaceType": "Remote",
+            },
+        ]
+        with (
+            patch("apps.hunter.sources.ats.search", return_value=hits) as search,
+            patch("apps.hunter.sources.ats.board_listing", return_value=listing),
+        ):
+            found = ats.crawl(None, "https://jobs.ashbyhq.com/?q=Backend+Engineer", 1)
+        return found, search
+
+    def test_crawl_dedupes_hits_and_adds_matching_remote_jobs_from_the_same_board(self):
+        hits = [
+            {"url": ASHBY_JOB, "title": "Backend Engineer @ Acme"},
+            {"url": f"{ASHBY_JOB}/application", "title": "Backend Engineer @ Acme"},
+            {"url": "https://jobs.lever.co/x/1fb7a10a-9377-47d4-99f6-e826880c3a6b", "title": ""},
+        ]
+        found, search = self.crawl(hits)
+        search.assert_called_once_with("ashby", "Backend Engineer", "Remote")
+        self.assertEqual(
+            sorted(item.external_id for item in found),
+            [
+                "ashby:11111111-2222-3333-4444-555555555555",
+                "ashby:5bf4629b-d2ee-4129-980f-e31b96185c9c",
+            ],
+        )
+        self.assertEqual({item.employer for item in found}, {"Acme"})
+        again, search = self.crawl(hits)
+        search.assert_not_called()
+        self.assertEqual(
+            [item.external_id for item in again], ["ashby:11111111-2222-3333-4444-555555555555"]
+        )
+
+    def test_a_closed_posting_is_impossible_and_a_network_error_is_retried(self):
+        with patch("apps.hunter.sources.ats.board_listing", return_value=[]):
+            status = ats.response_status(None, ASHBY_JOB)
+        self.assertTrue(status.impossible)
+        ats.CACHE.clear()
+        with patch("apps.hunter.sources.ats.board_listing", side_effect=OSError("down")):
+            self.assertIsNone(ats.response_status(None, ASHBY_JOB))
+            self.assertEqual(ats.read_vacancy(None, ASHBY_JOB).text, "")
+
+    def test_a_failed_search_is_logged_and_the_run_goes_on(self):
+        lines = []
+        with patch("apps.hunter.sources.ats.search", side_effect=OSError("429")):
+            found = service.discover(
+                None, ats, "https://jobs.ashbyhq.com/?q=Backend+Engineer", 1, lines.append, 5
+            )
+        self.assertEqual(found, [])
+        self.assertIn("search failed: 429", lines[0])
+
+
+class EmployerBoardTests(LinkedCvCase):
+    def test_a_captcha_holds_only_that_job_and_the_next_one_is_sent(self):
+        status = hh.parse_status({"resumes": {"1": {"hash": "hash"}}})
+        adapter = FakeAdapter(status)
+        adapter.EMPLOYER_BOARDS = True
+        first, second = self.vacancy("98"), self.vacancy("99")
+        Vacancy.objects.filter(pk=first.pk).update(match_score=99)
+        original = adapter.apply
+        calls = []
+
+        def apply(*args, **kwargs):
+            calls.append(args[1])
+            if len(calls) == 1:
+                raise CaptchaError("captcha")
+            return original(*args, **kwargs)
+
+        adapter.apply = apply
+        summary = RunSummary()
+        service.apply_ready(None, adapter, 10, [self.link], lambda line: None, summary)
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertEqual(first.status, Vacancy.Status.NEEDS_REVIEW)
+        self.assertIn("captcha", first.note)
+        self.assertEqual(second.status, Vacancy.Status.APPLIED)
+        self.assertEqual(len(calls), 2)
+
+    def navigate(self, confirmation, external_id):
+        adapter = FakeAdapter(None)
+        adapter.EMPLOYER_BOARDS = True
+        adapter.open_for_apply = lambda page, url: None
+        adapter.navigator_goal = lambda *args: "goal"
+        result = navigator.Result("done", "submitted")
+        result.submitted = True
+        result.trace = []
+        status = hh.parse_status({})
+        with (
+            patch("apps.hunter.service.Navigator") as built,
+            patch("apps.hunter.service.evidence.capture"),
+            patch("apps.hunter.service.confirm_external", return_value=confirmation),
+        ):
+            built.return_value.run.return_value = result
+            outcome = service.navigate(
+                MagicMock(), adapter, self.vacancy(external_id), status, "", "", print, False, None
+            )
+        self.assertEqual(
+            built.call_args.kwargs["max_steps"], settings.HUNTER_NAVIGATOR_EXTERNAL_STEPS
+        )
+        return outcome
+
+    def test_evidence_keys_stay_valid_for_board_ids(self):
+        row = SimpleNamespace(source="ats", external_id="greenhouse:4717912006")
+        self.assertEqual(evidence.key_for(row), "ats-greenhouse-4717912006")
+        self.assertIsNotNone(evidence.folder(evidence.key_for(row)))
+
+    def test_the_confirmation_page_decides_whether_it_was_sent(self):
+        self.assertEqual(self.navigate("Applied (thanks)", "90"), (True, "Applied (thanks)"))
+        applied, note = self.navigate("", "91")
+        self.assertFalse(applied)
+        self.assertIn("did not confirm", note)
+
+
+def raw_email(sender, subject, body, message_id, html=False):
+    kind = "html" if html else "plain"
+    return (
+        f"From: {sender}\r\nSubject: {subject}\r\nDate: Wed, 14 Oct 2026 10:00:00 +0000\r\n"
+        f"Message-ID: <{message_id}>\r\nContent-Type: text/{kind}; charset=utf-8\r\n\r\n{body}"
+    ).encode()
+
+
+FAKE_IMAPS = []
+
+
+class FakeImap:
+    def __init__(self, host, timeout=None):
+        self.host = host
+        self.messages = {}
+        self.calls = []
+        self.selected = None
+        FAKE_IMAPS.append(self)
+
+    def login(self, user, password):
+        self.calls.append(("login", user, password))
+        if password != "secret":
+            raise mail.imaplib.IMAP4.error("[AUTHENTICATIONFAILED] Invalid credentials")
+        return "OK", [b"ok"]
+
+    def list(self):
+        return "OK", [
+            b'(\\HasNoChildren) "/" "INBOX"',
+            b'(\\All \\HasNoChildren) "/" "[Gmail]/All Mail"',
+        ]
+
+    def select(self, folder, readonly=False):
+        self.selected = (folder, readonly)
+        return "OK", [b"3"]
+
+    def response(self, code):
+        return code, [b"77"]
+
+    def uid(self, command, *args):
+        self.calls.append((command, *args))
+        if command == "SEARCH":
+            return "OK", [" ".join(str(uid) for uid in sorted(self.messages)).encode()]
+        uids = [int(uid) for uid in args[0].split(",")]
+        data = []
+        for uid in uids:
+            data.append((f"{uid} (UID {uid} BODY[]<0> {{10}}".encode(), self.messages[uid]))
+            data.append(b")")
+        return "OK", data
+
+    def logout(self):
+        self.calls.append(("logout",))
+
+
+class MailSortingTests(LinkedCvCase):
+    def setUp(self):
+        super().setUp()
+        FAKE_IMAPS.clear()
+        self.lines = []
+        self.settings_override = override_settings(
+            HUNTER_MAIL_ACCOUNTS="me@gmail.com:5:sec ret,work@gmail.com:all:secret",
+            MIMO_API_KEY="key",
+            HUNTER_NOTIFY_DESKTOP=False,
+        )
+        self.settings_override.enable()
+
+    def tearDown(self):
+        self.settings_override.disable()
+
+    def imap(self, messages):
+        def connect(host, timeout=None):
+            fake = FakeImap(host, timeout)
+            fake.messages = dict(messages)
+            return fake
+
+        return connect
+
+    def test_accounts_parse_window_and_strip_app_password_spaces(self):
+        with override_settings(
+            HUNTER_MAIL_ACCOUNTS="a@gmail.com:5:abcd efgh, b@gmail.com:all:xyz,bad,c@x:-2:p"
+        ):
+            parsed = mail.accounts()
+        self.assertEqual(
+            parsed,
+            [
+                mail.Account("a@gmail.com", "abcdefgh", 5),
+                mail.Account("b@gmail.com", "xyz", None),
+            ],
+        )
+
+    def test_reads_all_mail_read_only_with_peek_and_window(self):
+        sorted_rows = {
+            9: {"kind": "interview", "employer": "Fathom", "summary": "Pick a time."},
+        }
+        connect = self.imap({9: raw_email("hr@fathom.video", "Interview", "Hi", "m9@x")})
+        with patch.object(mail, "classify", return_value=sorted_rows):
+            saved = mail.sync_account(mail.accounts()[0], self.lines.append, 10, connect=connect)
+        fake = FAKE_IMAPS[0]
+        self.assertEqual(fake.selected, ('"[Gmail]/All Mail"', True))
+        search = next(call for call in fake.calls if call[0] == "SEARCH")
+        self.assertIn("newer_than:5d", search[2])
+        self.assertIn("-in:sent", search[2])
+        fetch = next(call for call in fake.calls if call[0] == "FETCH")
+        self.assertIn("BODY.PEEK[]", fetch[2])
+        self.assertEqual([message.uid for message in saved], [9])
+        self.assertEqual(saved[0].uidvalidity, 77)
+        self.assertEqual(saved[0].message_id, "<m9@x>")
+        self.assertIn(("logout",), fake.calls)
+
+    def test_all_window_has_no_date_filter_and_known_uids_are_skipped(self):
+        MailMessage.objects.create(account="work@gmail.com", uidvalidity=77, uid=1, kind="other")
+        messages = {
+            1: raw_email("a@b.c", "Old", "x", "m1@x"),
+            2: raw_email("a@b.c", "New", "x", "m2@x"),
+        }
+        seen = {}
+
+        def classify(emails):
+            seen.update(emails)
+            return {uid: {"kind": "newsletter", "employer": "", "summary": ""} for uid in emails}
+
+        with patch.object(mail, "classify", side_effect=classify):
+            mail.sync_account(mail.accounts()[1], self.lines.append, 0, connect=self.imap(messages))
+        search = next(call for call in FAKE_IMAPS[0].calls if call[0] == "SEARCH")
+        self.assertNotIn("newer_than", search[2])
+        self.assertEqual(list(seen), [2])
+        self.assertEqual(MailMessage.objects.filter(account="work@gmail.com").count(), 2)
+
+    def test_limit_takes_newest_first(self):
+        messages = {uid: raw_email("a@b.c", f"S{uid}", "x", f"m{uid}@x") for uid in range(1, 6)}
+        with patch.object(
+            mail,
+            "classify",
+            side_effect=lambda emails: {
+                uid: {"kind": "other", "employer": "", "summary": ""} for uid in emails
+            },
+        ):
+            saved = mail.sync_account(
+                mail.accounts()[1], self.lines.append, 2, connect=self.imap(messages)
+            )
+        self.assertEqual(sorted(message.uid for message in saved), [4, 5])
+
+    def test_model_failure_stores_nothing_so_the_email_is_retried(self):
+        connect = self.imap({3: raw_email("a@b.c", "S", "x", "m3@x")})
+        with patch.object(mail, "classify", side_effect=ValueError("bad json")):
+            saved = mail.sync_account(mail.accounts()[1], self.lines.append, 0, connect=connect)
+        self.assertEqual(saved, [])
+        self.assertFalse(MailMessage.objects.exists())
+        self.assertTrue(any("sorting failed" in line for line in self.lines))
+
+    def test_login_failure_is_logged_without_the_password(self):
+        with (
+            override_settings(HUNTER_MAIL_ACCOUNTS="me@gmail.com:5:wrong pass"),
+            patch.object(mail.imaplib, "IMAP4_SSL", self.imap({})),
+        ):
+            saved = mail.sync(self.lines.append)
+        self.assertEqual(saved, [])
+        self.assertTrue(any("AUTHENTICATIONFAILED" in line for line in self.lines))
+        self.assertFalse(any("wrong" in line or "pass" in line for line in self.lines))
+
+    def test_classify_keeps_only_known_ids_and_kinds(self):
+        content = json.dumps(
+            {
+                "emails": [
+                    {"id": "4", "kind": "Interview", "employer": " Acme ", "summary": "Call"},
+                    {"id": "5", "kind": "spam", "employer": "", "summary": ""},
+                    {"id": "99", "kind": "offer"},
+                ]
+            }
+        )
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
+        )
+        client = MagicMock()
+        client.chat.completions.create.return_value = response
+        emails = {
+            uid: {"sender": "", "subject": "", "received_at": None, "text": ""} for uid in (4, 5)
+        }
+        with patch.object(mail, "OpenAI", return_value=client):
+            rows = mail.classify(emails)
+        self.assertEqual(rows[4], {"kind": "interview", "employer": "Acme", "summary": "Call"})
+        self.assertEqual(rows[5]["kind"], "other")
+        self.assertNotIn(99, rows)
+
+    def test_html_body_is_reduced_to_text(self):
+        parsed = mail.parse(
+            raw_email(
+                "a@b.c",
+                "S",
+                "<html><style>p{}</style><p>Hello&nbsp;there</p></html>",
+                "m@x",
+                html=True,
+            )
+        )
+        self.assertEqual(parsed["text"], "Hello there")
+
+    def sent(self, external_id, employer, title, days_ago=1, status=Vacancy.Status.APPLIED):
+        vacancy = self.vacancy(external_id, status=status)
+        moment = timezone.now() - timedelta(days=days_ago)
+        Vacancy.objects.filter(pk=vacancy.pk).update(
+            employer=employer,
+            title=title,
+            applied_at=moment if status == Vacancy.Status.APPLIED else None,
+            submitted_at=moment,
+        )
+        vacancy.refresh_from_db()
+        return vacancy
+
+    def test_links_email_to_the_job_by_company_and_title(self):
+        self.sent("1", "Acme Inc.", "Data Engineer", days_ago=3)
+        backend = self.sent("2", "ACME", "Backend Engineer", days_ago=2)
+        self.sent("3", "Other", "Backend Engineer")
+        pool = mail.candidates()
+        found = mail.match_vacancy(
+            "Acme", "Your Backend Engineer application", timezone.now(), pool
+        )
+        self.assertEqual(found, backend)
+        self.assertIsNone(mail.match_vacancy("Ac", "x", timezone.now(), pool))
+        self.assertIsNone(
+            mail.match_vacancy("Acme", "x", timezone.now() - timedelta(days=30), pool)
+        )
+
+    def test_reply_confirms_an_unconfirmed_send(self):
+        held = self.sent("7", "Fathom", "Backend Engineer", status=Vacancy.Status.NEEDS_REVIEW)
+        Vacancy.objects.filter(pk=held.pk).update(
+            note="Submitted, but no confirmation; check before resending."
+        )
+        connect = self.imap({4: raw_email("no-reply@ashbyhq.com", "Thanks", "x", "m4@x")})
+        rows = {4: {"kind": "confirmation", "employer": "Fathom", "summary": "Received."}}
+        with (
+            patch.object(mail, "classify", return_value=rows),
+            patch.object(mail.timezone, "now", return_value=timezone.now()),
+        ):
+            Vacancy.objects.filter(pk=held.pk).update(
+                submitted_at=datetime(2026, 10, 14, 9, 0, tzinfo=UTC)
+            )
+            saved = mail.sync_account(mail.accounts()[1], self.lines.append, 0, connect=connect)
+        held.refresh_from_db()
+        self.assertEqual(saved[0].vacancy, held)
+        self.assertEqual(held.status, Vacancy.Status.APPLIED)
+        self.assertIn("confirmation email", held.note)
+
+    def test_marketing_email_is_not_linked(self):
+        self.sent("8", "Fathom", "Backend Engineer")
+        connect = self.imap({5: raw_email("news@fathom.video", "News", "x", "m5@x")})
+        rows = {5: {"kind": "newsletter", "employer": "Fathom", "summary": ""}}
+        with patch.object(mail, "classify", return_value=rows):
+            saved = mail.sync_account(mail.accounts()[1], self.lines.append, 0, connect=connect)
+        self.assertIsNone(saved[0].vacancy)
+
+    def test_desktop_lists_shown_kinds_and_dismiss_hides_them(self):
+        shown = MailMessage.objects.create(
+            account="work@gmail.com",
+            uidvalidity=1,
+            uid=1,
+            kind="interview",
+            message_id="<abc@x>",
+            subject="Interview",
+            received_at=timezone.now(),
+        )
+        MailMessage.objects.create(
+            account="work@gmail.com",
+            uidvalidity=1,
+            uid=3,
+            kind="interview",
+            received_at=timezone.now() - timedelta(days=90),
+        )
+        MailMessage.objects.create(
+            account="work@gmail.com", uidvalidity=1, uid=2, kind="newsletter"
+        )
+        listing = agent_desk.mail_listing()
+        self.assertEqual([row["id"] for row in listing["rows"]], [shown.pk])
+        self.assertEqual(listing["sorted"], 3)
+        self.assertIn("rfc822msgid%3Aabc%40x", listing["rows"][0]["gmail_url"])
+        self.assertEqual(mail.dismiss(shown.pk), "")
+        self.assertEqual(agent_desk.mail_listing()["rows"], [])
+
+    def test_urgent_recent_email_raises_one_desktop_notice(self):
+        recent = MailMessage(kind="interview", employer="Acme", received_at=timezone.now())
+        old = MailMessage(
+            kind="offer", employer="Old", received_at=timezone.now() - timedelta(days=30)
+        )
+        alert = MailMessage(kind="job_alert", received_at=timezone.now())
+        with patch.object(notify, "send_desktop") as send:
+            mail.notify_urgent([recent, old, alert])
+        title, body = send.call_args.args
+        self.assertEqual(title, "1 email needs you")
+        self.assertIn("Acme", body)
+        self.assertNotIn("Old", body)
+
+    def test_broken_email_and_missing_answer_are_stored_as_other_not_retried(self):
+        messages = {
+            1: raw_email("a@b.c", "Good", "x", "m1@x"),
+            2: b"\xff\xfe broken",
+        }
+        with (
+            patch.object(mail, "parse", side_effect=[ValueError("bad"), mail.parse(messages[1])]),
+            patch.object(
+                mail,
+                "classify",
+                return_value={1: {"kind": "interview", "employer": "", "summary": ""}},
+            ),
+        ):
+            saved = mail.sync_account(
+                mail.accounts()[1], self.lines.append, 0, connect=self.imap(messages)
+            )
+        kinds = {message.uid: message.kind for message in saved}
+        self.assertEqual(kinds, {1: "interview", 2: "other"})
+
+    def test_missing_uidvalidity_is_a_mail_error(self):
+        def connect(host, timeout=None):
+            fake = FakeImap(host, timeout)
+            fake.response = lambda code: (code, [None])
+            return fake
+
+        with patch.object(mail.imaplib, "IMAP4_SSL", connect):
+            saved = mail.sync(self.lines.append, only="work@gmail.com")
+        self.assertEqual(saved, [])
+        self.assertTrue(any("no UIDVALIDITY" in line for line in self.lines))
+
+
+class MailImportTests(LinkedCvCase):
+    def setUp(self):
+        super().setUp()
+        self.directory = tempfile.TemporaryDirectory()
+        self.data = override_settings(
+            DATA_DIR=Path(self.directory.name),
+            MIMO_API_KEY="key",
+            HUNTER_MAIL_ACCOUNTS="work@gmail.com:all:secret",
+        )
+        self.data.enable()
+        self.lines = []
+
+    def tearDown(self):
+        self.data.disable()
+        self.directory.cleanup()
+
+    def mbox(self, messages, name="All mail.mbox"):
+        path = Path(self.directory.name) / name
+        box = mail.mailbox.mbox(path)
+        for message in messages:
+            box.add(message)
+        box.flush()
+        box.close()
+        return path
+
+    def labelled(self, message_id, labels):
+        raw = raw_email("hr@acme.com", f"Subject {message_id}", "Body", message_id)
+        return f"X-Gmail-Labels: {labels}\r\n".encode() + raw
+
+    def sort_all(self, emails):
+        return {uid: {"kind": "rejection", "employer": "", "summary": "No."} for uid in emails}
+
+    def test_imports_received_mail_once_and_leaves_out_sent_and_spam(self):
+        path = self.mbox(
+            [
+                self.labelled("a@x", "Inbox,Opened"),
+                self.labelled("b@x", "Sent"),
+                self.labelled("c@x", "Spam"),
+                self.labelled("d@x", "Archived"),
+                "X-Gmail-Labels: Отправленные\r\n".encode()
+                + raw_email("Me <Work@gmail.com>", "Re", "Body", "e@x"),
+            ]
+        )
+        with patch.object(mail, "classify", side_effect=self.sort_all) as classify:
+            saved = mail.import_mbox(path, "work@gmail.com", self.lines.append)
+            again = mail.import_mbox(path, "work@gmail.com", self.lines.append)
+        self.assertEqual(sorted(m.message_id for m in saved), ["<a@x>", "<d@x>"])
+        self.assertEqual(again, [])
+        self.assertEqual(classify.call_count, 1)
+        self.assertTrue(all(m.uidvalidity == mail.IMPORTED for m in saved))
+
+    def test_reads_the_mbox_inside_a_takeout_zip(self):
+        path = self.mbox([self.labelled("z@x", "Inbox")])
+        archive = Path(self.directory.name) / "takeout.zip"
+        with mail.zipfile.ZipFile(archive, "w") as handle:
+            handle.write(path, "Takeout/Mail/All mail Including Spam and Trash.mbox")
+        path.unlink()
+        with patch.object(mail, "classify", side_effect=self.sort_all):
+            saved = mail.import_mbox(archive, "work@gmail.com", self.lines.append)
+        self.assertEqual([m.message_id for m in saved], ["<z@x>"])
+
+    def test_model_failure_stops_and_a_rerun_continues(self):
+        path = self.mbox([self.labelled("a@x", "Inbox")])
+        with (
+            patch.object(mail, "classify", side_effect=ValueError("down")),
+            patch.object(mail.time, "sleep"),
+        ):
+            saved = mail.import_mbox(path, "work@gmail.com", self.lines.append)
+        self.assertEqual(saved, [])
+        self.assertTrue(any("run it again" in line for line in self.lines))
+        with patch.object(mail, "classify", side_effect=self.sort_all):
+            saved = mail.import_mbox(path, "work@gmail.com", self.lines.append)
+        self.assertEqual(len(saved), 1)
+
+    def test_imap_adopts_an_imported_email_instead_of_sorting_it_again(self):
+        path = self.mbox([self.labelled("a@x", "Inbox")])
+        with patch.object(mail, "classify", side_effect=self.sort_all):
+            mail.import_mbox(path, "work@gmail.com", self.lines.append)
+
+        def connect(host, timeout=None):
+            fake = FakeImap(host, timeout)
+            fake.messages = {
+                5: raw_email("hr@acme.com", "Subject a@x", "Body", "a@x"),
+                6: raw_email("hr@acme.com", "New", "Body", "n@x"),
+            }
+            return fake
+
+        with patch.object(mail, "classify", side_effect=self.sort_all) as classify:
+            saved = mail.sync_account(mail.accounts()[0], self.lines.append, 0, connect=connect)
+        self.assertEqual([m.uid for m in saved], [6])
+        self.assertEqual(list(classify.call_args.args[0]), [6])
+        adopted = MailMessage.objects.get(message_id="<a@x>")
+        self.assertEqual((adopted.uidvalidity, adopted.uid), (77, 5))
+        self.assertEqual(MailMessage.objects.count(), 2)
+
+
+class MailReplyKindTests(SimpleTestCase):
+    def test_a_security_code_email_does_not_prove_a_send(self):
+        self.assertNotIn("action_needed", mail.REPLY_KINDS)
+        self.assertIn("confirmation", mail.REPLY_KINDS)
+
+
+class CvReviewerTests(SimpleTestCase):
+    DRAFT = "Backend engineer with 9 years. Built Go and Java services on PostgreSQL."
+
+    def test_contradictions_found_in_the_draft_and_missing_requirements_fail(self):
+        outcome = cv_reviewer.verdict(
+            {
+                "contradictions": [
+                    {"quote": "engineer with  9 years", "why": "dates show 4"},
+                    {"quote": "Kubernetes operator", "why": "not in the draft"},
+                ],
+                "must_haves": [
+                    {"requirement": "Go", "status": "covered"},
+                    {"requirement": "Kafka", "status": "missing"},
+                    {"requirement": "React", "status": "partial"},
+                    {"requirement": "10 years", "status": "fixed_fact"},
+                    {"requirement": "Testing", "status": "excellent"},
+                ],
+                "red_flags": [
+                    {"text": "Same metric twice", "severity": "huge"},
+                    {"text": "Summary copies the posting", "severity": "high"},
+                ],
+                "fit_score": "71",
+            },
+            self.DRAFT,
+        )
+        self.assertFalse(outcome["passed"])
+        self.assertEqual(
+            [c["quote"] for c in outcome["contradictions"]], ["engineer with  9 years"]
+        )
+        self.assertEqual(outcome["missing"], ["Kafka"])
+        self.assertEqual(outcome["partial"], ["React", "Testing"])
+        self.assertEqual(outcome["gaps"], ["10 years"])
+        self.assertEqual(outcome["red_flags"][0]["severity"], "medium")
+        self.assertEqual(outcome["fit_score"], 71)
+        self.assertEqual(len(outcome["problems"]), 2)
+        revision = cv_reviewer.revision(outcome)
+        self.assertIn("Add these requirements", revision)
+        self.assertIn("Kafka", revision)
+        self.assertIn("React", revision)
+        self.assertIn("Summary copies the posting", revision)
+        self.assertNotIn("Same metric twice", revision)
+
+    def test_a_missing_excluded_language_is_a_gap_not_a_failure(self):
+        outcome = cv_reviewer.verdict(
+            {"must_haves": [{"requirement": "Strong Ruby on Rails", "status": "missing"}]},
+            self.DRAFT,
+            ["Ruby", "Rust"],
+        )
+        self.assertTrue(outcome["passed"])
+        self.assertEqual(outcome["gaps"], ["Strong Ruby on Rails"])
+
+    def test_partial_and_fixed_facts_alone_do_not_fail_the_draft(self):
+        outcome = cv_reviewer.verdict(
+            {
+                "contradictions": [{"quote": "", "why": "empty"}],
+                "must_haves": [
+                    {"requirement": "Rust", "status": "partial"},
+                    {"requirement": "US citizen", "status": "fixed_fact"},
+                ],
+            },
+            self.DRAFT,
+        )
+        self.assertTrue(outcome["passed"])
+        self.assertEqual(outcome["gaps"], ["US citizen"])
+
+
+@override_settings(HUNTER_EXCLUDED_SKILLS=["C", "C++", "Rust"])
+class FlagshipCvTests(LinkedCvCase):
+    def flagship(self, employer="GitLab Inc.", external_id="60"):
+        vacancy = self.vacancy(external_id)
+        Vacancy.objects.filter(pk=vacancy.pk).update(employer=employer, text="Go, PostgreSQL")
+        vacancy.refresh_from_db()
+        return vacancy
+
+    def drafts(self, count):
+        return [
+            Cv.objects.create(
+                file=f"cvs/d{n}.pdf", original_filename=f"Draft {n}.pdf", raw_text="x"
+            )
+            for n in range(count)
+        ]
+
+    def cv_service(self, drafts, calls, added=()):
+        def generate_from(source_id, instructions, **kwargs):
+            calls.append(instructions)
+            index = len(calls) - 1
+            return drafts[index], list(added[index]) if index < len(added) else [], []
+
+        return SimpleNamespace(
+            generate_from=generate_from, delete=lambda cv_id: Cv.objects.filter(pk=cv_id).delete()
+        )
+
+    def outcome(self, passed, partial=(), fit=80):
+        return {
+            "contradictions": [],
+            "must_haves": [],
+            "red_flags": [],
+            "fit_score": fit,
+            "missing": [] if passed else ["Go"],
+            "partial": list(partial),
+            "gaps": ["10 years"],
+            "problems": [] if passed else ["Go is missing"],
+            "passed": passed,
+        }
+
+    def run_flagship(self, vacancy, drafts, calls, reviews, added=()):
+        with (
+            patch(
+                "apps.hunter.service.CvsContainer.cv_service",
+                return_value=self.cv_service(drafts, calls, added),
+            ),
+            patch("apps.hunter.service.cv_reviewer.review", side_effect=reviews) as reviewer,
+        ):
+            result = service.flagship_cv(vacancy, lambda line: None)
+        vacancy.refresh_from_db()
+        return result, reviewer
+
+    @override_settings(MIMO_API_KEY="key")
+    def test_only_flagship_employers_on_upload_sites_qualify(self):
+        upload = SimpleNamespace(USES_RESUME_LINKS=False)
+        self.assertTrue(service.is_flagship(upload, self.flagship()))
+        self.assertFalse(
+            service.is_flagship(
+                SimpleNamespace(USES_RESUME_LINKS=True), self.flagship(external_id="61")
+            )
+        )
+        self.assertFalse(service.is_flagship(upload, self.flagship("GitLabs Clone Co", "62")))
+        marked = self.flagship(external_id="63")
+        marked.match_reason = f"{service.FLAGSHIP_MARK} Draft.pdf"
+        self.assertFalse(service.is_flagship(upload, marked))
+
+    @override_settings(HUNTER_STACK="Languages: Python, Go, Java.")
+    def test_a_failed_review_is_revised_and_added_skills_are_recorded(self):
+        vacancy = self.flagship()
+        drafts, calls = self.drafts(2), []
+        reviews = [self.outcome(False), self.outcome(True)]
+        result, _ = self.run_flagship(vacancy, drafts, calls, reviews, [[], ["Java", "React"]])
+        self.assertTrue(result)
+        self.assertEqual(vacancy.cv_id, drafts[1].id)
+        self.assertFalse(Cv.objects.filter(pk=drafts[0].pk).exists())
+        self.assertIn("matches the posting 100%", calls[0])
+        self.assertIn("Languages: Python, Go, Java.", calls[0])
+        self.assertIn("never add C, C++, Rust", calls[0])
+        self.assertIn("Add these requirements to the skills", calls[1])
+        self.assertIn("Added for this job: Java, React.", vacancy.match_reason)
+        self.assertIn("Cannot be written in: 10 years.", vacancy.match_reason)
+
+    def test_an_excluded_language_is_never_reviewed_or_sent(self):
+        vacancy = self.flagship()
+        drafts, calls = self.drafts(2), []
+        result, reviewer = self.run_flagship(
+            vacancy, drafts, calls, [self.outcome(True)], [["Rust", "Kafka"], ["Kafka"]]
+        )
+        self.assertTrue(result)
+        self.assertEqual(reviewer.call_count, 1)
+        self.assertEqual(vacancy.cv_id, drafts[1].id)
+        self.assertIn("Do not list Rust.", calls[1])
+        self.assertEqual(
+            service.excluded_skills(["C#", "C++", "Objective-C", "Go/Rust"]),
+            [
+                "C++",
+                "Go/Rust",
+            ],
+        )
+
+    def test_partial_coverage_is_pushed_and_the_draft_with_fewest_partials_kept(self):
+        vacancy = self.flagship()
+        drafts, calls = self.drafts(3), []
+        reviews = [
+            self.outcome(True, ["React", "Kafka"]),
+            self.outcome(True, ["React", "Kafka", "gRPC"]),
+            self.outcome(True, ["React"], fit=60),
+        ]
+        result, _ = self.run_flagship(vacancy, drafts, calls, reviews)
+        self.assertTrue(result)
+        self.assertIn("Make these clear and early", calls[1])
+        self.assertEqual(vacancy.cv_id, drafts[2].id)
+        self.assertEqual(Cv.objects.filter(pk__in=[d.pk for d in drafts]).count(), 1)
+
+    def test_a_headline_naming_the_employer_is_caught(self):
+        self.assertTrue(
+            service.names_employer("Jane Doe\nStaff Engineer at GitLab\nRemote", "GitLab Inc.")
+        )
+        self.assertFalse(
+            service.names_employer(
+                "Jane Doe\nStaff Engineer\nAstana\nBuilt GitLab CI", "GitLab Inc."
+            )
+        )
+
+    def test_skip_titles_match_whole_phrases(self):
+        manager = self.vacancy("70")
+        engineer = self.vacancy("71")
+        Vacancy.objects.filter(pk=manager.pk).update(title="Senior Project Manager (No-Code)")
+        Vacancy.objects.filter(pk=engineer.pk).update(title="Product Engineer, Backend")
+        manager.refresh_from_db()
+        engineer.refresh_from_db()
+        self.assertIn("not an engineering role", service.skip_reason(manager))
+        self.assertEqual(service.skip_reason(engineer), "")
+
+    def test_failed_drafts_hold_the_job_and_are_deleted(self):
+        vacancy = self.flagship()
+        drafts, calls = self.drafts(service.FLAGSHIP_DRAFTS), []
+        with (
+            patch(
+                "apps.hunter.service.CvsContainer.cv_service",
+                return_value=self.cv_service(drafts, calls),
+            ),
+            patch(
+                "apps.hunter.service.cv_reviewer.review",
+                side_effect=[self.outcome(False)] * service.FLAGSHIP_DRAFTS,
+            ),
+        ):
+            self.assertFalse(service.flagship_cv(vacancy, lambda line: None))
+        vacancy.refresh_from_db()
+        self.assertEqual(vacancy.status, Vacancy.Status.NEEDS_REVIEW)
+        self.assertEqual(vacancy.cv_id, self.cv.id)
+        self.assertIn("Go is missing", vacancy.note)
+        self.assertEqual(review.kind_of(vacancy), review.CV)
+        self.assertFalse(Cv.objects.filter(pk__in=[d.pk for d in drafts]).exists())
+
+    def test_a_held_flagship_job_is_not_sent_and_skips_plain_tailoring(self):
+        vacancy = self.flagship()
+        adapter = FakeAdapter(hh.parse_status({"resumes": {"1": {"hash": "hash"}}}))
+        adapter.USES_RESUME_LINKS = False
+
+        def hold(row, log):
+            service.finish(row, False, f"{review.CV_NOTE}: test")
+            return False
+
+        with (
+            override_settings(MIMO_API_KEY="key"),
+            patch("apps.hunter.service.flagship_cv", side_effect=hold),
+            patch("apps.hunter.service.tailor_cv") as tailor,
+            patch("apps.hunter.service.adapter_for", return_value=adapter),
+        ):
+            service.apply_ready(None, adapter, 10, [self.link], lambda line: None, RunSummary())
+        vacancy.refresh_from_db()
+        self.assertEqual(adapter.applied, [])
+        tailor.assert_not_called()
+        self.assertEqual(vacancy.status, Vacancy.Status.NEEDS_REVIEW)
+
+
+class FakeGmail:
+    def __init__(self, pages, messages):
+        self.pages = pages
+        self.messages = messages
+        self.calls = []
+
+    def get(self, url, params=None, timeout=None):
+        self.calls.append((url.rsplit("/me/", 1)[1], dict(params or {})))
+        path = url.rsplit("/me/", 1)[1]
+        if path == "messages":
+            body = self.pages[(params or {}).get("pageToken")]
+        else:
+            raw = self.messages[path.split("/", 1)[1]]
+            body = {"raw": base64.urlsafe_b64encode(raw).decode().rstrip("=")}
+        return SimpleNamespace(raise_for_status=lambda: None, json=lambda: body)
+
+
+class GmailApiTests(LinkedCvCase):
+    def setUp(self):
+        super().setUp()
+        self.lines = []
+        override = override_settings(
+            HUNTER_MAIL_ACCOUNTS="me@gmail.com:5:app pass,work@gmail.com:5:oauth",
+            MIMO_API_KEY="key",
+            HUNTER_NOTIFY_DESKTOP=False,
+        )
+        override.enable()
+        self.addCleanup(override.disable)
+
+    def newsletter(self, emails):
+        return {uid: {"kind": "newsletter", "employer": "", "summary": ""} for uid in emails}
+
+    def test_uids_fit_a_signed_64_bit_column(self):
+        self.assertEqual(mail.gmail_uid("ffffffffffffffff"), (1 << 63) - 1)
+        self.assertEqual(mail.gmail_uid("19a2b3c4d5e6f708"), 0x19A2B3C4D5E6F708)
+
+    def test_pages_are_followed_known_ids_skipped_and_takeout_rows_adopted(self):
+        work = mail.accounts()[1]
+        self.assertEqual(work.password, mail.OAUTH)
+        MailMessage.objects.create(
+            account="work@gmail.com",
+            uidvalidity=mail.GMAIL_API,
+            uid=mail.gmail_uid("a1"),
+            kind="other",
+        )
+        MailMessage.objects.create(
+            account="work@gmail.com",
+            uidvalidity=mail.IMPORTED,
+            uid=123,
+            message_id="<m2@x>",
+            kind="rejection",
+        )
+        session = FakeGmail(
+            {
+                None: {"messages": [{"id": "a1"}, {"id": "a2"}], "nextPageToken": "p2"},
+                "p2": {"messages": [{"id": "a3"}]},
+            },
+            {
+                "a2": raw_email("hr@acme.io", "Thanks", "x", "m2@x"),
+                "a3": raw_email("news@x.io", "Weekly", "x", "m3@x"),
+            },
+        )
+        seen = {}
+
+        def classify(emails):
+            seen.update(emails)
+            return self.newsletter(emails)
+
+        with patch.object(mail, "classify", side_effect=classify):
+            saved = mail.sync_gmail(work, self.lines.append, 0, session=session)
+        self.assertIn("newer_than:5d", session.calls[0][1]["q"])
+        self.assertIn("-in:sent", session.calls[0][1]["q"])
+        self.assertEqual(session.calls[1][1].get("pageToken"), "p2")
+        self.assertIn(("messages/a2", {"format": "raw"}), session.calls)
+        self.assertNotIn("messages/a1", [call[0] for call in session.calls])
+        self.assertEqual(list(seen), [mail.gmail_uid("a3")])
+        self.assertEqual([m.message_id for m in saved], ["<m3@x>"])
+        adopted = MailMessage.objects.get(message_id="<m2@x>")
+        self.assertEqual((adopted.uidvalidity, adopted.uid), (mail.GMAIL_API, 0xA2))
+        self.assertEqual(adopted.kind, "rejection")
+
+    def test_a_missing_or_dead_sign_in_is_logged_and_other_accounts_still_sync(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        with (
+            override_settings(DATA_DIR=Path(folder.name)),
+            patch.object(mail, "sync_account", return_value=[]) as imap_sync,
+        ):
+            mail.sync(self.lines.append)
+        imap_sync.assert_called_once()
+        self.assertIn("run mail_login work@gmail.com again", self.lines[-1])

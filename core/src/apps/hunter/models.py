@@ -64,3 +64,33 @@ class SiteLesson(models.Model):
 
     def __str__(self):
         return f"{self.host} ({self.successes}/{self.successes + self.failures})"
+
+
+class MailMessage(models.Model):
+    account = models.CharField(max_length=255)
+    uidvalidity = models.BigIntegerField()
+    uid = models.BigIntegerField()
+    message_id = models.CharField(max_length=998, blank=True)
+    received_at = models.DateTimeField(null=True, blank=True)
+    sender = models.CharField(max_length=255, blank=True)
+    subject = models.CharField(max_length=500, blank=True)
+    kind = models.CharField(max_length=24)
+    employer = models.CharField(max_length=255, blank=True)
+    summary = models.CharField(max_length=500, blank=True)
+    vacancy = models.ForeignKey(
+        Vacancy, null=True, blank=True, on_delete=models.SET_NULL, related_name="mail"
+    )
+    dismissed = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "hunter_mail"
+        constraints = (
+            models.UniqueConstraint(
+                fields=["account", "uidvalidity", "uid"], name="unique_mail_message"
+            ),
+        )
+        ordering = ("-received_at", "-id")
+
+    def __str__(self):
+        return f"{self.kind}: {self.subject or self.message_id}"

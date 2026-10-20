@@ -143,7 +143,40 @@ HUNTER_BROAD_MIN_SCORE = config("HUNTER_BROAD_MIN_SCORE", default=50, cast=int)
 HUNTER_MAX_APPLIES_PER_RUN = config("HUNTER_MAX_APPLIES_PER_RUN", default=10, cast=int)
 HUNTER_MAX_NEW_PER_RUN = config("HUNTER_MAX_NEW_PER_RUN", default=40, cast=int)
 HUNTER_MAX_APPLIES_PER_DAY = config("HUNTER_MAX_APPLIES_PER_DAY", default=50, cast=int)
-HUNTER_SITE_PRIORITY = config("HUNTER_SITE_PRIORITY", default="dsml,indeed,linkedin,hh", cast=Csv())
+HUNTER_SITE_PRIORITY = config(
+    "HUNTER_SITE_PRIORITY", default="ats,dsml,indeed,linkedin,hh", cast=Csv()
+)
+HUNTER_ATS_SEARCH_HOURS = config("HUNTER_ATS_SEARCH_HOURS", default=24, cast=int)
+HUNTER_SKIP_EMPLOYERS = config(
+    "HUNTER_SKIP_EMPLOYERS",
+    default=(
+        "Jobgether,Lensa,JobLeads,micro1,Prolific,RemoteHunter,Turing,Jobot,TalentHop,"
+        "Torentify,TaskVerse,Wiraa,Ladders,The Ai Training Company"
+    ),
+    cast=Csv(),
+)
+HUNTER_REJECTION_COOLDOWN_DAYS = config("HUNTER_REJECTION_COOLDOWN_DAYS", default=30, cast=int)
+HUNTER_STACK = config("HUNTER_STACK", default="")
+HUNTER_EXCLUDED_SKILLS = config("HUNTER_EXCLUDED_SKILLS", default="C,C++,Rust", cast=Csv())
+HUNTER_SKIP_TITLES = config(
+    "HUNTER_SKIP_TITLES",
+    default=(
+        "no-code,low-code,no code,low code,nocode,lowcode,project manager,product manager,"
+        "program manager,delivery manager,scrum master,product owner,business analyst"
+    ),
+    cast=Csv(),
+)
+HUNTER_FLAGSHIP_EMPLOYERS = config(
+    "HUNTER_FLAGSHIP_EMPLOYERS",
+    default=(
+        "GitLab,GitHub,Microsoft,Google,Apple,Amazon,Meta,Netflix,Stripe,Coinbase,"
+        "Grafana Labs,Temporal Technologies,Canonical,Elastic,Reddit,Revolut,Deel,Figma,"
+        "Atlassian,MongoDB,Docker,Mozilla,ElevenLabs,Affirm,Samsara,LaunchDarkly,Binance,"
+        "Supabase,Vercel,Kraken,Twilio,Dropbox,Confluent,Datadog,HashiCorp,Cloudflare,"
+        "Shopify,Spotify,JetBrains,Red Hat"
+    ),
+    cast=Csv(),
+)
 HUNTER_PARALLEL_SITES = config("HUNTER_PARALLEL_SITES", default=2, cast=int)
 HUNTER_NAVIGATOR = config("HUNTER_NAVIGATOR", default="on")
 HUNTER_NAVIGATOR_BY_SITE = {
@@ -151,6 +184,7 @@ HUNTER_NAVIGATOR_BY_SITE = {
     "linkedin": config("HUNTER_NAVIGATOR_LINKEDIN", default="rehearse"),
     "indeed": config("HUNTER_NAVIGATOR_INDEED", default="rehearse"),
     "dsml": config("HUNTER_NAVIGATOR_DSML", default=""),
+    "ats": config("HUNTER_NAVIGATOR_ATS", default=""),
 }
 HUNTER_CONTACT_PHONE = config("HUNTER_CONTACT_PHONE", default="")
 HUNTER_CONTACT_CITY = config("HUNTER_CONTACT_CITY", default="")
@@ -162,3 +196,7 @@ HUNTER_NOTIFY_TELEGRAM = config("HUNTER_NOTIFY_TELEGRAM", default=False, cast=bo
 HUNTER_NOTIFY_DESKTOP = config("HUNTER_NOTIFY_DESKTOP", default=True, cast=bool)
 HUNTER_CAPTCHA_WAIT_MINUTES = config("HUNTER_CAPTCHA_WAIT_MINUTES", default=5, cast=int)
 HUNTER_CAPTCHA_BACKOFF_MINUTES = config("HUNTER_CAPTCHA_BACKOFF_MINUTES", default="5,30,60,180,480")
+HUNTER_MAIL_ACCOUNTS = config("HUNTER_MAIL_ACCOUNTS", default="")
+HUNTER_MAIL_PER_RUN = config("HUNTER_MAIL_PER_RUN", default=150, cast=int)
+GMAIL_CLIENT_ID = config("GMAIL_CLIENT_ID", default="")
+GMAIL_CLIENT_SECRET = config("GMAIL_CLIENT_SECRET", default="")

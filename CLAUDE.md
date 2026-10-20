@@ -24,7 +24,8 @@ fix — that context belongs in the PROGRESS entry, not the source.
 - `desktop/` — GNOME app for the hunter (`job_agent.py`, GTK4 + libadwaita on the system
   `/usr/bin/python3`, since PyGObject is not in the uv venv). `install.sh` adds the launcher and
   icon under `~/.local/share`. It never imports Django or opens the DB: every read and write goes
-  through `manage.py agent_desk list|resolve` (JSON on stdout) run with `uv` in `core/src`.
+  through `manage.py agent_desk list|resolve|mail-done` (JSON on stdout) run with `uv` in
+  `core/src`.
 
 The Telegram channel workflow lives in `apps.opportunities`; see `tasks/BACKLOG.md` for remaining
 multi-step ATS and Telegram bot-link coverage. It was explicitly requested by the user.
@@ -48,7 +49,12 @@ uv run python manage.py test apps.opportunities.tests          # one module (or 
 uv run python manage.py sync_telegram_jobs [--days N]          # ingest the Telegram channel
 uv run python manage.py hunter_login hh|linkedin|indeed|dsml  # visible browser: log in once per site
 uv run python manage.py agent_desk list|resolve ID applied|skipped|retry  # desktop app bridge
+uv run python manage.py mail_sync [--account ADDR] [--limit 0]  # sort Gmail (0 = whole backlog)
+uv run python manage.py mail_import TAKEOUT.zip --account ADDR    # sort a Google Takeout export
+uv run python manage.py mail_login ADDR                           # Gmail API sign-in (browser, once)
 uv run python manage.py hh_resumes [--link CV_ID=HASH]         # list/link hh résumés
+uv run python manage.py hunter_targets [--limit 20] [--days 30] # best employers to ask for referrals
+uv run python manage.py hunter_cv --vacancy ID [--source CV_ID] # flagship CV + adversarial review, no send
 uv run python manage.py hunt [--apply] [--headed] [--loop MIN] # hh.kz agent (dry run by default)
 uv run python manage.py hunt --vacancy ID [--rehearse]         # send one row (or rehearse: never submits)
 ```
@@ -123,8 +129,8 @@ Don't put DB queries or business logic in views — mirror an existing app. Apps
   `type=submit`/model flag). Attestation is judged on a control's own text plus, when that text is short, the surrounding question; a submit/apply button (`type=submit`, `final_submit`, or `SUBMIT_RE` text) is judged on its own text only, so "Submit application" under an "I certify" footer goes through while a bare "Continue" in a terms box does not. Each field (keyed by tag, label and group, never `ref`) gets one try if optional and three if required (`required`, `*` or "required" in its label); a used-up or refused field is removed from the outline the model sees. `SiteLesson` notes are rewritten after each run and fed into the
   next; they must never carry send/stop rules. `evidence.py` keeps page HTML, a screenshot and
   the step trace per vacancy under `data/hunter/pages/`, served by `evidence/<id>/<file>`.
-  Adapters (`sources/hh.py`, `linkedin.py`, `indeed.py`, `dsml.py`) implement `sources/base.CONTRACT`; each
-  site has its own browser profile and `hunter_login SITE`. LinkedIn and Indeed have no scripted
+  Adapters (`sources/hh.py`, `linkedin.py`, `indeed.py`, `dsml.py`, `ats.py`) implement `sources/base.CONTRACT`; each
+  site has its own browser profile, and every one but `ats` has `hunter_login SITE`. LinkedIn and Indeed have no scripted
   apply, always go through the navigator, and default to `HUNTER_NAVIGATOR_<SITE>=rehearse`.
   LinkedIn serves a client-rendered variant without `data-view-name` after the first navigation
   in a tab, and Playwright locators miss its cards there: query through `page.evaluate`. Never
@@ -132,13 +138,33 @@ Don't put DB queries or business logic in views — mirror an existing app. Apps
   URL plus `vjk=<jk>`, which shows the job in the side panel. Only visible `a[data-jk]` cards
   count: Indeed plants an invisible trap link. The captcha guard must stay visibility-based:
   both sites carry invisible reCAPTCHA Enterprise frames that are not a challenge.
+  `sources/ats.py` (site `ats`) finds jobs on Ashby, Greenhouse and Lever boards with no account:
+  a source URL is the board host plus one `q=` per job title (`https://jobs.lever.co/?q=Backend+Engineer`,
+  optional `where=`, default `Remote`), searched through Tavily with `include_domains` (the user's
+  "site:jobs.ashbyhq.com" idea; driving google.com would hit its bot check). A search runs at most
+  every `HUNTER_ATS_SEARCH_HOURS` per title, because Tavily's plan has 1000 credits a month; the
+  companies it finds are kept in `data/hunter/ats.json` and their boards are listed on every run
+  through the boards' free public JSON APIs, adding each remote job whose title has every word of
+  the query. Posting text and "closed" come from those APIs, never the browser; a network error
+  returns no status (retried next run), only a missing posting is `impossible`. Sends go through
+  the navigator with `EMPLOYER_BOARDS`: the external step budget, success judged from the page's
+  own confirmation (`CONFIRMED_RE`) since there is no account to check, and a captcha holds just
+  that job while the lane moves on, because every job is a different company.
   `sources/dsml.py` (dsml.kz) is scripted: it fills the "Apply without profile" guest form
   (name, email, CV file, LinkedIn from the CV, cover note ≤1200, phone/city contact note, no
   Telegram) from the `applicant` dict `apply_one` passes to every adapter's `apply`. The site has
   `/ru` and `/kk` routes, so it selects by `guest-apply-*` id prefixes and `#apply` hrefs, never by
   button text. The list is paginated as `/jobs/page/N` (no "Load more"); `crawl` walks at least
   `MIN_PAGES` and stops at the first page with no Quick Apply card, since older pages have none. A guest send never shows up as "applied" on reload, so `apply` itself decides
-  success from the form's live message or the form being replaced. `browser.fingerprint_for`
+  success from the form's live message or the form being replaced. It fills the form with `page.evaluate`
+  (JSON results only), `page.keyboard` and `page.mouse`, never a locator or element handle: in
+  the agent's long-lived browser every handle-returning call (`locator.evaluate`, `fill`,
+  `set_input_files`) intermittently hung for 30 s on a fresh page while `page.evaluate` kept
+  answering. The CV goes in as base64 through a `DataTransfer`, and the send button is clicked
+  by coordinates only when `elementFromPoint` hits it (else `form.requestSubmit()`). A note that
+  starts with one of an adapter's `TRY_LATER` prefixes (DSML: "Failed to save", its backend's
+  `502 upstream_error` from `/v1/careers/guest-applications`) requeues the row with a refusal
+  count instead of holding it, and the run moves on; the third refusal holds it. `browser.fingerprint_for`
   only pins presets whose WebGL pair Camoufox has data for; others crash the launch.
   The navigator's consent and EEO rules differ from the extension's scan path by the user's
   explicit choice (2026-10-01): it may tick privacy-notice and personal-data-processing
@@ -153,7 +179,14 @@ Don't put DB queries or business logic in views — mirror an existing app. Apps
   a threshold only: the scoring prompt never changes with it, so stored scores stay comparable and
   `apply_scope_threshold` re-sorts unsent rows both ways each run. A row ready only because of the
   scope gets a CV tailored by `cv_writer` on upload sites; one that adds skills or changes a title
-  is deleted and the original CV is used. Letter sizes (`off`, `very_short` … `max`)
+  is deleted and the original CV is used. An employer on `HUNTER_FLAGSHIP_EMPLOYERS` gets a CV
+  written to match the posting 100% instead (the user's choice: skills, level and scope from the
+  posting may be added; employers, employment titles, dates and numbers may not, nor languages
+  outside `HUNTER_STACK` or on `HUNTER_EXCLUDED_SKILLS`), sent only after `agent/cv_reviewer.py`
+  passes it. The reviewer never sees the writer's instructions; its pass/fail is computed in
+  Python from contradictions it quotes from the draft and must-haves the draft does not mention,
+  never taken from the model. This flagship rule does not apply to scope tailoring or to the
+  `generate/` endpoint, whose added-skills list stays the safety check. Letter sizes (`off`, `very_short` … `max`)
   live in `agent/cover_letter.LENGTHS`; the panel's slider is `coverLetterSize` in
   `storage.local`, read by `background.js` for every scan, so Telegram auto-apply follows it too.
 
@@ -357,8 +390,26 @@ which splices them into the in-memory plan so a second Fill click doesn't repeat
   stays fresh) and retries with `crawl=False`; longer rungs are picked up by later cycles.
   Manual headed sends (`only`) ignore the wait and stay held if they fail. Only adapters with
   `HEADED_CAPTCHA` get the ask. `SEND_GAP`/`MAX_SENDS_PER_RUN` pace each site.
+- **Job email is read, never touched.** `mail.py` logs in to each `HUNTER_MAIL_ACCOUNTS` entry
+  (`address:days:app-password`; personal Gmail only, since Workspace accounts have no app
+  passwords) and must keep `select(readonly=True)` and `BODY.PEEK`: the user reads this mail too,
+  and a fetch without them marks it read. Only headers, the model's kind, company and summary are
+  stored; bodies go to MiMo and nowhere else, and log lines (which reach `status.json`) carry
+  counts, never subjects. The job link is decided in Python from the company name, not by the
+  model, and the only thing mail changes on a job is an "unconfirmed" hold becoming applied.
+  `mail_import` sorts a Google Takeout `.mbox` for an account IMAP cannot reach yet; its rows have
+  `uidvalidity` 0 and IMAP adopts them by Message-ID. Do not read Gmail through a browser
+  profile instead: the user declined it over the risk of an account lock.
+  An account written `address:days:oauth` is read through the Gmail API instead
+  (`sync_gmail`), with only the `gmail.readonly` scope, which cannot change labels, so nothing is
+  marked read. `mail_login ADDR` signs in once in the user's browser and refuses to save unless
+  the profile is that address; the token goes to `data/gmail/<addr>.json` without the client
+  secret (`GMAIL_CLIENT_ID`/`GMAIL_CLIENT_SECRET` stay in `.env`), never under the
+  bind-mounted `data/hunter`. Its rows use `uidvalidity` 1 and the Gmail id masked to 63 bits,
+  since a 64-bit id does not fit SQLite's integer; Takeout rows are adopted by Message-ID as
+  with IMAP. This is the official API the user set up, not the browser route they declined.
 - **Sites run in priority order, two at a time.** `site_groups` sorts by `HUNTER_SITE_PRIORITY`
-  (`dsml,indeed,linkedin,hh`) and an unattended run hands the groups to a
+  (`ats,dsml,indeed,linkedin,hh`) and an unattended run hands the groups to a
   `HUNTER_PARALLEL_SITES`-wide thread pool (manual `--vacancy`/`--headed`/`--rehearse` runs stay
   on one thread). Each lane has its own `RunSummary`, merged after, its own DB connection (closed
   at the end) and log lines prefixed `[site]`; `hunt`'s `log` holds a lock because `Tracker`

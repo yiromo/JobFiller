@@ -300,8 +300,9 @@ Rules:
   covers, including years of experience. Work authorization, visa, sponsorship, relocation,
   notice period and salary questions are answered only from candidate_facts. If candidate_facts does not cover one, reply "stuck" and
   name the question; never guess eligibility.
-- Searchable dropdowns: type a short part of the answer and pick the matching option. If none
-  matches after one try, pick "Other" when offered; otherwise leave an optional field empty and
+- Dropdowns, native or custom (combobox, "Select..."): send "select" on the field itself with
+  the exact option text as "value"; the harness opens it, searches and picks the option. Do not
+  click the options one by one. If none matches after one try, pick "Other" when offered; otherwise leave an optional field empty and
   move on, and reply "stuck" naming a required one. Never retry the same field more than twice.
 - Skip optional fields the CV cannot answer; required fields are marked with * or "required".
   The harness gives each optional field one try and each required field three, and removes a
@@ -487,6 +488,7 @@ class Navigator:
         facts="",
         external_hops=0,
         eeo=None,
+        max_steps=0,
     ):
         self.page = page
         self.goal = goal
@@ -504,7 +506,7 @@ class Navigator:
         self.eeo = [row for row in (eeo or []) if row.get("answer")]
         self.opened = []
         self.external_hops = external_hops
-        self.max_steps = (
+        self.max_steps = max_steps or (
             settings.HUNTER_NAVIGATOR_EXTERNAL_STEPS
             if external_hops
             else settings.HUNTER_NAVIGATOR_STEPS
@@ -754,6 +756,8 @@ class Navigator:
                     locator.check(timeout=8000)
                 except PlaywrightError:
                     locator.click(timeout=8000, force=True)
+            elif action == "select" and element.get("tag") != "select":
+                return self.pick_option(locator, value)
             elif action == "select":
                 try:
                     locator.select_option(label=value, timeout=8000)
@@ -765,6 +769,23 @@ class Navigator:
                 self.upload(locator, element)
         except PlaywrightError as error:
             return f"failed: {first_line(error)[:200]}"
+        return "ok"
+
+    def pick_option(self, locator, value: str) -> str:
+        locator.click(timeout=8000)
+        self.page.wait_for_timeout(400)
+        options = self.page.get_by_role("option", name=value, exact=True)
+        if not options.count():
+            self.page.keyboard.type(value, delay=random.randint(35, 90))
+            self.page.wait_for_timeout(800)
+            options = self.page.get_by_role("option", name=value, exact=True)
+        if not options.count():
+            loose = self.page.get_by_role("option", name=value)
+            options = loose if loose.count() == 1 else options
+        if not options.count():
+            self.page.keyboard.press("Escape")
+            return f"failed: no option named {value!r}"
+        options.first.click(timeout=8000)
         return "ok"
 
     def type_into(self, locator, element: dict, value: str) -> None:

@@ -11,8 +11,9 @@ ACCOUNT = "account"
 QUESTION = "question"
 UNCONFIRMED = "unconfirmed"
 STUCK = "stuck"
+CV = "cv"
 OTHER = "other"
-KINDS = (CAPTCHA, UNCONFIRMED, QUESTION, ACCOUNT, STUCK, OTHER)
+KINDS = (CAPTCHA, UNCONFIRMED, QUESTION, ACCOUNT, CV, STUCK, OTHER)
 
 APPLIED = "applied"
 SKIPPED = "skipped"
@@ -46,6 +47,7 @@ NOTE_KINDS = (
     ),
 )
 STUCK_NOTES = ("Navigator", "Browser error")
+CV_NOTE = "Flagship CV did not pass review"
 
 
 def last_refusal(vacancy: Vacancy) -> str:
@@ -69,6 +71,8 @@ def kind_of(vacancy: Vacancy) -> str:
     note = vacancy.note or ""
     if CAPTCHA_NOTE in note:
         return CAPTCHA
+    if note.startswith(CV_NOTE):
+        return CV
     if any(marker in note for marker in UNCONFIRMED_NOTES):
         return UNCONFIRMED
     if ACCOUNT_NOTE.search(note):

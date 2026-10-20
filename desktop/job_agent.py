@@ -44,11 +44,28 @@ KINDS = {
         "Needs an account",
         "The employer wants you to sign up or log in. The agent never creates accounts.",
     ),
+    "cv": (
+        "CV did not pass review",
+        (
+            "A company on your flagship list. The CV written for the role failed the "
+            "reviewer; read its findings, then retry, apply yourself, or skip."
+        ),
+    ),
     "stuck": (
         "The agent got stuck",
         "The form confused the agent. Apply yourself, try again later, or skip it.",
     ),
     "other": ("Check it yourself", "Anything else, such as an office in another city."),
+}
+
+MAIL_KINDS = {
+    "interview": "Interviews",
+    "offer": "Offers",
+    "assessment": "Tests and tasks",
+    "action_needed": "Asks you to do something",
+    "recruiter": "Recruiters",
+    "rejection": "Rejections",
+    "confirmation": "Application received",
 }
 
 
@@ -210,12 +227,16 @@ class AgentWindow(Adw.ApplicationWindow):
 
         self.held_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
         self.sent_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
+        self.mail_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
         self.agent_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
         self.held_page = self.stack.add_titled_with_icon(
             scrolled_page(self.held_box), "held", "Needs you", "dialog-warning-symbolic"
         )
         self.stack.add_titled_with_icon(
             scrolled_page(self.sent_box), "sent", "Sent", "mail-send-symbolic"
+        )
+        self.mail_page = self.stack.add_titled_with_icon(
+            scrolled_page(self.mail_box), "mail", "Mail", "mail-unread-symbolic"
         )
         self.stack.add_titled_with_icon(
             scrolled_page(self.agent_box), "agent", "Agent", "emblem-system-symbolic"
@@ -298,6 +319,8 @@ class AgentWindow(Adw.ApplicationWindow):
             self.render_held()
         if self.changed("sent", self.data["sent"], self.data["sent_last_day"]):
             self.render_sent()
+        if self.changed("mail", self.data.get("mail")):
+            self.render_mail()
         if self.changed(
             "agent",
             self.data["agent"],
@@ -464,6 +487,82 @@ class AgentWindow(Adw.ApplicationWindow):
             )
             group.add(item)
         self.sent_box.append(group)
+
+    def render_mail(self) -> None:
+        clear(self.mail_box)
+        data = self.data.get("mail") or {}
+        rows = data.get("rows", [])
+        urgent = [row for row in rows if row["kind"] in data.get("urgent", [])]
+        self.mail_page.set_badge_number(len(urgent))
+        self.mail_page.set_needs_attention(bool(urgent))
+        if not data.get("accounts"):
+            self.mail_box.append(
+                Adw.StatusPage(
+                    icon_name="mail-unread-symbolic",
+                    title="No mailbox connected",
+                    description=(
+                        "Add your Gmail addresses and app passwords to HUNTER_MAIL_ACCOUNTS in "
+                        "core/.env, then restart the agent."
+                    ),
+                    vexpand=True,
+                )
+            )
+            return
+        if not rows:
+            self.mail_box.append(
+                Adw.StatusPage(
+                    icon_name="object-select-symbolic",
+                    title="No job email to act on",
+                    description=f"{data.get('sorted', 0)} emails sorted so far.",
+                    vexpand=True,
+                )
+            )
+            return
+        for kind in data.get("kinds", []):
+            matching = [row for row in rows if row["kind"] == kind]
+            if not matching:
+                continue
+            group = Adw.PreferencesGroup(title=f"{MAIL_KINDS.get(kind, kind)} ({len(matching)})")
+            for row in matching:
+                group.add(self.mail_row(row))
+            self.mail_box.append(group)
+
+    def mail_row(self, row: dict) -> Adw.ActionRow:
+        about = row["employer"] or row["sender"]
+        if row["job_title"]:
+            about = f"{about} · {row['job_title']}"
+        subtitle = " · ".join(
+            part for part in (about, row["account"], local_time(row["received_at"])) if part
+        )
+        if row["summary"]:
+            subtitle = f"{subtitle}\n{row['summary']}"
+        item = action_row(
+            row["subject"] or "(no subject)", subtitle, subtitle_lines=3, title_lines=2
+        )
+        item.add_suffix(
+            icon_button("mail-read-symbolic", "Open in Gmail", lambda: open_uri(row["gmail_url"]))
+        )
+        if row["job_url"]:
+            item.add_suffix(
+                icon_button(
+                    "adw-external-link-symbolic", "Open the job", lambda: open_uri(row["job_url"])
+                )
+            )
+        item.add_suffix(
+            icon_button("object-select-symbolic", "Done, hide it", lambda: self.mail_done(row))
+        )
+        return item
+
+    def mail_done(self, row: dict) -> None:
+        def done(ok, _out, err):
+            if not ok:
+                self.toast(last_line(err).removeprefix("CommandError: ") or "That did not work.")
+                return
+            mail = self.data.get("mail") or {}
+            mail["rows"] = [other for other in mail.get("rows", []) if other["id"] != row["id"]]
+            self.render()
+
+        run(manage("agent_desk", "mail-done", str(row["id"])), done)
 
     def status_text(self) -> str:
         agent = self.data["agent"]

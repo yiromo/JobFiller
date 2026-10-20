@@ -18,7 +18,7 @@ FILES = {
 def key_for(vacancy) -> str:
     if vacancy.source == "hh":
         return vacancy.external_id
-    return f"{vacancy.source}-{vacancy.external_id}"
+    return re.sub(r"[^A-Za-z0-9_-]", "-", f"{vacancy.source}-{vacancy.external_id}")[:64]
 
 
 def pages_dir():

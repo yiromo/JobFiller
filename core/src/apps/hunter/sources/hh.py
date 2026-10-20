@@ -16,6 +16,8 @@ RECHECK_BATCH = 30
 HEADED_CAPTCHA = True
 SEND_GAP = (60, 150)
 MAX_SENDS_PER_RUN = 0
+TRY_LATER = ()
+EMPLOYER_BOARDS = False
 VACANCY_ID_RE = re.compile(r"/vacancy/(\d+)")
 SUBMIT = '[data-qa="vacancy-response-submit-popup"]'
 LETTER = '[data-qa="vacancy-response-popup-form-letter-input"]'
