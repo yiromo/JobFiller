@@ -48,10 +48,11 @@ uv run python manage.py test                                   # all Django test
 uv run python manage.py test apps.opportunities.tests          # one module (or add .Class.test_name)
 uv run python manage.py sync_telegram_jobs [--days N]          # ingest the Telegram channel
 uv run python manage.py hunter_login hh|linkedin|indeed|dsml  # visible browser: log in once per site
-uv run python manage.py agent_desk list|resolve ID applied|skipped|retry  # desktop app bridge
+uv run python manage.py agent_desk list|job ID|resolve ID applied|skipped|retry  # desktop bridge
 uv run python manage.py mail_sync [--account ADDR] [--limit 0]  # sort Gmail (0 = whole backlog)
 uv run python manage.py mail_import TAKEOUT.zip --account ADDR    # sort a Google Takeout export
 uv run python manage.py mail_login ADDR                           # Gmail API sign-in (browser, once)
+uv run python manage.py mail_relink [--titles] [--days 30]        # link unlinked job email to sent jobs
 uv run python manage.py hh_resumes [--link CV_ID=HASH]         # list/link hh résumés
 uv run python manage.py hunter_targets [--limit 20] [--days 30] # best employers to ask for referrals
 uv run python manage.py hunter_cv --vacancy ID [--source CV_ID] # flagship CV + adversarial review, no send
@@ -395,8 +396,11 @@ which splices them into the in-memory plan so a second Fill click doesn't repeat
   passwords) and must keep `select(readonly=True)` and `BODY.PEEK`: the user reads this mail too,
   and a fetch without them marks it read. Only headers, the model's kind, company and summary are
   stored; bodies go to MiMo and nowhere else, and log lines (which reach `status.json`) carry
-  counts, never subjects. The job link is decided in Python from the company name, not by the
-  model, and the only thing mail changes on a job is an "unconfirmed" hold becoming applied.
+  counts, never subjects. The job link is decided in Python, not by the model: from the company
+  name, or, only when the email names no company, from the job title the model read
+  (`position`), matched against sent jobs only when the job's title has three or more words,
+  overlaps it by 80% and exactly one job fits. The only thing mail changes on a job is an
+  "unconfirmed" hold becoming applied.
   `mail_import` sorts a Google Takeout `.mbox` for an account IMAP cannot reach yet; its rows have
   `uidvalidity` 0 and IMAP adopts them by Message-ID. Do not read Gmail through a browser
   profile instead: the user declined it over the risk of an account lock.

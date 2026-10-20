@@ -77,6 +77,7 @@ class MailMessage(models.Model):
     kind = models.CharField(max_length=24)
     employer = models.CharField(max_length=255, blank=True)
     summary = models.CharField(max_length=500, blank=True)
+    position = models.CharField(max_length=255, blank=True, db_default="")
     vacancy = models.ForeignKey(
         Vacancy, null=True, blank=True, on_delete=models.SET_NULL, related_name="mail"
     )

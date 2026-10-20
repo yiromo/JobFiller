@@ -46,11 +46,16 @@ CSS = """
   color: @accent_color;
   box-shadow: inset 0 0 0 1px alpha(@accent_color, 0.5);
 }
-dropdown.chip > button {
+dropdown.picker > button {
   border-radius: 999px;
   padding: 4px 10px 4px 14px;
   min-height: 24px;
   font-weight: 600;
+  background: none;
+  box-shadow: inset 0 0 0 1px alpha(currentColor, 0.15);
+}
+dropdown.picker > button:hover {
+  background: alpha(currentColor, 0.07);
 }
 """
 
@@ -221,6 +226,38 @@ def action_row(title: str, subtitle: str = "", **props) -> Adw.ActionRow:
     )
 
 
+def chip_button(label: str, selected: bool, urgent: bool, callback) -> Gtk.Button:
+    chip = Gtk.Button(label=label, valign=Gtk.Align.CENTER)
+    chip.add_css_class("chip")
+    if selected:
+        chip.add_css_class("selected")
+    elif urgent:
+        chip.add_css_class("urgent")
+    chip.connect("clicked", lambda *_: callback())
+    return chip
+
+
+def picker_dropdown(values: list, labels: list, current: str, callback) -> Gtk.DropDown:
+    picker = Gtk.DropDown(model=Gtk.StringList(strings=labels), valign=Gtk.Align.CENTER)
+    picker.add_css_class("picker")
+    picker.set_selected(values.index(current) if current in values else 0)
+    picker.connect(
+        "notify::selected", lambda widget, _spec: callback(values[widget.get_selected()])
+    )
+    return picker
+
+
+def see_all_button(total: int, callback) -> Gtk.Button:
+    button = Gtk.Button(label=f"See all {total}", valign=Gtk.Align.CENTER)
+    button.add_css_class("flat")
+    button.connect("clicked", lambda *_: callback())
+    return button
+
+
+def newest_first(rows: list, field: str) -> list:
+    return sorted(rows, key=lambda row: row.get(field) or "", reverse=True)
+
+
 def clear(box: Gtk.Box) -> None:
     child = box.get_first_child()
     while child is not None:
@@ -250,6 +287,8 @@ class AgentWindow(Adw.ApplicationWindow):
         self.banner_action = lambda: None
         self.mail_kind = ALL
         self.mail_account = ALL
+        self.held_kind = ALL
+        self.held_site = ALL
         self.settings = load_settings()
         provider = Gtk.CssProvider()
         provider.load_from_string(CSS)
@@ -372,7 +411,7 @@ class AgentWindow(Adw.ApplicationWindow):
         if not self.data:
             return
         self.render_banner()
-        if self.changed("held", self.data["held"]):
+        if self.changed("held", *self.held_state()):
             self.render_held()
         if self.changed("sent", self.data["sent"], self.data["sent_last_day"]):
             self.render_sent()
@@ -421,7 +460,7 @@ class AgentWindow(Adw.ApplicationWindow):
 
     def render_held(self) -> None:
         clear(self.held_box)
-        held = self.data["held"]
+        held = newest_first(self.data["held"], "held_at")
         self.held_page.set_badge_number(len(held))
         self.held_page.set_needs_attention(bool(held))
         if not held:
@@ -434,7 +473,19 @@ class AgentWindow(Adw.ApplicationWindow):
                 )
             )
             return
-        for kind in self.data["kinds"]:
+        sites = {row["site"]: row["site_name"] for row in held}
+        if self.held_site not in (ALL, *sites):
+            self.held_site = ALL
+        if self.held_site != ALL:
+            held = [row for row in held if row["site"] == self.held_site]
+        totals: dict = {}
+        for row in held:
+            totals[row["kind"]] = totals.get(row["kind"], 0) + 1
+        if self.held_kind != ALL and not totals.get(self.held_kind):
+            self.held_kind = ALL
+        self.held_box.append(self.held_filters(sites, totals))
+        kinds = self.data["kinds"] if self.held_kind == ALL else [self.held_kind]
+        for kind in kinds:
             rows = [row for row in held if row["kind"] == kind]
             if not rows:
                 continue
@@ -442,19 +493,72 @@ class AgentWindow(Adw.ApplicationWindow):
             group = Adw.PreferencesGroup(
                 title=f"{title} ({len(rows)})", description=GLib.markup_escape_text(description)
             )
-            sendable = [row for row in rows if row["send_visible"]]
-            if len(sendable) > 1:
+            shown = rows
+            if self.held_kind == ALL and len(rows) > MAIL_PREVIEW:
+                shown = rows[:MAIL_PREVIEW]
                 group.set_header_suffix(
-                    text_button(
-                        f"Send all {len(sendable)}…", lambda rows=sendable: self.send_rows(rows)
-                    )
+                    see_all_button(len(rows), lambda kind=kind: self.filter_held(kind=kind))
                 )
-            for row in rows:
+            else:
+                sendable = [row for row in rows if row["send_visible"]]
+                if len(sendable) > 1:
+                    group.set_header_suffix(
+                        text_button(
+                            f"Send all {len(sendable)}…",
+                            lambda rows=sendable: self.send_rows(rows),
+                        )
+                    )
+            for row in shown:
                 group.add(self.held_row(row))
             self.held_box.append(group)
 
+    def held_filters(self, sites: dict, totals: dict) -> Gtk.Widget:
+        bar = Adw.WrapBox(child_spacing=8, line_spacing=8)
+        if len(sites) > 1:
+            values = [ALL, *sites]
+            labels = ["All sites", *sites.values()]
+            bar.append(
+                picker_dropdown(
+                    values, labels, self.held_site, lambda site: self.filter_held(site=site)
+                )
+            )
+        chips = [(ALL, "All", sum(totals.values()))]
+        chips += [
+            (kind, KINDS.get(kind, (kind, ""))[0], totals[kind])
+            for kind in self.data["kinds"]
+            if totals.get(kind)
+        ]
+        for kind, label, total in chips:
+            bar.append(
+                chip_button(
+                    f"{label}  {total}",
+                    kind == self.held_kind,
+                    False,
+                    lambda kind=kind: self.filter_held(kind=kind),
+                )
+            )
+        return bar
+
+    def held_state(self) -> tuple:
+        return self.data["held"], self.held_kind, self.held_site
+
+    def filter_held(self, kind: str | None = None, site: str | None = None) -> None:
+        if kind is not None:
+            self.held_kind = kind
+        if site is not None:
+            self.held_site = site
+        GLib.idle_add(self.rerender_held)
+
+    def rerender_held(self) -> bool:
+        if self.changed("held", *self.held_state()):
+            self.render_held()
+        return GLib.SOURCE_REMOVE
+
     def held_row(self, row: dict) -> Adw.ActionRow:
-        subtitle = " · ".join(part for part in (row["employer"], row["site_name"]) if part)
+        site = row["site_name"] if self.held_site == ALL else ""
+        subtitle = " · ".join(
+            part for part in (row["employer"], site, local_time(row.get("held_at"))) if part
+        )
         note = "" if row["kind"] == "captcha" else row["note"]
         item = action_row(
             row["title"] or row["url"],
@@ -549,6 +653,7 @@ class AgentWindow(Adw.ApplicationWindow):
         clear(self.mail_box)
         data = self.data.get("mail") or {}
         rows, counts, kinds = self.mail_view(data)
+        rows = newest_first(rows, "received_at")
         accounts = data.get("accounts", [])
         urgent_kinds = data.get("urgent", [])
         urgent = sum(
@@ -601,10 +706,9 @@ class AgentWindow(Adw.ApplicationWindow):
             shown = matching
             if self.mail_kind == ALL and len(matching) > MAIL_PREVIEW:
                 shown = matching[:MAIL_PREVIEW]
-                more = Gtk.Button(label=f"See all {total}", valign=Gtk.Align.CENTER)
-                more.add_css_class("flat")
-                more.connect("clicked", lambda _button, kind=kind: self.filter_mail(kind=kind))
-                group.set_header_suffix(more)
+                group.set_header_suffix(
+                    see_all_button(total, lambda kind=kind: self.filter_mail(kind=kind))
+                )
             elif total > len(matching):
                 group.set_description(f"The newest {len(matching)} of {total}.")
             for row in shown:
@@ -623,29 +727,27 @@ class AgentWindow(Adw.ApplicationWindow):
     def mail_filters(self, data: dict, accounts: list, totals: dict, kinds: list) -> Gtk.Widget:
         bar = Adw.WrapBox(child_spacing=8, line_spacing=8)
         if len(accounts) > 1:
-            names = [ALL, *accounts]
-            labels = ["All inboxes", *accounts]
-            picker = Gtk.DropDown(model=Gtk.StringList(strings=labels), valign=Gtk.Align.CENTER)
-            picker.add_css_class("chip")
-            picker.set_selected(names.index(self.mail_account))
-            picker.connect(
-                "notify::selected",
-                lambda widget, _spec: self.filter_mail(account=names[widget.get_selected()]),
+            bar.append(
+                picker_dropdown(
+                    [ALL, *accounts],
+                    ["All inboxes", *accounts],
+                    self.mail_account,
+                    lambda account: self.filter_mail(account=account),
+                )
             )
-            bar.append(picker)
         chips = [(ALL, "All", sum(totals.values()))]
         chips += [
             (kind, MAIL_KINDS.get(kind, kind), totals[kind]) for kind in kinds if totals.get(kind)
         ]
         for kind, label, total in chips:
-            chip = Gtk.Button(label=f"{label}  {total}", valign=Gtk.Align.CENTER)
-            chip.add_css_class("chip")
-            if kind == self.mail_kind:
-                chip.add_css_class("selected")
-            elif kind in data.get("urgent", []):
-                chip.add_css_class("urgent")
-            chip.connect("clicked", lambda _button, kind=kind: self.filter_mail(kind=kind))
-            bar.append(chip)
+            bar.append(
+                chip_button(
+                    f"{label}  {total}",
+                    kind == self.mail_kind,
+                    kind in data.get("urgent", []),
+                    lambda kind=kind: self.filter_mail(kind=kind),
+                )
+            )
         toggle = Gtk.Box(spacing=8, valign=Gtk.Align.CENTER, margin_start=4)
         toggle.append(Gtk.Label(label="Count AI interviews", css_classes=["dim-label"]))
         switch = Gtk.Switch(active=self.count_ai(), valign=Gtk.Align.CENTER)
@@ -706,31 +808,127 @@ class AgentWindow(Adw.ApplicationWindow):
         return rows, adjusted, [*kinds, AI_KIND]
 
     def mail_row(self, row: dict) -> Adw.ActionRow:
-        about = row["employer"] or row["sender"]
-        if row["job_title"]:
-            about = f"{about} · {row['job_title']}"
         account = row["account"] if self.mail_account == ALL else ""
-        subtitle = " · ".join(
-            part for part in (about, account, local_time(row["received_at"])) if part
-        )
+        lines = [
+            " · ".join(
+                part
+                for part in (
+                    row["employer"] or row["sender"],
+                    account,
+                    local_time(row["received_at"]),
+                )
+                if part
+            )
+        ]
+        if row.get("job_title"):
+            lines.append(
+                " · ".join(
+                    part
+                    for part in (
+                        f"Applied: {row['job_title']}",
+                        row.get("job_site"),
+                        local_time(row.get("job_sent_at")),
+                        f"sent with {row['job_cv']}" if row.get("job_cv") else "",
+                    )
+                    if part
+                )
+            )
+        elif row.get("position"):
+            lines.append(f"Position: {row['position']} · no application on record")
         if row["summary"]:
-            subtitle = f"{subtitle}\n{row['summary']}"
+            lines.append(row["summary"])
         item = action_row(
-            row["subject"] or "(no subject)", subtitle, subtitle_lines=3, title_lines=2
+            row["subject"] or "(no subject)", "\n".join(lines), subtitle_lines=5, title_lines=2
         )
         item.add_suffix(
             icon_button("mail-read-symbolic", "Open in Gmail", lambda: open_uri(row["gmail_url"]))
         )
-        if row["job_url"]:
+        if row.get("vacancy_id"):
             item.add_suffix(
                 icon_button(
-                    "adw-external-link-symbolic", "Open the job", lambda: open_uri(row["job_url"])
+                    "dialog-information-symbolic",
+                    "What you applied to",
+                    lambda: self.show_job(row["vacancy_id"]),
                 )
             )
         item.add_suffix(
             icon_button("object-select-symbolic", "Done, hide it", lambda: self.mail_done(row))
         )
         return item
+
+    def show_job(self, vacancy_id: int) -> None:
+        def loaded(ok, out, err):
+            if not ok:
+                self.toast(last_line(err).removeprefix("CommandError: ") or "That did not work.")
+                return
+            try:
+                job = json.loads(out)
+            except ValueError:
+                self.toast("The agent returned something unreadable.")
+                return
+            self.job_dialog(job).present(self)
+
+        run(manage("agent_desk", "job", str(vacancy_id)), loaded)
+
+    def job_dialog(self, job: dict) -> Adw.Dialog:
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
+        group = Adw.PreferencesGroup(title=GLib.markup_escape_text(job["employer"] or ""))
+        role = action_row(job["title"] or job["url"], job["url"], title_lines=2)
+        role.add_suffix(
+            icon_button("adw-external-link-symbolic", "Open the job", lambda: open_uri(job["url"]))
+        )
+        group.add(role)
+        sent = " · ".join(
+            part
+            for part in (
+                job["site_name"],
+                f"sent {local_time(job['sent_at'])}" if job.get("sent_at") else "",
+                f"match {job['score']}" if job.get("score") is not None else "",
+            )
+            if part
+        )
+        group.add(action_row("Applied through", sent))
+        if job.get("cv_name"):
+            cv = action_row("CV sent", job["cv_name"])
+            if job.get("cv_path"):
+                cv.add_suffix(
+                    icon_button(
+                        "document-open-symbolic",
+                        "Open the CV",
+                        lambda: open_uri(Gio.File.new_for_path(job["cv_path"]).get_uri()),
+                    )
+                )
+            group.add(cv)
+        if job.get("added"):
+            group.add(action_row("Added to the CV for this job", job["added"], subtitle_lines=4))
+        content.append(group)
+        for title, text in (
+            ("Cover letter", job.get("cover_letter")),
+            ("Posting", job.get("text")),
+        ):
+            if not text:
+                continue
+            section = Adw.PreferencesGroup(title=title)
+            label = Gtk.Label(
+                label=text.strip(),
+                wrap=True,
+                selectable=True,
+                xalign=0,
+                margin_top=12,
+                margin_bottom=12,
+                margin_start=12,
+                margin_end=12,
+            )
+            frame = Gtk.Frame(child=label)
+            frame.add_css_class("card")
+            section.add(frame)
+            content.append(section)
+        view = Adw.ToolbarView()
+        view.add_top_bar(Adw.HeaderBar())
+        view.set_content(scrolled_page(content))
+        return Adw.Dialog(
+            title=job["title"] or "Job", child=view, content_width=720, content_height=780
+        )
 
     def mail_done(self, row: dict) -> None:
         def done(ok, _out, err):

@@ -50,6 +50,10 @@ TEXT_CHARS = 1200
 PARTIAL_BYTES = 200_000
 NOTIFY_WITHIN = timedelta(days=2)
 LINK_SLACK = timedelta(days=1)
+TITLE_MATCH_WORDS = 3
+TITLE_MATCH_SHARE = 0.8
+RELINK_BATCH = 30
+BOARD_SENDERS = {"hh": ("hh.kz", "hh.ru")}
 EXCLUDE = "-in:sent -in:drafts -in:chats"
 MODEL_ERRORS = (OpenAIError, ValueError, TypeError, AttributeError, KeyError)
 MAIL_ERRORS = (imaplib.IMAP4.error, OSError, DatabaseError, GoogleAuthError)
@@ -84,9 +88,16 @@ SYSTEM_PROMPT = (
     + "\nFor every email return its kind, the company the email is from or about (empty if "
     "none or if it is only a job board or recruiting tool such as LinkedIn, hh.ru, Greenhouse, "
     "Ashby or Lever), and one short English sentence under 140 characters saying what it "
-    "asks of the applicant or tells them. Reply with JSON only: "
-    '{"emails": [{"id": "...", "kind": "...", "employer": "...", "summary": "..."}]}, '
-    "one entry per email given, using the exact ids given."
+    "asks of the applicant or tells them, and the job title the email is about exactly as "
+    "written in it (empty if it names none). Reply with JSON only: "
+    '{"emails": [{"id": "...", "kind": "...", "employer": "...", "summary": "...", '
+    '"position": "..."}]}, one entry per email given, using the exact ids given.'
+)
+POSITION_PROMPT = (
+    "Each item is a job seeker's email: sender, subject and a one-sentence summary. Return the "
+    "job title each one is about, exactly as written there, or an empty string if none is "
+    'named. Reply with JSON only: {"emails": [{"id": "...", "position": "..."}]}, one entry '
+    "per item, using the exact ids given."
 )
 
 TAG_RE = re.compile(r"<[^>]+>")
@@ -277,8 +288,44 @@ def classify(emails: dict[int, dict]) -> dict[int, dict]:
             "kind": kind if kind in KINDS else "other",
             "employer": squash(str(row.get("employer") or ""))[:255],
             "summary": squash(str(row.get("summary") or ""))[:500],
+            "position": squash(str(row.get("position") or ""))[:255],
         }
     return sorted_rows
+
+
+def extract_positions(messages: list[MailMessage]) -> dict[int, str]:
+    client = OpenAI(api_key=settings.MIMO_API_KEY, base_url=settings.MIMO_BASE_URL)
+    payload = [
+        {
+            "id": str(message.pk),
+            "from": message.sender,
+            "subject": message.subject,
+            "summary": message.summary,
+        }
+        for message in messages
+    ]
+    response = client.chat.completions.create(
+        model=settings.MIMO_MODEL,
+        messages=[
+            {"role": "system", "content": POSITION_PROMPT},
+            {"role": "user", "content": json.dumps({"emails": payload}, ensure_ascii=False)},
+        ],
+        response_format={"type": "json_object"},
+        timeout=TIMEOUT_SECONDS,
+    )
+    known = {message.pk for message in messages}
+    positions = {}
+    for row in json.loads(response.choices[0].message.content).get("emails", []):
+        if not isinstance(row, dict):
+            continue
+        try:
+            key = int(str(row.get("id", "")).strip())
+        except ValueError:
+            continue
+        position = squash(str(row.get("position") or ""))[:255]
+        if key in known and position:
+            positions[key] = position
+    return positions
 
 
 def company_key(name: str) -> str:
@@ -309,11 +356,45 @@ def candidates() -> list[tuple[str, Vacancy]]:
     return [(company_key(vacancy.employer), vacancy) for vacancy in rows]
 
 
-def match_vacancy(employer: str, subject: str, moment, pool) -> Vacancy | None:
+def title_words(text: str) -> set[str]:
+    return set(WORD_RE.findall(text.lower()))
+
+
+def board_source(sender: str) -> str:
+    domain = sender.rsplit("@", 1)[-1].lower().strip(' >"')
+    return next((site for site, hosts in BOARD_SENDERS.items() if domain in hosts), "")
+
+
+def title_fits(wanted: set[str], subject: str, position: str) -> bool:
+    if len(wanted) < TITLE_MATCH_WORDS:
+        return False
+    if position:
+        named = title_words(position)
+        return len(wanted & named) / len(wanted | named) >= TITLE_MATCH_SHARE
+    return wanted <= title_words(subject)
+
+
+def match_by_title(subject: str, position: str, moment, pool, source: str) -> Vacancy | None:
+    found = []
+    for _key, vacancy in pool:
+        if source and vacancy.source != source:
+            continue
+        if moment and sent_at(vacancy) and moment < sent_at(vacancy) - LINK_SLACK:
+            continue
+        if title_fits(title_words(vacancy.title), subject, position):
+            found.append(vacancy)
+    return found[0] if len(found) == 1 else None
+
+
+def match_vacancy(
+    employer: str, subject: str, moment, pool, sender: str = "", position: str = ""
+) -> Vacancy | None:
     key = company_key(employer)
+    if not key:
+        return match_by_title(subject, position, moment, pool, board_source(sender))
     if len(key) < 3:
         return None
-    subject_words = set(WORD_RE.findall(subject.lower()))
+    words = title_words(f"{subject} {position}")
     best = None
     best_rank = None
     for vacancy_key, vacancy in pool:
@@ -321,11 +402,52 @@ def match_vacancy(employer: str, subject: str, moment, pool) -> Vacancy | None:
             continue
         if moment and sent_at(vacancy) and moment < sent_at(vacancy) - LINK_SLACK:
             continue
-        overlap = len(subject_words & set(WORD_RE.findall(vacancy.title.lower())))
+        overlap = len(words & title_words(vacancy.title))
         rank = (overlap, sent_at(vacancy))
         if best_rank is None or rank > best_rank:
             best, best_rank = vacancy, rank
     return best
+
+
+def relink(log, days: int = 30, classify_positions: bool = False) -> int:
+    since = timezone.now() - timedelta(days=days)
+    rows = list(
+        MailMessage.objects.filter(
+            kind__in=SHOWN, vacancy__isnull=True, received_at__gte=since
+        ).order_by("received_at")
+    )
+    if classify_positions and settings.MIMO_API_KEY:
+        missing = [message for message in rows if not message.position]
+        for start in range(0, len(missing), RELINK_BATCH):
+            batch = missing[start : start + RELINK_BATCH]
+            try:
+                positions = extract_positions(batch)
+            except MODEL_ERRORS as error:
+                log(f"Mail relink: reading job titles failed ({type(error).__name__}).")
+                continue
+            for message in batch:
+                if message.pk in positions:
+                    message.position = positions[message.pk]
+                    MailMessage.objects.filter(pk=message.pk).update(position=message.position)
+    pool = candidates()
+    linked = 0
+    for message in rows:
+        vacancy = match_vacancy(
+            message.employer,
+            message.subject,
+            message.received_at,
+            pool,
+            message.sender,
+            message.position,
+        )
+        if vacancy is None:
+            continue
+        MailMessage.objects.filter(pk=message.pk).update(vacancy=vacancy)
+        message.vacancy = vacancy
+        confirm_sent(message, log)
+        linked += 1
+    log(f"Mail relink: linked {linked} of {len(rows)} unlinked emails to a job.")
+    return linked
 
 
 def confirm_sent(message: MailMessage, log) -> None:
@@ -352,9 +474,17 @@ def store(account: Account, uidvalidity: int, emails, sorted_rows, pool, log) ->
     saved = []
     for uid, mail in emails.items():
         row = sorted_rows.get(uid) or {"kind": "other", "employer": "", "summary": ""}
+        position = row.get("position", "")
         vacancy = None
         if row["kind"] in SHOWN:
-            vacancy = match_vacancy(row["employer"], mail["subject"], mail["received_at"], pool)
+            vacancy = match_vacancy(
+                row["employer"],
+                mail["subject"],
+                mail["received_at"],
+                pool,
+                mail["sender"],
+                position,
+            )
         message, created = MailMessage.objects.get_or_create(
             account=account.address,
             uidvalidity=uidvalidity,
@@ -367,6 +497,7 @@ def store(account: Account, uidvalidity: int, emails, sorted_rows, pool, log) ->
                 "kind": row["kind"],
                 "employer": row["employer"],
                 "summary": row["summary"],
+                "position": position,
                 "vacancy": vacancy,
             },
         )

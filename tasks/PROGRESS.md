@@ -1,5 +1,22 @@
 # Progress log
 
+- **Each job email says which application it is about, and "Needs you" has the same filters** —
+  the classifier now also returns the job title an email names (`MailMessage.position`,
+  migration 0005 with `db_default` so a running agent on the old code can still insert), and
+  `match_vacancy` uses it: by company as before, and, only when the email names no company, by
+  title against the sent jobs (hh.kz mail only against hh jobs), when the job's title has at
+  least three words, matches the named title at 80% word overlap (or sits whole in the subject
+  when no title was read) and exactly one job fits. Two live false links set those limits: a
+  Bnovo email matched another company's "Senior Go Developer" when a named company was allowed
+  to fall through to titles, and "Senior Application Engineer" matched Oracle's "Senior
+  Application Software Engineer" at 75%. `mail_relink [--titles]` re-links recent unlinked
+  email from subject and summary (bodies are not fetched again); it linked 12 correctly. Mail
+  rows show "Applied: title · site · date · sent with CV", or "Position: … · no application on
+  record" when the email names a job the agent never sent, and an info button opens a dialog
+  (`agent_desk job ID`) with the posting, the CV file, the cover letter and a flagship CV's
+  added skills. "Needs you" got the site picker and kind chips, four rows per kind under "All",
+  and every list is sorted newest first with its date shown.
+
 - **Mail tab filters by kind and inbox, and no longer hides interviews** — `mail_listing` capped
   the whole list at the newest 80 rows, and with 507 shown emails (266 confirmations, 175
   rejections) 9 of 11 interviews never reached the app. Rows are now capped per inbox and kind

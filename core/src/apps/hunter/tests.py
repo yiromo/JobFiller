@@ -2122,7 +2122,9 @@ class MailSortingTests(LinkedCvCase):
         }
         with patch.object(mail, "OpenAI", return_value=client):
             rows = mail.classify(emails)
-        self.assertEqual(rows[4], {"kind": "interview", "employer": "Acme", "summary": "Call"})
+        self.assertEqual(
+            rows[4], {"kind": "interview", "employer": "Acme", "summary": "Call", "position": ""}
+        )
         self.assertEqual(rows[5]["kind"], "other")
         self.assertNotIn(99, rows)
 
@@ -2163,6 +2165,79 @@ class MailSortingTests(LinkedCvCase):
         self.assertIsNone(
             mail.match_vacancy("Acme", "x", timezone.now() - timedelta(days=30), pool)
         )
+
+    def test_board_email_links_by_a_full_unique_title(self):
+        python = self.sent("4", "Kopylova", "Python Backend Engineer Senior")
+        self.sent("5", "Bnovo", "Backend Developer")
+        pool = mail.candidates()
+        found = mail.match_vacancy(
+            "",
+            "Вам написали по вакансии Python Backend Engineer Senior",
+            timezone.now(),
+            pool,
+            '"hh.kz" <noreply@hh.kz>',
+        )
+        self.assertEqual(found, python)
+        self.assertIsNone(
+            mail.match_vacancy(
+                "", "Senior Backend Developer", timezone.now(), pool, "noreply@hh.kz"
+            )
+        )
+        self.assertIsNone(
+            mail.match_vacancy(
+                "Syngenta", "Python Backend Engineer Senior", timezone.now(), pool, "x@syngenta.com"
+            )
+        )
+        self.sent("6", "Научсофт", "Senior Go Developer")
+        self.assertIsNone(
+            mail.match_vacancy(
+                "Acme",
+                "Вам написали по вакансии",
+                timezone.now(),
+                mail.candidates(),
+                "noreply@hh.kz",
+                "Senior Backend Developer/Ведущий разработчик (Go)",
+            )
+        )
+        self.assertIsNone(
+            mail.match_vacancy(
+                "",
+                "Новое сообщение",
+                timezone.now(),
+                mail.candidates(),
+                "noreply@hh.kz",
+                "Senior Backend Developer/Ведущий разработчик (Go)",
+            )
+        )
+
+    def test_title_match_needs_exactly_one_job(self):
+        self.sent("4", "One", "Python Backend Engineer")
+        self.sent("5", "Two", "Python Backend Engineer")
+        pool = mail.candidates()
+        self.assertIsNone(
+            mail.match_vacancy("", "Python Backend Engineer role", timezone.now(), pool)
+        )
+
+    def test_relink_links_old_unlinked_email_and_reads_titles(self):
+        python = self.sent("4", "Kopylova", "Python Backend Engineer Senior", days_ago=5)
+        message = MailMessage.objects.create(
+            account="me@gmail.com",
+            uidvalidity=1,
+            uid=1,
+            kind="recruiter",
+            sender='"hh.kz" <noreply@hh.kz>',
+            subject="Новое сообщение от работодателя",
+            summary="An employer wrote about your application.",
+            received_at=timezone.now() - timedelta(days=1),
+        )
+        with patch.object(
+            mail, "extract_positions", return_value={message.pk: "Python Backend Engineer Senior"}
+        ):
+            linked = mail.relink(self.lines.append, classify_positions=True)
+        message.refresh_from_db()
+        self.assertEqual(linked, 1)
+        self.assertEqual(message.vacancy, python)
+        self.assertEqual(message.position, "Python Backend Engineer Senior")
 
     def test_reply_confirms_an_unconfirmed_send(self):
         held = self.sent("7", "Fathom", "Backend Engineer", status=Vacancy.Status.NEEDS_REVIEW)
@@ -2245,6 +2320,34 @@ class MailSortingTests(LinkedCvCase):
         )
         self.assertEqual(listing["counts"]["work@gmail.com"], {"interview": 1})
         self.assertEqual(len(listing["rows"]), agent_desk.MAIL_ROWS + 1)
+
+    def test_desktop_shows_the_job_an_email_is_about(self):
+        vacancy = self.sent("9", "Tenth Revolution Group", "Software Engineer")
+        Vacancy.objects.filter(pk=vacancy.pk).update(
+            match_reason=(
+                "Fits. Flagship CV: a.pdf (from b.pdf), reviewer fit 46. Added for this job: "
+                "Node.js, BigQuery. Cannot be written in: Ruby."
+            ),
+            text="The posting.",
+        )
+        MailMessage.objects.create(
+            account="work@gmail.com",
+            uidvalidity=1,
+            uid=1,
+            kind="interview",
+            position="Software Engineer",
+            received_at=timezone.now(),
+            vacancy=vacancy,
+        )
+        row = agent_desk.mail_listing()["rows"][0]
+        self.assertEqual(row["vacancy_id"], vacancy.pk)
+        self.assertEqual(row["job_site"], "hh.kz")
+        self.assertEqual(row["position"], "Software Engineer")
+        self.assertTrue(row["job_sent_at"])
+        job = agent_desk.job_payload(vacancy.pk)
+        self.assertEqual(job["added"], "Node.js, BigQuery")
+        self.assertEqual(job["text"], "The posting.")
+        self.assertTrue(job["cv_name"])
 
     def test_desktop_flags_and_counts_ai_interviews(self):
         now = timezone.now()

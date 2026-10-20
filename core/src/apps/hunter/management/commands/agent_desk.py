@@ -1,6 +1,8 @@
 import json
 import re
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
@@ -14,6 +16,7 @@ SENT_ROWS = 60
 MAIL_ROWS = 50
 MAIL_RECENT = timedelta(days=30)
 AI_INTERVIEW = r"\bai[- ]?(powered |led |driven |video )?interview"
+FLAGSHIP_ADDED_RE = re.compile(r"Added for this job: (.+?)\.(?: Cannot be written in:|$)")
 LOG_ROWS = 80
 LOG_STAMP = "%Y-%m-%d %H:%M:%S UTC"
 
@@ -38,6 +41,7 @@ def held_payload(vacancy: Vacancy, names: dict) -> dict:
         "kind": kind,
         "send_visible": kind == review.CAPTCHA and vacancy.source == "hh",
         "screenshot": str(shot / "page.jpg") if shot and (shot / "page.jpg").is_file() else "",
+        "held_at": state.encode(vacancy.updated_at),
         "updated_at": state.encode(vacancy.updated_at),
     }
 
@@ -54,7 +58,13 @@ def sent_payload(vacancy: Vacancy, names: dict) -> dict:
     }
 
 
-def mail_payload(message: MailMessage) -> dict:
+def cv_name(vacancy: Vacancy | None) -> str:
+    if vacancy is None or vacancy.cv is None:
+        return ""
+    return vacancy.cv.original_filename or Path(vacancy.cv.file.name).name
+
+
+def mail_payload(message: MailMessage, names: dict) -> dict:
     vacancy = message.vacancy
     return {
         "id": message.pk,
@@ -66,8 +76,13 @@ def mail_payload(message: MailMessage) -> dict:
         "summary": message.summary,
         "received_at": state.encode(message.received_at),
         "gmail_url": mail.gmail_url(message),
+        "position": message.position,
+        "vacancy_id": vacancy.pk if vacancy else None,
         "job_title": vacancy.title if vacancy else "",
         "job_url": vacancy.url if vacancy else "",
+        "job_site": names.get(vacancy.source, vacancy.source) if vacancy else "",
+        "job_sent_at": state.encode(mail.sent_at(vacancy)) if vacancy else None,
+        "job_cv": cv_name(vacancy),
         "ai_interview": bool(
             re.search(AI_INTERVIEW, f"{message.subject} {message.summary}", re.IGNORECASE)
         ),
@@ -79,7 +94,8 @@ def mail_listing() -> dict:
         kind__in=mail.SHOWN,
         dismissed=False,
         received_at__gte=datetime.now(UTC) - MAIL_RECENT,
-    ).select_related("vacancy")
+    ).select_related("vacancy", "vacancy__cv")
+    names = site_names()
     counts: dict = {}
     for group in shown.values("account", "kind").annotate(total=Count("id")).order_by():
         counts.setdefault(group["account"], {})[group["kind"]] = group["total"]
@@ -90,7 +106,7 @@ def mail_listing() -> dict:
     accounts = [account.address for account in mail.accounts()]
     accounts += sorted(set(counts) - set(accounts))
     rows = [
-        mail_payload(message)
+        mail_payload(message, names)
         for account in accounts
         for kind in mail.SHOWN
         if counts.get(account, {}).get(kind)
@@ -106,6 +122,36 @@ def mail_listing() -> dict:
         "ai_counts": ai_counts,
         "rows": rows,
     }
+
+
+def job_payload(vacancy_id: int) -> dict:
+    vacancy = Vacancy.objects.select_related("cv").filter(pk=vacancy_id).first()
+    if vacancy is None:
+        raise CommandError("No such job.")
+    cv_path = ""
+    if vacancy.cv is not None and vacancy.cv.file:
+        with suppress(ValueError, NotImplementedError):
+            cv_path = vacancy.cv.file.path
+    return {
+        "id": vacancy.pk,
+        "title": vacancy.title,
+        "employer": vacancy.employer,
+        "site_name": site_names().get(vacancy.source, vacancy.source),
+        "url": vacancy.url,
+        "status": vacancy.status,
+        "sent_at": state.encode(mail.sent_at(vacancy)),
+        "score": vacancy.match_score,
+        "cv_name": cv_name(vacancy),
+        "cv_path": cv_path,
+        "added": flagship_added(vacancy.match_reason),
+        "cover_letter": vacancy.cover_letter,
+        "text": vacancy.text,
+    }
+
+
+def flagship_added(reason: str) -> str:
+    found = FLAGSHIP_ADDED_RE.search(reason or "")
+    return found.group(1).strip() if found else ""
 
 
 def reported_at(agent: dict, marker: str) -> datetime | None:
@@ -191,10 +237,15 @@ class Command(BaseCommand):
         resolve.add_argument("--not-sent", action="store_true")
         done = commands.add_parser("mail-done")
         done.add_argument("id", type=int)
+        job = commands.add_parser("job")
+        job.add_argument("id", type=int)
 
     def handle(self, *args, **options):
         if options["command"] == "list":
             self.stdout.write(json.dumps(listing(), ensure_ascii=False))
+            return
+        if options["command"] == "job":
+            self.stdout.write(json.dumps(job_payload(options["id"]), ensure_ascii=False))
             return
         if options["command"] == "mail-done":
             problem = mail.dismiss(options["id"])
