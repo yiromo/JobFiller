@@ -6,6 +6,8 @@ from django.conf import settings
 from django.utils import timezone
 from openai import OpenAI
 
+from agent import mimo
+
 logger = logging.getLogger(__name__)
 
 COVERED = "covered"
@@ -81,7 +83,8 @@ def review(
     )
     for attempt in range(ATTEMPTS):
         try:
-            response = client.chat.completions.create(
+            response = mimo.chat(
+                client,
                 model=settings.MIMO_MODEL,
                 messages=[
                     {"role": "system", "content": _SYSTEM_PROMPT},

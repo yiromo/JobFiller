@@ -47,7 +47,7 @@ uv run ruff format .
 uv run python manage.py test                                   # all Django tests
 uv run python manage.py test apps.opportunities.tests          # one module (or add .Class.test_name)
 uv run python manage.py sync_telegram_jobs [--days N]          # ingest the Telegram channel
-uv run python manage.py hunter_login hh|linkedin|indeed|dsml  # visible browser: log in once per site
+uv run python manage.py hunter_login hh|linkedin|indeed|dsml [--url URL]  # log in once, or pass a security check
 uv run python manage.py agent_desk list|job ID|resolve ID applied|skipped|retry  # desktop bridge
 uv run python manage.py mail_sync [--account ADDR] [--limit 0]  # sort Gmail (0 = whole backlog)
 uv run python manage.py mail_import TAKEOUT.zip --account ADDR    # sort a Google Takeout export

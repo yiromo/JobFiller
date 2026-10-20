@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 from django.conf import settings
 from openai import OpenAI, OpenAIError
 
+from agent import mimo
 from apps.cvs.models import Cv
 
 from .models import Opportunity
@@ -66,7 +67,8 @@ def best_cv_for_post(text: str, cvs: list[Cv]) -> tuple[Cv | None, int | None, s
         "posting": text[:6000],
         "cvs": [{"id": cv.id, "text": cv.raw_text[:7500]} for cv in cvs],
     }
-    response = client.chat.completions.create(
+    response = mimo.chat(
+        client,
         model=settings.MIMO_MODEL,
         messages=[
             {
@@ -97,7 +99,8 @@ def select_job_pages(jobs: list[tuple[str, str]], cvs: list[Cv]) -> list[tuple[s
         return []
     candidates = jobs[:1000]
     client = OpenAI(api_key=settings.MIMO_API_KEY, base_url=settings.MIMO_BASE_URL)
-    response = client.chat.completions.create(
+    response = mimo.chat(
+        client,
         model=settings.MIMO_MODEL,
         messages=[
             {
@@ -146,7 +149,8 @@ def rank_jobs(
     if not pages or not cvs or not settings.MIMO_API_KEY:
         return {}
     client = OpenAI(api_key=settings.MIMO_API_KEY, base_url=settings.MIMO_BASE_URL)
-    response = client.chat.completions.create(
+    response = mimo.chat(
+        client,
         model=settings.MIMO_MODEL,
         messages=[
             {

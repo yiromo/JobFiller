@@ -30,6 +30,8 @@ from google.auth.transport.requests import AuthorizedSession
 from google.oauth2.credentials import Credentials
 from openai import OpenAI, OpenAIError
 
+from agent import mimo
+
 from . import notify, review
 from .models import MailMessage, Vacancy
 
@@ -263,7 +265,8 @@ def classify(emails: dict[int, dict]) -> dict[int, dict]:
         }
         for uid, mail in emails.items()
     ]
-    response = client.chat.completions.create(
+    response = mimo.chat(
+        client,
         model=settings.MIMO_MODEL,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -304,7 +307,8 @@ def extract_positions(messages: list[MailMessage]) -> dict[int, str]:
         }
         for message in messages
     ]
-    response = client.chat.completions.create(
+    response = mimo.chat(
+        client,
         model=settings.MIMO_MODEL,
         messages=[
             {"role": "system", "content": POSITION_PROMPT},

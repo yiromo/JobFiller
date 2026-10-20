@@ -11,7 +11,7 @@ from django.conf import settings
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
-from agent import cv_reviewer
+from agent import cv_reviewer, mimo
 from apps.cvs.models import Cv
 from apps.hunter import (
     captcha,
@@ -1908,6 +1908,32 @@ class EmployerBoardTests(LinkedCvCase):
         self.assertEqual(second.status, Vacancy.Status.APPLIED)
         self.assertEqual(len(calls), 2)
 
+    def test_a_failed_lookup_skips_only_that_job(self):
+        status = hh.parse_status({"resumes": {"1": {"hash": "hash"}}})
+        adapter = FakeAdapter(status)
+        adapter.EMPLOYER_BOARDS = True
+        first, second = self.vacancy("98"), self.vacancy("99")
+        Vacancy.objects.filter(pk=first.pk).update(match_score=99)
+        answers = [None, status]
+        adapter.response_status = lambda page, url: answers.pop(0)
+        service.apply_ready(None, adapter, 10, [self.link], lambda line: None, RunSummary())
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertEqual(first.status, Vacancy.Status.READY)
+        self.assertEqual(second.status, Vacancy.Status.APPLIED)
+
+    def test_repeated_failed_lookups_stop_the_lane(self):
+        adapter = FakeAdapter(None)
+        adapter.EMPLOYER_BOARDS = True
+        rows = [self.vacancy(str(90 + index)) for index in range(service.BOARD_MISSES + 1)]
+        lookups = []
+        adapter.response_status = lambda page, url: lookups.append(url)
+        service.apply_ready(None, adapter, 10, [self.link], lambda line: None, RunSummary())
+        self.assertEqual(len(lookups), service.BOARD_MISSES)
+        self.assertTrue(
+            all(Vacancy.objects.get(pk=row.pk).status == Vacancy.Status.READY for row in rows)
+        )
+
     def navigate(self, confirmation, external_id):
         adapter = FakeAdapter(None)
         adapter.EMPLOYER_BOARDS = True
@@ -2853,3 +2879,20 @@ class GmailApiTests(LinkedCvCase):
             mail.sync(self.lines.append)
         imap_sync.assert_called_once()
         self.assertIn("run mail_login work@gmail.com again", self.lines[-1])
+
+
+class MimoDeadlineTests(SimpleTestCase):
+    def test_an_answer_that_never_finishes_is_given_up(self):
+        release = threading.Event()
+        client = MagicMock()
+        client.chat.completions.create.side_effect = lambda **request: release.wait(5)
+        with self.assertRaises(mimo.MimoTimeout):
+            mimo.chat(client, deadline=0.1, model="m")
+        release.set()
+        client.close.assert_called_once()
+
+    def test_a_prompt_answer_is_returned(self):
+        client = MagicMock()
+        client.chat.completions.create.return_value = "answer"
+        self.assertEqual(mimo.chat(client, model="m"), "answer")
+        client.chat.completions.create.assert_called_once_with(model="m")

@@ -1,4 +1,5 @@
 import json
+import re
 import shlex
 import shutil
 import sys
@@ -24,6 +25,8 @@ POLL_SECONDS = 60
 MAIL_PREVIEW = 4
 ALL = "all"
 AI_KIND = "ai_interview"
+URL_RE = re.compile(r" at https?://\S+")
+CHECK_RE = re.compile(r"(?:security|browser) check at (https://\S+?)\.?$")
 
 CSS = """
 .chip {
@@ -194,6 +197,14 @@ def run_detached(lines: list[str], done) -> None:
         done(source.get_successful(), output)
 
     process.wait_async(None, finished)
+
+
+def security_check(error: str, names: dict) -> tuple[str, str] | None:
+    match = CHECK_RE.search(error)
+    if not match:
+        return None
+    site = next((site for site, name in names.items() if error.startswith(f"{name}:")), None)
+    return (site, match.group(1)) if site else None
 
 
 def open_uri(uri: str) -> None:
@@ -450,8 +461,15 @@ class AgentWindow(Adw.ApplicationWindow):
                 f"(wait {attempt[0]} of {attempt[1]})."
             )
             self.banner.set_button_label(None)
+        elif check := security_check(agent.get("last_error", ""), names):
+            site, url = check
+            self.banner.set_title(
+                f"{names[site]} is showing a security check, so the agent skips it for now."
+            )
+            self.banner.set_button_label("Pass it")
+            self.banner_action = lambda: self.pass_check(site, url)
         elif agent.get("last_error"):
-            self.banner.set_title(GLib.markup_escape_text(agent["last_error"][:200]))
+            self.banner.set_title(URL_RE.sub("", agent["last_error"])[:200])
             self.banner.set_button_label(None)
         else:
             self.banner.set_revealed(False)
@@ -1149,6 +1167,30 @@ class AgentWindow(Adw.ApplicationWindow):
             f"{rows[0]['site_name']}. If it asks for a captcha, solve it in that window and the "
             "response is sent. The agent resumes afterwards, even if you close this app.",
             "Send",
+            go,
+        )
+
+    def pass_check(self, site: str, url: str) -> None:
+        if self.busy:
+            self.toast("Wait for the current task to finish.")
+            return
+        name = next((s["name"] for s in self.data["sites"] if s["site"] == site), site)
+
+        def go():
+            def finished(ok, output):
+                self.toast(f"{name} check passed." if ok else last_line(output) or "Not passed.")
+
+            self.with_agent_paused(
+                f"Waiting for you to pass the {name} check…",
+                [manage("hunter_login", site, "--url", url)],
+                finished,
+            )
+
+        self.confirm(
+            f"Pass the {name} security check?",
+            "The agent pauses and opens its own browser on that page. Pass the check there "
+            "yourself; the window closes once the page loads normally, and the agent resumes.",
+            "Open browser",
             go,
         )
 

@@ -10,6 +10,8 @@ from pathlib import Path
 from django.conf import settings
 from openai import OpenAI
 
+from agent import mimo
+
 logger = logging.getLogger(__name__)
 
 
@@ -585,7 +587,8 @@ def rewrite(cv_raw_text: str, instructions: str, position_text: str = "") -> dic
         }
     )
     try:
-        response = client.chat.completions.create(
+        response = mimo.chat(
+            client,
             model=settings.MIMO_MODEL,
             messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},

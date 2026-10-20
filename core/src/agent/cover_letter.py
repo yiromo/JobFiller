@@ -5,6 +5,8 @@ import docx
 from django.conf import settings
 from openai import OpenAI
 
+from agent import mimo
+
 logger = logging.getLogger(__name__)
 
 OFF = "off"
@@ -58,7 +60,8 @@ def generate(
         f"Job posting text:\n{(page_text or '')[:8000]}"
         f"{about_block}"
     )
-    response = client.chat.completions.create(
+    response = mimo.chat(
+        client,
         model=settings.MIMO_MODEL,
         messages=[
             {

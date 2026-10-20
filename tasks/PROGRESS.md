@@ -1,5 +1,25 @@
 # Progress log
 
+- **A security check in the banner can be passed from the desktop app** — the banner showed the
+  raw error, including the agent's Cloudflare challenge URL with `&amp;` (the title was
+  markup-escaped although `Adw.Banner` has `use-markup` off), and it was not a link. Opening that
+  URL in the user's own browser would not clear the agent's profile anyway. The banner now names
+  the site with a "Pass it" button that pauses the agent and runs `hunter_login SITE --url URL`:
+  the agent's own profile opens visibly on that page with the `__cf_*` parameters stripped, the
+  user passes the check by hand, and the window closes and saves the session once the page loads
+  without a check. Other errors are shown with their URLs removed.
+
+- **A model call can no longer stall the agent, and one board lookup no longer stops the lane**
+  — the LinkedIn lane sat 20 minutes in `rank_jobs`: MiMo kept the HTTPS response open and sent
+  a few bytes every few seconds, so the SDK's per-read `timeout` never fired. `agent.mimo.chat`
+  runs the request in a worker thread and gives up after `DEADLINE_SECONDS` (180), closing the
+  client and raising `MimoTimeout` (an `OpenAIError`, so every existing handler treats it as a
+  failed call: scoring leaves the rows "Scoring failed" for the next run). Scoring, mail
+  sorting, the navigator, cover letters, the CV writer and reviewer use it; the extension's
+  scan-time passes do not yet. Separately, an Ashby/Greenhouse/Lever posting lookup that hit a
+  network error stopped every send for the run; on job boards one miss now leaves that job
+  ready and moves on, and `BOARD_MISSES` (3) misses in a row stop the lane.
+
 - **Each job email says which application it is about, and "Needs you" has the same filters** —
   the classifier now also returns the job title an email names (`MailMessage.position`,
   migration 0005 with `db_default` so a running agent on the old code can still insert), and

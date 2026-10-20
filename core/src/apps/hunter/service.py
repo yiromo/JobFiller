@@ -37,6 +37,7 @@ WAIT_LOG_SECONDS = 300
 DUPLICATE_DAYS = 60
 MODEL_ERRORS = (OpenAIError, ValueError, TypeError, AttributeError, KeyError)
 UNSCORED_PREFIXES = ("Not scored", "Scoring failed")
+BOARD_MISSES = 3
 STOPPING = threading.Event()
 REFUSALS_RE = re.compile(r"refused this job (\d+) times?")
 REFUSAL_LIMIT = 3
@@ -611,6 +612,7 @@ def apply_ready(
     if adapter.MAX_SENDS_PER_RUN and not only and not rehearse:
         limit = min(limit, adapter.MAX_SENDS_PER_RUN)
     attempted = False
+    misses = 0
     for vacancy in queue.order_by("-match_score", "id")[:limit]:
         reason = "" if only else skip_reason(vacancy)
         if reason:
@@ -650,7 +652,12 @@ def apply_ready(
             )
             raise
         if result is None:
-            break
+            misses += 1
+            if not adapter.EMPLOYER_BOARDS or only or misses >= BOARD_MISSES:
+                log(f"  {adapter.NAME}: stopping sends until the next run.")
+                break
+            continue
+        misses = 0
         attempted = attempted or result
 
 
@@ -665,7 +672,7 @@ def apply_one(
         log(f"  response info failed for {vacancy.title}: {first_line(error)}")
     if status is None:
         Vacancy.objects.filter(pk=vacancy.pk).update(status=Vacancy.Status.READY)
-        log(f"  {adapter.NAME} returned no response info; stopping sends until the next run.")
+        log(f"  {adapter.NAME} returned no response info for {vacancy.title}.")
         return None
     resume_missing = adapter.USES_RESUME_LINKS and vacancy.resume_id not in status.resume_hashes
     if status.impossible and not status.already_applied:

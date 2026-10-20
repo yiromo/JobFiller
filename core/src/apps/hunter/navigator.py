@@ -10,6 +10,7 @@ from django.conf import settings
 from openai import OpenAI, OpenAIError
 from playwright.sync_api import Error as PlaywrightError
 
+from agent import mimo
 from agent.field_mapper import EEO_KEYWORDS
 from agent.llm_mapper import _ATTESTATION_KEYWORDS
 
@@ -711,7 +712,8 @@ class Navigator:
             "page_text": self.page.evaluate(PAGE_TEXT_JS)[:6000],
             "elements": elements,
         }
-        response = self.client.chat.completions.create(
+        response = mimo.chat(
+            self.client,
             model=settings.MIMO_VISION_MODEL,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
@@ -819,7 +821,8 @@ class Navigator:
             for entry in self.trace
         ]
         try:
-            response = self.client.chat.completions.create(
+            response = mimo.chat(
+                self.client,
                 model=settings.MIMO_MODEL,
                 messages=[
                     {"role": "system", "content": LESSON_PROMPT},
