@@ -1,16 +1,19 @@
 import json
+import re
 from datetime import UTC, datetime, timedelta
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
+from django.db.models import Count, Q
 
 from apps.hunter import captcha, evidence, mail, review, state
 from apps.hunter.models import MailMessage, Vacancy
 from apps.hunter.sources import ADAPTERS, LOGIN_SITES
 
 SENT_ROWS = 60
-MAIL_ROWS = 80
+MAIL_ROWS = 50
 MAIL_RECENT = timedelta(days=30)
+AI_INTERVIEW = r"\bai[- ]?(powered |led |driven |video )?interview"
 LOG_ROWS = 80
 LOG_STAMP = "%Y-%m-%d %H:%M:%S UTC"
 
@@ -65,6 +68,9 @@ def mail_payload(message: MailMessage) -> dict:
         "gmail_url": mail.gmail_url(message),
         "job_title": vacancy.title if vacancy else "",
         "job_url": vacancy.url if vacancy else "",
+        "ai_interview": bool(
+            re.search(AI_INTERVIEW, f"{message.subject} {message.summary}", re.IGNORECASE)
+        ),
     }
 
 
@@ -74,12 +80,31 @@ def mail_listing() -> dict:
         dismissed=False,
         received_at__gte=datetime.now(UTC) - MAIL_RECENT,
     ).select_related("vacancy")
+    counts: dict = {}
+    for group in shown.values("account", "kind").annotate(total=Count("id")).order_by():
+        counts.setdefault(group["account"], {})[group["kind"]] = group["total"]
+    ai_counts: dict = {}
+    ai = shown.filter(Q(subject__iregex=AI_INTERVIEW) | Q(summary__iregex=AI_INTERVIEW))
+    for group in ai.values("account", "kind").annotate(total=Count("id")).order_by():
+        ai_counts.setdefault(group["account"], {})[group["kind"]] = group["total"]
+    accounts = [account.address for account in mail.accounts()]
+    accounts += sorted(set(counts) - set(accounts))
+    rows = [
+        mail_payload(message)
+        for account in accounts
+        for kind in mail.SHOWN
+        if counts.get(account, {}).get(kind)
+        for message in shown.filter(account=account, kind=kind)[:MAIL_ROWS]
+    ]
+    rows.sort(key=lambda row: row["received_at"] or "", reverse=True)
     return {
-        "accounts": [account.address for account in mail.accounts()],
+        "accounts": accounts,
         "sorted": MailMessage.objects.count(),
         "kinds": list(mail.SHOWN),
         "urgent": list(mail.URGENT),
-        "rows": [mail_payload(message) for message in shown[:MAIL_ROWS]],
+        "counts": counts,
+        "ai_counts": ai_counts,
+        "rows": rows,
     }
 
 

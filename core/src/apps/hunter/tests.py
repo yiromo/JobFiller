@@ -2219,6 +2219,58 @@ class MailSortingTests(LinkedCvCase):
         self.assertEqual(mail.dismiss(shown.pk), "")
         self.assertEqual(agent_desk.mail_listing()["rows"], [])
 
+    def test_desktop_keeps_an_older_interview_behind_many_confirmations(self):
+        now = timezone.now()
+        interview = MailMessage.objects.create(
+            account="work@gmail.com",
+            uidvalidity=1,
+            uid=1,
+            kind="interview",
+            received_at=now - timedelta(days=2),
+        )
+        MailMessage.objects.bulk_create(
+            MailMessage(
+                account="me@gmail.com",
+                uidvalidity=1,
+                uid=10 + index,
+                kind="confirmation",
+                received_at=now - timedelta(minutes=index),
+            )
+            for index in range(agent_desk.MAIL_ROWS + 5)
+        )
+        listing = agent_desk.mail_listing()
+        self.assertIn(interview.pk, [row["id"] for row in listing["rows"]])
+        self.assertEqual(
+            listing["counts"]["me@gmail.com"]["confirmation"], agent_desk.MAIL_ROWS + 5
+        )
+        self.assertEqual(listing["counts"]["work@gmail.com"], {"interview": 1})
+        self.assertEqual(len(listing["rows"]), agent_desk.MAIL_ROWS + 1)
+
+    def test_desktop_flags_and_counts_ai_interviews(self):
+        now = timezone.now()
+        ai = MailMessage.objects.create(
+            account="work@gmail.com",
+            uidvalidity=1,
+            uid=1,
+            kind="interview",
+            subject="Next step: Complete your 20-minute AI Interview",
+            received_at=now,
+        )
+        human = MailMessage.objects.create(
+            account="work@gmail.com",
+            uidvalidity=1,
+            uid=2,
+            kind="interview",
+            subject="Interview with the hiring manager",
+            summary="A call with the team lead about the training platform.",
+            received_at=now,
+        )
+        listing = agent_desk.mail_listing()
+        flags = {row["id"]: row["ai_interview"] for row in listing["rows"]}
+        self.assertEqual(flags, {ai.pk: True, human.pk: False})
+        self.assertEqual(listing["counts"]["work@gmail.com"], {"interview": 2})
+        self.assertEqual(listing["ai_counts"], {"work@gmail.com": {"interview": 1}})
+
     def test_urgent_recent_email_raises_one_desktop_notice(self):
         recent = MailMessage(kind="interview", employer="Acme", received_at=timezone.now())
         old = MailMessage(

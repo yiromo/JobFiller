@@ -18,8 +18,41 @@ REPO = Path(__file__).resolve().parents[1]
 CORE_SRC = REPO / "core" / "src"
 STATUS_DIR = CORE_SRC / "data" / "hunter"
 TASK_LOG = Path(GLib.get_user_cache_dir()) / "job-agent" / "task.log"
+SETTINGS = Path(GLib.get_user_config_dir()) / "job-agent" / "settings.json"
 REFRESH_DELAY_SECONDS = 8
 POLL_SECONDS = 60
+MAIL_PREVIEW = 4
+ALL = "all"
+AI_KIND = "ai_interview"
+
+CSS = """
+.chip {
+  border-radius: 999px;
+  padding: 4px 14px;
+  min-height: 24px;
+  background: none;
+  box-shadow: inset 0 0 0 1px alpha(currentColor, 0.15);
+  font-weight: 600;
+}
+.chip:hover {
+  background: alpha(currentColor, 0.07);
+}
+.chip.selected {
+  background: @accent_bg_color;
+  color: @accent_fg_color;
+  box-shadow: none;
+}
+.chip.urgent {
+  color: @accent_color;
+  box-shadow: inset 0 0 0 1px alpha(@accent_color, 0.5);
+}
+dropdown.chip > button {
+  border-radius: 999px;
+  padding: 4px 10px 4px 14px;
+  min-height: 24px;
+  font-weight: 600;
+}
+"""
 
 KINDS = {
     "captcha": (
@@ -66,7 +99,23 @@ MAIL_KINDS = {
     "recruiter": "Recruiters",
     "rejection": "Rejections",
     "confirmation": "Application received",
+    AI_KIND: "AI interviews",
 }
+
+
+def load_settings() -> dict:
+    try:
+        return json.loads(SETTINGS.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def save_settings(values: dict) -> None:
+    try:
+        SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+        SETTINGS.write_text(json.dumps(values, indent=2))
+    except OSError:
+        pass
 
 
 def uv_path() -> str:
@@ -199,6 +248,14 @@ class AgentWindow(Adw.ApplicationWindow):
         self.refresh_pending = 0
         self.rendered: dict = {}
         self.banner_action = lambda: None
+        self.mail_kind = ALL
+        self.mail_account = ALL
+        self.settings = load_settings()
+        provider = Gtk.CssProvider()
+        provider.load_from_string(CSS)
+        Gtk.StyleContext.add_provider_for_display(
+            self.get_display(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
 
         self.toasts = Adw.ToastOverlay()
         view = Adw.ToolbarView()
@@ -319,7 +376,7 @@ class AgentWindow(Adw.ApplicationWindow):
             self.render_held()
         if self.changed("sent", self.data["sent"], self.data["sent_last_day"]):
             self.render_sent()
-        if self.changed("mail", self.data.get("mail")):
+        if self.changed("mail", *self.mail_state()):
             self.render_mail()
         if self.changed(
             "agent",
@@ -491,23 +548,38 @@ class AgentWindow(Adw.ApplicationWindow):
     def render_mail(self) -> None:
         clear(self.mail_box)
         data = self.data.get("mail") or {}
-        rows = data.get("rows", [])
-        urgent = [row for row in rows if row["kind"] in data.get("urgent", [])]
-        self.mail_page.set_badge_number(len(urgent))
+        rows, counts, kinds = self.mail_view(data)
+        accounts = data.get("accounts", [])
+        urgent_kinds = data.get("urgent", [])
+        urgent = sum(
+            total
+            for per_kind in counts.values()
+            for kind, total in per_kind.items()
+            if kind in urgent_kinds
+        )
+        self.mail_page.set_badge_number(urgent)
         self.mail_page.set_needs_attention(bool(urgent))
-        if not data.get("accounts"):
+        if not accounts:
             self.mail_box.append(
                 Adw.StatusPage(
                     icon_name="mail-unread-symbolic",
                     title="No mailbox connected",
                     description=(
-                        "Add your Gmail addresses and app passwords to HUNTER_MAIL_ACCOUNTS in "
-                        "core/.env, then restart the agent."
+                        "Add your Gmail addresses to HUNTER_MAIL_ACCOUNTS in core/.env, with an "
+                        "app password or oauth after running mail_login, then restart the agent."
                     ),
                     vexpand=True,
                 )
             )
             return
+        if self.mail_account not in (ALL, *accounts):
+            self.mail_account = ALL
+        totals = self.mail_totals(counts)
+        if self.mail_kind != ALL and not totals.get(self.mail_kind):
+            self.mail_kind = ALL
+        self.mail_box.append(self.mail_filters(data, accounts, totals, kinds))
+        if self.mail_account != ALL:
+            rows = [row for row in rows if row["account"] == self.mail_account]
         if not rows:
             self.mail_box.append(
                 Adw.StatusPage(
@@ -518,21 +590,128 @@ class AgentWindow(Adw.ApplicationWindow):
                 )
             )
             return
-        for kind in data.get("kinds", []):
+        if self.mail_kind != ALL:
+            kinds = [self.mail_kind]
+        for kind in kinds:
             matching = [row for row in rows if row["kind"] == kind]
             if not matching:
                 continue
-            group = Adw.PreferencesGroup(title=f"{MAIL_KINDS.get(kind, kind)} ({len(matching)})")
-            for row in matching:
+            total = totals.get(kind, len(matching))
+            group = Adw.PreferencesGroup(title=f"{MAIL_KINDS.get(kind, kind)} ({total})")
+            shown = matching
+            if self.mail_kind == ALL and len(matching) > MAIL_PREVIEW:
+                shown = matching[:MAIL_PREVIEW]
+                more = Gtk.Button(label=f"See all {total}", valign=Gtk.Align.CENTER)
+                more.add_css_class("flat")
+                more.connect("clicked", lambda _button, kind=kind: self.filter_mail(kind=kind))
+                group.set_header_suffix(more)
+            elif total > len(matching):
+                group.set_description(f"The newest {len(matching)} of {total}.")
+            for row in shown:
                 group.add(self.mail_row(row))
             self.mail_box.append(group)
+
+    def mail_totals(self, counts: dict) -> dict:
+        totals: dict = {}
+        for account, per_kind in counts.items():
+            if self.mail_account not in (ALL, account):
+                continue
+            for kind, total in per_kind.items():
+                totals[kind] = totals.get(kind, 0) + total
+        return totals
+
+    def mail_filters(self, data: dict, accounts: list, totals: dict, kinds: list) -> Gtk.Widget:
+        bar = Adw.WrapBox(child_spacing=8, line_spacing=8)
+        if len(accounts) > 1:
+            names = [ALL, *accounts]
+            labels = ["All inboxes", *accounts]
+            picker = Gtk.DropDown(model=Gtk.StringList(strings=labels), valign=Gtk.Align.CENTER)
+            picker.add_css_class("chip")
+            picker.set_selected(names.index(self.mail_account))
+            picker.connect(
+                "notify::selected",
+                lambda widget, _spec: self.filter_mail(account=names[widget.get_selected()]),
+            )
+            bar.append(picker)
+        chips = [(ALL, "All", sum(totals.values()))]
+        chips += [
+            (kind, MAIL_KINDS.get(kind, kind), totals[kind]) for kind in kinds if totals.get(kind)
+        ]
+        for kind, label, total in chips:
+            chip = Gtk.Button(label=f"{label}  {total}", valign=Gtk.Align.CENTER)
+            chip.add_css_class("chip")
+            if kind == self.mail_kind:
+                chip.add_css_class("selected")
+            elif kind in data.get("urgent", []):
+                chip.add_css_class("urgent")
+            chip.connect("clicked", lambda _button, kind=kind: self.filter_mail(kind=kind))
+            bar.append(chip)
+        toggle = Gtk.Box(spacing=8, valign=Gtk.Align.CENTER, margin_start=4)
+        toggle.append(Gtk.Label(label="Count AI interviews", css_classes=["dim-label"]))
+        switch = Gtk.Switch(active=self.count_ai(), valign=Gtk.Align.CENTER)
+        switch.set_tooltip_text(
+            "Off: emails about automated AI interviews (Anyone AI, micro1 and the like) move to "
+            "their own chip and stop counting as interviews or in the tab badge."
+        )
+        switch.connect(
+            "notify::active", lambda widget, _spec: self.set_count_ai(widget.get_active())
+        )
+        toggle.append(switch)
+        bar.append(toggle)
+        return bar
+
+    def filter_mail(self, kind: str | None = None, account: str | None = None) -> None:
+        if kind is not None:
+            self.mail_kind = kind
+        if account is not None:
+            self.mail_account = account
+        GLib.idle_add(self.rerender_mail)
+
+    def rerender_mail(self) -> bool:
+        if self.changed("mail", *self.mail_state()):
+            self.render_mail()
+        return GLib.SOURCE_REMOVE
+
+    def mail_state(self) -> tuple:
+        return self.data.get("mail"), self.mail_kind, self.mail_account, self.count_ai()
+
+    def count_ai(self) -> bool:
+        return self.settings.get("count_ai_interviews", True)
+
+    def set_count_ai(self, active: bool) -> None:
+        if active == self.count_ai():
+            return
+        self.settings["count_ai_interviews"] = active
+        save_settings(self.settings)
+        GLib.idle_add(self.rerender_mail)
+
+    def mail_view(self, data: dict) -> tuple[list, dict, list]:
+        rows = data.get("rows", [])
+        counts = data.get("counts", {})
+        kinds = data.get("kinds", [])
+        if self.count_ai():
+            return rows, counts, kinds
+        adjusted: dict = {}
+        for account, per_kind in counts.items():
+            mine = dict(per_kind)
+            moved = 0
+            for kind, total in data.get("ai_counts", {}).get(account, {}).items():
+                mine[kind] = mine.get(kind, 0) - total
+                moved += total
+            mine = {kind: total for kind, total in mine.items() if total > 0}
+            if moved:
+                mine[AI_KIND] = moved
+            adjusted[account] = mine
+        rows = [{**row, "kind": AI_KIND} if row.get("ai_interview") else row for row in rows]
+        return rows, adjusted, [*kinds, AI_KIND]
 
     def mail_row(self, row: dict) -> Adw.ActionRow:
         about = row["employer"] or row["sender"]
         if row["job_title"]:
             about = f"{about} · {row['job_title']}"
+        account = row["account"] if self.mail_account == ALL else ""
         subtitle = " · ".join(
-            part for part in (about, row["account"], local_time(row["received_at"])) if part
+            part for part in (about, account, local_time(row["received_at"])) if part
         )
         if row["summary"]:
             subtitle = f"{subtitle}\n{row['summary']}"
@@ -559,7 +738,17 @@ class AgentWindow(Adw.ApplicationWindow):
                 self.toast(last_line(err).removeprefix("CommandError: ") or "That did not work.")
                 return
             mail = self.data.get("mail") or {}
+            original = next(
+                (other for other in mail.get("rows", []) if other["id"] == row["id"]), row
+            )
             mail["rows"] = [other for other in mail.get("rows", []) if other["id"] != row["id"]]
+            tallies = [mail.get("counts", {})]
+            if original.get("ai_interview"):
+                tallies.append(mail.get("ai_counts", {}))
+            for tally in tallies:
+                per_kind = tally.get(original["account"], {})
+                if per_kind.get(original["kind"]):
+                    per_kind[original["kind"]] -= 1
             self.render()
 
         run(manage("agent_desk", "mail-done", str(row["id"])), done)

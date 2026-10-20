@@ -1,5 +1,21 @@
 # Progress log
 
+- **Mail tab filters by kind and inbox, and no longer hides interviews** — `mail_listing` capped
+  the whole list at the newest 80 rows, and with 507 shown emails (266 confirmations, 175
+  rejections) 9 of 11 interviews never reached the app. Rows are now capped per inbox and kind
+  (`MAIL_ROWS` = 50 each) and `counts` carries the true totals, so the badge and the chips count
+  everything. The tab has a row of pill chips (`Adw.WrapBox`, CSS in `job_agent.CSS`) with "All"
+  plus one chip per kind that has mail, urgent kinds outlined in the accent color, and an inbox
+  picker (`Gtk.DropDown`) when more than one account is configured. "All" shows the newest four
+  per kind with "See all N"; a chosen kind lists every returned row and says when it is only the
+  newest part. The chips are plain buttons with a `selected` class: grouped `Gtk.ToggleButton`s
+  fired `toggled` while the bar was rebuilt and left a random kind chosen. A "Count AI
+  interviews" switch (saved in `~/.config/job-agent/settings.json`, on by default) moves emails
+  whose subject or summary matches `agent_desk.AI_INTERVIEW` (Anyone AI, micro1 and similar
+  automated interviews) into their own non-urgent "AI interviews" chip when off, out of the
+  interview, test and badge counts. `mail_listing` flags each row with `ai_interview` and sends
+  `ai_counts` so the counts stay true totals rather than counts of the returned rows.
+
 - **Flagship CVs match the posting 100%, by the user's choice** — the user decided the flagship
   CV should claim every skill, level and scope the posting asks for. `FLAGSHIP_INSTRUCTIONS`
   now tells the writer to add every technology and practice the posting names to the skills and
