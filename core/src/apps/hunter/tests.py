@@ -2896,3 +2896,194 @@ class MimoDeadlineTests(SimpleTestCase):
         client.chat.completions.create.return_value = "answer"
         self.assertEqual(mimo.chat(client, model="m"), "answer")
         client.chat.completions.create.assert_called_once_with(model="m")
+
+
+class EmailCodeTests(LinkedCvCase):
+    def setUp(self):
+        super().setUp()
+        override = override_settings(
+            HUNTER_MAIL_ACCOUNTS="me@gmail.com:5:app pass,work@gmail.com:5:oauth",
+            MIMO_API_KEY="k",
+        )
+        override.enable()
+        self.addCleanup(override.disable)
+        self.since = datetime(2026, 10, 14, 13, 15, 52, tzinfo=UTC)
+
+    def session(self, messages):
+        session = FakeGmail({None: {"messages": [{"id": key} for key in messages]}}, {})
+        stamps = {key: value[0] for key, value in messages.items()}
+        raws = {key: value[1] for key, value in messages.items()}
+
+        def get(url, params=None, timeout=None):
+            path = url.rsplit("/me/", 1)[1]
+            session.calls.append((path, dict(params or {})))
+            if path == "messages":
+                body = session.pages[None]
+            else:
+                key = path.split("/", 1)[1]
+                body = {
+                    "raw": base64.urlsafe_b64encode(raws[key]).decode().rstrip("="),
+                    "internalDate": str(int(stamps[key].timestamp() * 1000)),
+                }
+            return SimpleNamespace(raise_for_status=lambda: None, json=lambda: body)
+
+        session.get = get
+        return session
+
+    def greenhouse(self, code, employer="Affirm"):
+        return raw_email(
+            "Greenhouse <no-reply@us.greenhouse-mail.io>",
+            f"Security code for your application to {employer}",
+            "Copy and paste this code into the security code field on your application: "
+            f"{code} After you enter the code, resubmit your application.",
+            f"{code}@greenhouse",
+        )
+
+    def read(self, messages, employer="Affirm", address="work@gmail.com"):
+        session = self.session(messages)
+        with patch.object(mail, "gmail_session", return_value=session):
+            return mail.email_code(address, self.since, employer, wait_seconds=0), session
+
+    def test_the_greenhouse_code_sent_after_the_click_is_read(self):
+        later = self.since + timedelta(seconds=3)
+        code, session = self.read({"m1": (later, self.greenhouse("aBCDeFG4"))})
+        self.assertEqual(code, "aBCDeFG4")
+        self.assertIn("after:", session.calls[0][1]["q"])
+
+    def test_an_all_letter_greenhouse_code_is_read(self):
+        later = self.since + timedelta(seconds=3)
+        code, _ = self.read({"m1": (later, self.greenhouse("URpqhTvf"))})
+        self.assertEqual(code, "URpqhTvf")
+
+    def test_a_code_from_before_the_click_is_never_used(self):
+        earlier = self.since - timedelta(minutes=5)
+        code, _ = self.read({"m1": (earlier, self.greenhouse("OLDcode1"))})
+        self.assertEqual(code, "")
+
+    def test_a_generic_code_needs_the_employer_in_the_sender_or_subject(self):
+        later = self.since + timedelta(seconds=5)
+        body = "Your verification code is: 482913"
+        stranger = raw_email("no-reply@bank.example", "Sign-in code", body, "b@x")
+        employer = raw_email("talent@kunai.example", "Kunai application", body, "k@x")
+        self.assertEqual(self.read({"m1": (later, stranger)}, employer="Kunai")[0], "")
+        self.assertEqual(self.read({"m1": (later, employer)}, employer="Kunai")[0], "482913")
+
+    def test_only_a_gmail_api_inbox_can_be_read(self):
+        self.assertIsNone(mail.code_account("me@gmail.com"))
+        self.assertIsNotNone(mail.code_account("Work@Gmail.com"))
+        self.assertEqual(self.read({}, address="me@gmail.com")[0], "")
+
+    def test_the_code_goes_only_into_a_code_field(self):
+        code_field = {"ref": "1", "tag": "input", "type": "text", "label": "Security code*"}
+        name_field = {"ref": "2", "tag": "input", "type": "text", "label": "First name"}
+        box = {"ref": "3", "tag": "input", "type": "checkbox", "label": "Code of conduct"}
+        decision = {"action": "email_code"}
+        vet = navigator.vet
+        self.assertEqual(vet(decision, code_field, {"x.io"}, False, reads_code=True), "")
+        self.assertIn("inbox", vet(decision, code_field, {"x.io"}, False))
+        self.assertIn("code", vet(decision, name_field, {"x.io"}, False, reads_code=True))
+        self.assertIn("text field", vet(decision, box, {"x.io"}, False, reads_code=True))
+        zip_field = {"ref": "4", "tag": "input", "type": "text", "label": "Zip code"}
+        self.assertIn("code", vet(decision, zip_field, {"x.io"}, False, reads_code=True))
+        bare = {
+            "ref": "5",
+            "tag": "input",
+            "type": "text",
+            "label": "",
+            "group": "Enter the security code we emailed you",
+        }
+        self.assertEqual(vet(decision, bare, {"x.io"}, False, reads_code=True), "")
+        phone = {
+            "ref": "6",
+            "tag": "input",
+            "type": "tel",
+            "label": "Phone",
+            "group": "Phone number, country code",
+        }
+        self.assertIn("code", vet(decision, phone, {"x.io"}, False, reads_code=True))
+
+    def test_the_navigator_types_the_code_without_tracing_it(self):
+        elements = [
+            {
+                "ref": "1",
+                "tag": "button",
+                "type": "submit",
+                "text": "Submit application",
+                "label": "",
+                "group": "",
+                "submit": True,
+                "in_form": True,
+            },
+            {
+                "ref": "2",
+                "tag": "input",
+                "type": "text",
+                "text": "",
+                "label": "Security code",
+                "group": "",
+                "required": True,
+            },
+        ]
+        decisions = [
+            {"action": "click", "ref": "1", "final_submit": True},
+            {"action": "email_code", "ref": "2", "value": "guess"},
+        ]
+        page = MagicMock()
+        page.url = "https://job-boards.greenhouse.io/affirm/jobs/1"
+        page.context.pages = [page]
+        page.evaluate.side_effect = lambda script, *args: (
+            [dict(e) for e in elements] if script == navigator.OUTLINE_JS else ""
+        )
+        reader = MagicMock(return_value="aBCDeFG4")
+        with (
+            patch.object(
+                navigator.Navigator,
+                "decide",
+                side_effect=lambda shown: (
+                    decisions.pop(0) if decisions else {"action": "stuck", "thought": "end"}
+                ),
+            ),
+            patch.object(navigator.Navigator, "type_into") as typed,
+        ):
+            nav = navigator.Navigator(
+                page,
+                goal="apply",
+                cv_text="",
+                job_text="",
+                log=lambda line: None,
+                code_reader=reader,
+            )
+            nav.max_steps = 5
+            nav.loop()
+        typed.assert_called_once()
+        self.assertEqual(typed.call_args.args[2], "aBCDeFG4")
+        self.assertGreaterEqual(reader.call_args.args[0], nav.started_at)
+        self.assertEqual(reader.call_args.args[0], nav.submit_clicked_at)
+        self.assertNotIn("aBCDeFG4", json.dumps(nav.trace))
+        self.assertEqual(nav.trace[1]["result"], "ok: typed the code from the candidate's email")
+
+    def test_a_code_hold_is_its_own_kind_and_retries_without_confirming(self):
+        vacancy = Vacancy.objects.create(
+            source="ats",
+            external_id="greenhouse:1",
+            url="https://job-boards.greenhouse.io/affirm/jobs/1",
+            title="Backend",
+            cv=self.cv,
+            status=Vacancy.Status.NEEDS_REVIEW,
+            submitted_at=timezone.now(),
+            note="Navigator stuck: The form requires an 8-character email verification code.",
+        )
+        self.assertEqual(review.kind_of(vacancy), review.EMAIL_CODE)
+        self.assertEqual(review.resolve(vacancy.pk, review.RETRY), "")
+        vacancy.refresh_from_db()
+        self.assertEqual(vacancy.status, Vacancy.Status.READY)
+
+    def test_the_code_naming_this_employer_wins_over_a_newer_one(self):
+        later = self.since + timedelta(seconds=3)
+        newer = self.since + timedelta(seconds=20)
+        messages = {
+            "m2": (newer, self.greenhouse("OTHERco1", employer="Kunai")),
+            "m1": (later, self.greenhouse("aBCDeFG4")),
+        }
+        self.assertEqual(self.read(messages)[0], "aBCDeFG4")
+        self.assertEqual(self.read(messages, employer="Unknown Co")[0], "OTHERco1")

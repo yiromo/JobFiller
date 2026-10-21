@@ -70,6 +70,14 @@ KINDS = {
             "there; apply to the rest yourself."
         ),
     ),
+    "email_code": (
+        "Emailed code",
+        (
+            "The site emailed a security code before taking the application, and the agent "
+            "could not enter it. Retry it to have the agent read a new code from your inbox, "
+            "or apply yourself."
+        ),
+    ),
     "unconfirmed": (
         "Not sure it was sent",
         (

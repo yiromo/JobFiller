@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 from django.conf import settings
+from django.utils import timezone
 from openai import OpenAI, OpenAIError
 from playwright.sync_api import Error as PlaywrightError
 
@@ -90,10 +91,17 @@ ACTIONS = {
     "scroll",
     "wait",
     "reload",
+    "email_code",
     "done",
     "stuck",
 }
-TARGETED = {"click", "fill", "select", "check", "upload"}
+TARGETED = {"click", "fill", "select", "check", "upload", "email_code"}
+CODE_FIELD_WORDS = ("code", "otp", "код")
+CODE_QUESTION_RE = re.compile(
+    r"security code|verification code|one[- ]time|\botp\b|код подтверждения", re.IGNORECASE
+)
+NOT_CODE_WORDS = ("zip", "postal", "post code", "postcode", "referral", "promo", "country code")
+TEXT_TYPES = {"", "text", "tel", "number", "search"}
 TYPED_LIMIT = 300
 SHORT_LABEL = 25
 FIELD_TRIES_REQUIRED = 3
@@ -283,8 +291,9 @@ You get the goal, the candidate's CV text, the job posting, notes learned on ear
 this site, your recent steps, a screenshot and a numbered list of the page's interactive
 elements. Reply with one JSON object:
 {"thought": "<one sentence>",
- "action": "click|fill|select|check|upload|scroll|wait|reload|done|stuck",
- "ref": "<element number for click/fill/select/check/upload>", "value": "<text for fill/select>",
+ "action": "click|fill|select|check|upload|scroll|wait|reload|email_code|done|stuck",
+ "ref": "<element number for click/fill/select/check/upload/email_code>",
+ "value": "<text for fill/select>",
  "final_submit": <true only if this click sends the application>}
 If the page keeps loading or shows an error for more than two waits, use "reload" once.
 To click a button that is visible in the screenshot but missing from the element list, send
@@ -314,6 +323,10 @@ Rules:
 - Privacy-notice and personal-data-processing acknowledgments may be ticked. Never tick any
   other attestation (e.g. certifying the application is true, terms of service) and never try to
   solve a captcha: reply "stuck".
+- A field asking for a security, verification or one-time code that the site emailed to the
+  candidate is not a captcha: send "email_code" with that field's ref and an empty "value"; the
+  harness reads the newest code from the candidate's inbox and types it. Then press the button
+  that submits or verifies again. If the result says no code arrived, reply "stuck".
 - Answer demographic questions (gender, race, ethnicity, veteran, disability, sexual
   orientation, pronouns…) only with the matching entry in candidate_eeo_answers, choosing the
   option whose wording matches that answer. If there is no matching entry, reply "stuck".
@@ -368,6 +381,7 @@ def vet(
     has_facts: bool = False,
     may_leave: bool = False,
     eeo: list | None = None,
+    reads_code: bool = False,
 ) -> str:
     action = decision.get("action")
     if action not in ACTIONS:
@@ -378,6 +392,8 @@ def vet(
         return f"no element numbered {decision.get('ref')!r} on this page"
     if element.get("disabled"):
         return "that element is disabled"
+    if action == "email_code":
+        return code_field_problem(element, reads_code)
     haystack = " ".join(str(element.get(key, "")) for key in ("text", "label", "group"))
     own = " ".join(str(element.get(key, "")) for key in ("text", "label"))
     choice = (
@@ -418,6 +434,23 @@ def vet(
     return ""
 
 
+def code_field_problem(element: dict, reads_code: bool) -> str:
+    if not reads_code:
+        return "refused: the agent cannot read the candidate's inbox for this email address"
+    text_like = (
+        element.get("tag") == "textarea"
+        or element.get("role") == "textbox"
+        or (element.get("tag") == "input" and element.get("type", "") in TEXT_TYPES)
+    )
+    if not text_like:
+        return "refused: email_code goes only into a text field"
+    own = " ".join(str(element.get(key, "")) for key in ("text", "label"))
+    asks = matches(own, CODE_FIELD_WORDS) or bool(CODE_QUESTION_RE.search(element.get("group", "")))
+    if not asks or matches(own, NOT_CODE_WORDS):
+        return "refused: that field does not ask for a code"
+    return ""
+
+
 def privacy_acknowledgment(text: str) -> bool:
     return matches(text, PRIVACY_KEYWORDS) and not matches(text, CERTIFY_KEYWORDS)
 
@@ -452,7 +485,7 @@ def is_required(element: dict) -> bool:
 
 
 def counts_as_attempt(action: str, element: dict) -> bool:
-    if action in {"fill", "select", "check"}:
+    if action in {"fill", "select", "check", "email_code"}:
         return True
     choice = (
         element.get("tag") in CHOICE_TAGS
@@ -490,6 +523,7 @@ class Navigator:
         external_hops=0,
         eeo=None,
         max_steps=0,
+        code_reader=None,
     ):
         self.page = page
         self.goal = goal
@@ -517,6 +551,9 @@ class Navigator:
         self.lesson, _ = SiteLesson.objects.get_or_create(host=lesson_host)
         self.trace = []
         self.submitted = False
+        self.code_reader = code_reader
+        self.started_at = timezone.now()
+        self.submit_clicked_at = None
 
     def run(self) -> Result:
         try:
@@ -570,7 +607,7 @@ class Navigator:
                 "action": action,
                 "ref": decision.get("ref"),
                 "target": (element or {}).get("text") or (element or {}).get("label") or "",
-                "value": str(decision.get("value") or "")[:300],
+                "value": "" if action == "email_code" else str(decision.get("value") or "")[:300],
                 "thought": str(decision.get("thought") or "")[:300],
                 "final_submit": decision.get("final_submit") is True,
                 "element": {k: (element or {}).get(k) for k in ("tag", "type", "qa", "submit")},
@@ -590,6 +627,7 @@ class Navigator:
                 bool(self.facts),
                 self.external_hops > 0,
                 self.eeo,
+                self.code_reader is not None,
             )
             if problem == "rehearsal":
                 entry["result"] = "stopped before the final submit (rehearsal)"
@@ -621,6 +659,8 @@ class Navigator:
                 return Result(
                     "stuck", f"Repeated the same step three times: {action} {entry['target']}"
                 )
+            if element and is_final_submit(decision, element):
+                self.submit_clicked_at = timezone.now()
             if element and is_final_submit(decision, element) and not self.submitted:
                 self.submitted = True
                 if self.on_submit:
@@ -628,7 +668,8 @@ class Navigator:
             if element and counts_as_attempt(action, element):
                 key = field_key(element)
                 attempts[key] += 1
-                if attempts[key] >= (FIELD_TRIES_REQUIRED if is_required(element) else 1):
+                required = is_required(element) or action == "email_code"
+                if attempts[key] >= (FIELD_TRIES_REQUIRED if required else 1):
                     blocked.add(key)
             tabs = len(self.page.context.pages)
             entry["result"] = self.act(decision, element)
@@ -751,6 +792,8 @@ class Navigator:
             locator = self.page.locator(f'[data-jf-nav="{element["ref"]}"]').first
         value = str(decision.get("value") or "")
         try:
+            if action == "email_code":
+                return self.enter_email_code(locator, element)
             if action == "click":
                 locator.click(timeout=8000)
             elif action == "check":
@@ -772,6 +815,14 @@ class Navigator:
         except PlaywrightError as error:
             return f"failed: {first_line(error)[:200]}"
         return "ok"
+
+    def enter_email_code(self, locator, element: dict) -> str:
+        self.log("    waiting for the emailed code")
+        code = self.code_reader(self.submit_clicked_at or self.started_at)
+        if not code:
+            return "failed: no code arrived in the candidate's inbox"
+        self.type_into(locator, element, code)
+        return "ok: typed the code from the candidate's email"
 
     def pick_option(self, locator, value: str) -> str:
         locator.click(timeout=8000)

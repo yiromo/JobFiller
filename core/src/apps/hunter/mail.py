@@ -110,6 +110,16 @@ COMPANY_SUFFIX_RE = re.compile(
     r"\b(inc|llc|ltd|limited|gmbh|corp|corporation|co|company|plc|sa|bv|ag|ab|oy|тоо|ооо|ао)\b"
 )
 WORD_RE = re.compile(r"\w+")
+CODE_SENDER = "greenhouse-mail.io"
+GREENHOUSE_CODE_RE = re.compile(r"code field on your application:\s*([A-Za-z0-9]{6,12})\b")
+CODE_RE = re.compile(
+    r"(?:security|verification|confirmation|one[- ]time|access|otp) code\b[^:\n]{0,60}"
+    r"(?::|is)\s*((?=[A-Za-z]*\d)[A-Za-z0-9]{4,12})\b",
+    re.IGNORECASE,
+)
+CODE_WAIT_SECONDS = 120
+CODE_POLL_SECONDS = 6
+CODE_SLACK = timedelta(seconds=30)
 
 
 @dataclass(frozen=True)
@@ -679,6 +689,62 @@ def sync_gmail(account: Account, log, limit: int, session=None) -> list:
             break
         saved += store(account, GMAIL_API, emails, sorted_rows, pool, log)
     return saved
+
+
+def code_account(address: str) -> Account | None:
+    wanted = address.strip().lower()
+    return next(
+        (row for row in accounts() if row.address.lower() == wanted and row.password == OAUTH),
+        None,
+    )
+
+
+def code_in(mail: dict, employer: str) -> tuple[str, bool]:
+    key = company_key(employer)
+    named = len(key) >= 4 and key in company_key(f"{mail['sender']} {mail['subject']}")
+    if CODE_SENDER in mail["sender"].lower():
+        found = GREENHOUSE_CODE_RE.search(mail["text"])
+        if found:
+            return found.group(1), named
+    if not named:
+        return "", False
+    found = CODE_RE.search(mail["text"])
+    return (found.group(1), True) if found else ("", False)
+
+
+def email_code(address: str, since, employer: str = "", wait_seconds: int = CODE_WAIT_SECONDS):
+    account = code_account(address)
+    if account is None:
+        return ""
+    after = since - CODE_SLACK
+    after_ms = int(after.timestamp() * 1000)
+    deadline = time.monotonic() + wait_seconds
+    seen = set()
+    fallback = ""
+    try:
+        session = gmail_session(account.address)
+        while True:
+            for message_id in gmail_ids(session, f"{EXCLUDE} after:{int(after.timestamp())}"):
+                if message_id in seen:
+                    continue
+                seen.add(message_id)
+                data = gmail_get(session, f"messages/{message_id}", {"format": "raw"})
+                if int(data.get("internalDate") or 0) < after_ms:
+                    continue
+                raw = data.get("raw") or ""
+                try:
+                    mail = parse(base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)))
+                except (*PARSE_ERRORS, binascii.Error):
+                    continue
+                code, named = code_in(mail, employer)
+                if code and named:
+                    return code
+                fallback = fallback or code
+            if fallback or time.monotonic() >= deadline:
+                return fallback
+            time.sleep(CODE_POLL_SECONDS)
+    except MAIL_ERRORS:
+        return ""
 
 
 def message_key(mail: dict) -> int:

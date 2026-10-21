@@ -7,13 +7,14 @@ from . import evidence
 from .models import Vacancy
 
 CAPTCHA = "captcha"
+EMAIL_CODE = "email_code"
 ACCOUNT = "account"
 QUESTION = "question"
 UNCONFIRMED = "unconfirmed"
 STUCK = "stuck"
 CV = "cv"
 OTHER = "other"
-KINDS = (CAPTCHA, UNCONFIRMED, QUESTION, ACCOUNT, CV, STUCK, OTHER)
+KINDS = (CAPTCHA, EMAIL_CODE, UNCONFIRMED, QUESTION, ACCOUNT, CV, STUCK, OTHER)
 
 APPLIED = "applied"
 SKIPPED = "skipped"
@@ -46,6 +47,10 @@ NOTE_KINDS = (
         QUESTION,
     ),
 )
+EMAIL_CODE_NOTE = re.compile(
+    r"(security|verification|one[- ]time|otp) code|\bOTP\b|emailed a (security )?code",
+    re.IGNORECASE,
+)
 STUCK_NOTES = ("Navigator", "Browser error")
 CV_NOTE = "Flagship CV did not pass review"
 
@@ -71,6 +76,8 @@ def kind_of(vacancy: Vacancy) -> str:
     note = vacancy.note or ""
     if CAPTCHA_NOTE in note:
         return CAPTCHA
+    if EMAIL_CODE_NOTE.search(note):
+        return EMAIL_CODE
     if note.startswith(CV_NOTE):
         return CV
     if any(marker in note for marker in UNCONFIRMED_NOTES):
@@ -110,7 +117,10 @@ def resolve(vacancy_id: int, action: str, not_sent: bool = False) -> str:
         )
         return ""
     if action == RETRY:
-        maybe_sent = vacancy.submitted_at is not None and kind_of(vacancy) != CAPTCHA
+        maybe_sent = vacancy.submitted_at is not None and kind_of(vacancy) not in (
+            CAPTCHA,
+            EMAIL_CODE,
+        )
         if maybe_sent and not not_sent:
             return "The agent pressed Submit on this one; confirm it was not sent first."
         held.update(

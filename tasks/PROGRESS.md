@@ -1,5 +1,18 @@
 # Progress log
 
+- **The agent enters a security code the site emails to you** — Greenhouse asks for an
+  8-character code mailed to the applicant before it takes an application, and the navigator
+  held those jobs as "captcha" (Affirm, GitLab, Kunai, PlanetScale, Chainguard). The code is the
+  applicant proving they own the address, not a bot check, so the navigator now has an
+  `email_code` action: `vet` allows it only on a text field whose label or question mentions a
+  code, and only when the CV's address is a Gmail API account (`mail.code_account`). The harness
+  then calls `mail.email_code`, which polls that inbox (read-only, up to 2 minutes) for mail
+  received after the last submit click (or the run's start), takes the Greenhouse code by its
+  fixed sentence, or a generic "verification code: …" only from mail whose sender or subject
+  names the employer, and prefers the one naming this employer. The code is typed but never
+  logged or traced. Captchas still stop the run. Code holds are their own "Emailed code" kind in
+  Needs you and can be retried without confirming they were not sent.
+
 - **A security check in the banner can be passed from the desktop app** — the banner showed the
   raw error, including the agent's Cloudflare challenge URL with `&amp;` (the title was
   markup-escaped although `Adw.Banner` has `use-markup` off), and it was not a link. Opening that

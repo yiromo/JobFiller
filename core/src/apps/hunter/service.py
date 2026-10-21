@@ -22,7 +22,7 @@ from apps.cvs.models import Cv
 from apps.opportunities.service import rank_jobs
 from apps.opportunities.telegraph import TelegraphPage
 
-from . import captcha, evidence, inbox, review
+from . import captcha, evidence, inbox, mail, review
 from .browser import open_browser
 from .models import MailMessage, ResumeLink, Vacancy
 from .navigator import CONFIRMED_RE, PAGE_TEXT_JS, REHEARSED, Navigator, host_of
@@ -843,6 +843,7 @@ def navigate(
         external_hops=1 if status.external_apply else 0,
         eeo=inbox.answered_eeo(),
         max_steps=settings.HUNTER_NAVIGATOR_EXTERNAL_STEPS if adapter.EMPLOYER_BOARDS else 0,
+        code_reader=code_reader_for(vacancy),
     )
     result = navigator.run()
     evidence.capture(navigator.page, evidence.key_for(vacancy), result.trace)
@@ -886,6 +887,13 @@ def confirm_external(navigator) -> str:
         return ""
     hosts = ", ".join(navigator.external_hosts) or host_of(navigator.page.url)
     return f'Applied on the employer\'s site ({hosts}): "{match.group(0)}".'
+
+
+def code_reader_for(vacancy):
+    address = vacancy.cv.email or ""
+    if not address or mail.code_account(address) is None:
+        return None
+    return lambda since: mail.email_code(address, since, vacancy.employer)
 
 
 def contact_for(cv) -> dict:
