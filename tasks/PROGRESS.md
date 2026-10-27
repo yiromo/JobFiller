@@ -1,5 +1,19 @@
 # Progress log
 
+- **Six more company job boards** — `sources/ats.py` now also lists Workable, Recruitee,
+  Personio, BambooHR, SmartRecruiters and Rippling boards through their public APIs (Workable's
+  widget and v2 job API, Recruitee `/api/offers/`, Personio's `/xml` feed, BambooHR
+  `/careers/list` and `/careers/<id>/detail`, SmartRecruiters' Posting API, Rippling's v2 board
+  API), found the same way through Tavily. Recruitee, Personio and BambooHR live on company
+  subdomains, so their source URLs use the bare host (`https://recruitee.com/?q=...`) and their
+  external ids carry the company (`bamboohr:flyio/35`), since their job ids are only unique per
+  company. Personio has no remote flag (an office named "Remote" counts) and its English feed
+  often has empty descriptions, so the default-language feed fills them in. Workable and
+  Rippling repeat a job once per location; the crawl keeps one. BambooHR's `isRemote` is always
+  null and `locationType` "1" means remote. Every board but BambooHR configures a captcha or
+  bot check (Turnstile, hCaptcha, SmartRecruiters' DataDome on its apply page), which holds just
+  that job. `HUNTER_ATS_SEARCH_HOURS` went to 48 so nine boards stay inside Tavily's 1000 credits.
+
 - **Generated CVs get clean names and carry their id** — a generated CV was named
   `<Name>_<Employer>_<Title>.pdf`, and Django's storage added a random `_J8FCT`
   suffix on a clash, which is what an employer saw. Every CV file now goes to its own

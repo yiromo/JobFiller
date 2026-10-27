@@ -146,7 +146,7 @@ HUNTER_MAX_APPLIES_PER_DAY = config("HUNTER_MAX_APPLIES_PER_DAY", default=50, ca
 HUNTER_SITE_PRIORITY = config(
     "HUNTER_SITE_PRIORITY", default="ats,dsml,indeed,linkedin,hh", cast=Csv()
 )
-HUNTER_ATS_SEARCH_HOURS = config("HUNTER_ATS_SEARCH_HOURS", default=24, cast=int)
+HUNTER_ATS_SEARCH_HOURS = config("HUNTER_ATS_SEARCH_HOURS", default=48, cast=int)
 HUNTER_SKIP_EMPLOYERS = config(
     "HUNTER_SKIP_EMPLOYERS",
     default=(

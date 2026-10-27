@@ -9,6 +9,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timedelta
 from urllib.parse import parse_qsl, urlencode, urlparse
+from xml.etree import ElementTree
 
 from django.conf import settings
 from django.utils import timezone
@@ -16,7 +17,7 @@ from django.utils import timezone
 from .base import Listing, ResponseStatus, VacancyPage
 
 SITE = "ats"
-NAME = "Ashby/Greenhouse/Lever"
+NAME = "Company job boards"
 LOGIN_URL = ""
 USES_RESUME_LINKS = False
 SCRIPTED_APPLY = False
@@ -32,7 +33,9 @@ NAVIGABLE = ()
 TAVILY_URL = "https://api.tavily.com/search"
 SEARCH_RESULTS = 20
 CACHE_SECONDS = 600
-MAX_BOARDS = 150
+MAX_BOARDS = 300
+LISTING_PAGES = 5
+PAGE_SIZE = 100
 TEXT_LIMIT = 12000
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64; rv:135.0) Gecko/20100101 Firefox/135.0"
 HOSTS = {
@@ -40,17 +43,73 @@ HOSTS = {
     "job-boards.greenhouse.io": "greenhouse",
     "boards.greenhouse.io": "greenhouse",
     "jobs.lever.co": "lever",
+    "apply.workable.com": "workable",
+    "jobs.smartrecruiters.com": "smartrecruiters",
+    "ats.rippling.com": "rippling",
+}
+COMPANY_HOSTS = {
+    "recruitee.com": "recruitee",
+    "jobs.personio.de": "personio",
+    "jobs.personio.com": "personio",
+    "bamboohr.com": "bamboohr",
 }
 SEARCH_DOMAINS = {
     "ashby": ["jobs.ashbyhq.com"],
     "greenhouse": ["job-boards.greenhouse.io", "boards.greenhouse.io"],
     "lever": ["jobs.lever.co"],
+    "workable": ["apply.workable.com"],
+    "recruitee": ["recruitee.com"],
+    "personio": ["jobs.personio.de", "jobs.personio.com"],
+    "bamboohr": ["bamboohr.com"],
+    "smartrecruiters": ["jobs.smartrecruiters.com"],
+    "rippling": ["ats.rippling.com"],
 }
-UUID_PATH_RE = re.compile(
-    r"^/([^/]+)/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:/|$)",
-    re.IGNORECASE,
-)
+COMPANY_SCOPED = {"recruitee", "personio", "bamboohr"}
+UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+UUID_PATH_RE = re.compile(rf"^/([^/]+)/({UUID})(?:/|$)", re.IGNORECASE)
 GREENHOUSE_PATH_RE = re.compile(r"^/([^/]+)/jobs/(\d+)(?:/|$)")
+PATH_RES = {
+    "ashby": UUID_PATH_RE,
+    "lever": UUID_PATH_RE,
+    "greenhouse": GREENHOUSE_PATH_RE,
+    "workable": re.compile(r"^/([^/]+)/j/([0-9a-z]+)(?:/|$)", re.IGNORECASE),
+    "smartrecruiters": re.compile(r"^/([^/]+)/(\d+)(?:[-/]|$)"),
+    "rippling": re.compile(
+        rf"^/(?:[a-z]{{2}}-[a-z]{{2}}/)?([^/]+)/jobs/({UUID})(?:/|$)", re.IGNORECASE
+    ),
+}
+COMPANY_PATH_RES = {
+    "recruitee": re.compile(r"^/o/([^/]+)"),
+    "personio": re.compile(r"^/job/(\d+)(?:/|$)"),
+    "bamboohr": re.compile(r"^/careers/(\d+)(?:/|$)"),
+}
+JOB_URLS = {
+    "ashby": "https://jobs.ashbyhq.com/{slug}/{id}",
+    "greenhouse": "https://job-boards.greenhouse.io/{slug}/jobs/{id}",
+    "lever": "https://jobs.lever.co/{slug}/{id}",
+    "workable": "https://apply.workable.com/{slug}/j/{id}/",
+    "recruitee": "https://{slug}.recruitee.com/o/{id}",
+    "personio": "https://{slug}.jobs.personio.de/job/{id}?language=en",
+    "bamboohr": "https://{slug}.bamboohr.com/careers/{id}",
+    "smartrecruiters": "https://jobs.smartrecruiters.com/{slug}/{id}",
+    "rippling": "https://ats.rippling.com/{slug}/jobs/{id}",
+}
+APPLY_URLS = {
+    "ashby": "https://jobs.ashbyhq.com/{slug}/{id}/application",
+    "lever": "https://jobs.lever.co/{slug}/{id}/apply",
+    "workable": "https://apply.workable.com/{slug}/j/{id}/apply/",
+    "recruitee": "https://{slug}.recruitee.com/o/{id}/c/new",
+    "personio": "https://{slug}.jobs.personio.de/job/{id}/apply?language=en",
+    "rippling": "https://ats.rippling.com/{slug}/jobs/{id}/apply",
+}
+ID_FIELDS = {"workable": "shortcode", "recruitee": "slug"}
+TITLE_FIELDS = {
+    "lever": "text",
+    "personio": "name",
+    "bamboohr": "jobOpeningName",
+    "smartrecruiters": "name",
+    "rippling": "name",
+}
 TAG_RE = re.compile(r"<[^>]+>")
 BREAK_RE = re.compile(r"<(br|/p|/li|/h\d|/div)[^>]*>", re.IGNORECASE)
 SPACES_RE = re.compile(r"[ \t\xa0]+")
@@ -60,7 +119,7 @@ CACHE_LOCK = threading.Lock()
 
 
 def handles(url: str) -> bool:
-    return (urlparse(url).hostname or "").lower() in HOSTS
+    return bool(board_of(url))
 
 
 def origin(url: str) -> str:
@@ -68,38 +127,55 @@ def origin(url: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}"
 
 
+def company_host(host: str) -> tuple[str, str]:
+    for suffix, board in COMPANY_HOSTS.items():
+        if host == suffix:
+            return board, ""
+        if host.endswith(f".{suffix}"):
+            return board, host[: -len(suffix) - 1]
+    return "", ""
+
+
 def board_of(url: str) -> str:
-    return HOSTS.get((urlparse(url).hostname or "").lower(), "")
+    host = (urlparse(url).hostname or "").lower()
+    return HOSTS.get(host) or company_host(host)[0]
+
+
+def normal_id(board: str, job_id: str) -> str:
+    return job_id.upper() if board == "workable" else job_id.lower()
 
 
 def parse_job(url: str) -> tuple[str, str, str] | None:
-    board = board_of(url)
-    path = urlparse(url).path
-    pattern = GREENHOUSE_PATH_RE if board == "greenhouse" else UUID_PATH_RE
-    match = pattern.match(path) if board else None
-    if not match:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    board = HOSTS.get(host, "")
+    if board:
+        match = PATH_RES[board].match(parsed.path)
+        if not match:
+            return None
+        return board, match.group(1), normal_id(board, match.group(2))
+    board, slug = company_host(host)
+    match = COMPANY_PATH_RES[board].match(parsed.path) if board else None
+    if not match or slug in ("", "www"):
         return None
-    return board, match.group(1), match.group(2).lower()
+    return board, slug, normal_id(board, match.group(1))
 
 
 def job_url(board: str, slug: str, job_id: str) -> str:
-    if board == "ashby":
-        return f"https://jobs.ashbyhq.com/{slug}/{job_id}"
-    if board == "greenhouse":
-        return f"https://job-boards.greenhouse.io/{slug}/jobs/{job_id}"
-    return f"https://jobs.lever.co/{slug}/{job_id}"
+    return JOB_URLS[board].format(slug=slug, id=job_id)
 
 
 def apply_url(url: str) -> str:
     job = parse_job(url)
     if not job:
         return url
-    base = job_url(*job)
-    return {"ashby": f"{base}/application", "lever": f"{base}/apply"}.get(job[0], base)
+    board, slug, job_id = job
+    return APPLY_URLS.get(board, JOB_URLS[board]).format(slug=slug, id=job_id)
 
 
-def external_id(board: str, job_id: str) -> str:
-    return f"{board}:{job_id}"[:64]
+def external_id(board: str, slug: str, job_id: str) -> str:
+    key = f"{slug}/{job_id}" if board in COMPANY_SCOPED else job_id
+    return f"{board}:{key}"[:64]
 
 
 def search_terms(search_url: str) -> tuple[str, str, str]:
@@ -161,7 +237,7 @@ def search_due(state: dict, search_url: str, now=None) -> bool:
     return (now or timezone.now()) - last >= timedelta(hours=settings.HUNTER_ATS_SEARCH_HOURS)
 
 
-def get_json(url: str, body: dict | None = None, headers: dict | None = None):
+def fetch(url: str, body: dict | None = None, headers: dict | None = None) -> bytes | None:
     request = urllib.request.Request(
         url,
         data=json.dumps(body).encode() if body is not None else None,
@@ -175,11 +251,26 @@ def get_json(url: str, body: dict | None = None, headers: dict | None = None):
     )
     try:
         with urllib.request.urlopen(request, timeout=20) as response:
-            return json.loads(response.read())
+            return response.read()
     except urllib.error.HTTPError as error:
         if error.code == 404:
             return None
         raise
+
+
+def get_json(url: str, body: dict | None = None, headers: dict | None = None):
+    raw = fetch(url, body, headers)
+    return None if raw is None else json.loads(raw)
+
+
+def get_xml(url: str):
+    raw = fetch(url, headers={"Accept": "application/xml"})
+    if raw is None:
+        return None
+    try:
+        return ElementTree.fromstring(raw)
+    except ElementTree.ParseError as error:
+        raise ValueError(f"Unreadable XML from {url}: {error}") from error
 
 
 def cached(key: str, load):
@@ -220,13 +311,29 @@ def hit_names(board: str, text: str, slug: str) -> tuple[str, str]:
     if board == "ashby" and " @ " in text:
         title, employer = text.rsplit(" @ ", 1)
         return title.strip(), employer.strip()
-    if board == "lever" and " - " in text:
+    if board in ("lever", "recruitee") and " - " in text:
         employer, title = text.split(" - ", 1)
+        return title.strip(), employer.strip()
+    if board == "workable" and " - " in text:
+        title, employer = text.rsplit(" - ", 1)
+        return title.strip(), employer.strip()
+    if board == "rippling" and " | " in text:
+        title, employer = text.rsplit(" | ", 1)
         return title.strip(), employer.strip()
     if board == "greenhouse":
         found = re.match(r"(?:Job Application for )?(.+?) at (.+)$", text)
         if found:
             return found.group(1).strip(), found.group(2).strip()
+    if board == "personio":
+        found = re.match(r"(.+?) \| Jobs at (.+)$", text)
+        if found:
+            return found.group(1).strip(), found.group(2).strip()
+    if board == "smartrecruiters":
+        text = re.sub(r"\s*\|\s*SmartRecruiters$", "", text)
+        company = pretty(slug)
+        if text.lower().startswith(f"{company.lower()} "):
+            text = text[len(company) :].strip()
+        return text, company
     return text, pretty(slug)
 
 
@@ -257,8 +364,68 @@ def board_listing(board: str, slug: str) -> list:
     if board == "greenhouse":
         url = f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs"
         return cached(url, lambda: list((get_json(url) or {}).get("jobs") or []))
+    if board == "workable":
+        url = f"https://apply.workable.com/api/v1/widget/accounts/{slug}"
+        return cached(url, lambda: workable_jobs(get_json(url) or {}))
+    if board == "recruitee":
+        url = f"https://{slug}.recruitee.com/api/offers/"
+        return cached(url, lambda: list((get_json(url) or {}).get("offers") or []))
+    if board == "personio":
+        url = f"https://{slug}.jobs.personio.de/xml?language=en"
+        return cached(url, lambda: personio_positions(get_xml(url)))
+    if board == "bamboohr":
+        url = f"https://{slug}.bamboohr.com/careers/list"
+        return cached(url, lambda: list((get_json(url) or {}).get("result") or []))
+    if board == "smartrecruiters":
+        url = f"https://api.smartrecruiters.com/v1/companies/{slug}/postings"
+        return cached(url, lambda: paged(url, "offset", "content", "totalFound", PAGE_SIZE))
+    if board == "rippling":
+        url = f"https://api.rippling.com/platform/api/ats/v2/board/{slug}/jobs"
+        return cached(url, lambda: paged(url, "page", "items", "totalPages", 1))
     url = f"https://api.lever.co/v0/postings/{slug}?mode=json"
     return cached(url, lambda: list(get_json(url) or []))
+
+
+def paged(url: str, cursor: str, items: str, total: str, step: int) -> list:
+    jobs = []
+    size = "limit" if cursor == "offset" else "pageSize"
+    for number in range(LISTING_PAGES):
+        payload = get_json(f"{url}?{urlencode({cursor: number * step, size: PAGE_SIZE})}") or {}
+        jobs += payload.get(items) or []
+        if (number + 1) * step >= (payload.get(total) or 0):
+            break
+    return jobs
+
+
+def workable_jobs(payload: dict) -> list:
+    company = payload.get("name") or ""
+    return [{**job, "company_name": company} for job in payload.get("jobs") or []]
+
+
+def personio_positions(root) -> list:
+    if root is None:
+        return []
+    positions = []
+    for node in root.iter("position"):
+        offices = [node.findtext("office") or ""]
+        offices += [office.text or "" for office in node.iterfind("additionalOffices/office")]
+        positions.append(
+            {
+                "id": node.findtext("id") or "",
+                "name": node.findtext("name") or "",
+                "offices": [office for office in offices if office],
+                "schedule": node.findtext("schedule") or "",
+                "employmentType": node.findtext("employmentType") or "",
+                "seniority": node.findtext("seniority") or "",
+                "experience": node.findtext("yearsOfExperience") or "",
+                "keywords": node.findtext("keywords") or "",
+                "sections": [
+                    (part.findtext("name") or "", part.findtext("value") or "")
+                    for part in node.iterfind("jobDescriptions/jobDescription")
+                ],
+            }
+        )
+    return positions
 
 
 def remote_of(board: str, job: dict) -> bool:
@@ -267,9 +434,30 @@ def remote_of(board: str, job: dict) -> bool:
         return place == "remote" if place else bool(job.get("isRemote"))
     if board == "greenhouse":
         return "remote" in ((job.get("location") or {}).get("name") or "").lower()
+    if board == "workable":
+        place = (job.get("workplace") or "").lower()
+        return bool(job.get("telecommuting") or job.get("remote")) or place == "remote"
+    if board == "recruitee":
+        return bool(job.get("remote"))
+    if board == "personio":
+        return any("remote" in office.lower() for office in job.get("offices") or [])
+    if board == "bamboohr":
+        return job.get("isRemote") is True or str(job.get("locationType")) == "1"
+    if board == "smartrecruiters":
+        return bool((job.get("location") or {}).get("remote"))
+    if board == "rippling":
+        places = [place.get("workplaceType") or "" for place in job.get("locations") or []]
+        places += job.get("workLocations") or []
+        return any("remote" in str(place).lower() for place in places)
     place = (job.get("workplaceType") or "").lower()
     location = ((job.get("categories") or {}).get("location") or "").lower()
     return place == "remote" or "remote" in location
+
+
+def employer_of(board: str, job: dict) -> str:
+    if board == "smartrecruiters":
+        return (job.get("company") or {}).get("name") or ""
+    return job.get("company_name") or ""
 
 
 def board_jobs(board: str, slug: str) -> list[dict]:
@@ -277,15 +465,17 @@ def board_jobs(board: str, slug: str) -> list[dict]:
     for job in board_listing(board, slug):
         if board == "ashby" and job.get("isListed") is False:
             continue
-        job_id = str(job.get("id") or "").lower()
-        title = job.get("text") if board == "lever" else job.get("title")
+        if board == "recruitee" and job.get("status") not in (None, "published"):
+            continue
+        job_id = normal_id(board, str(job.get(ID_FIELDS.get(board, "id")) or ""))
+        title = job.get(TITLE_FIELDS.get(board, "title"))
         if job_id and title:
             jobs.append(
                 {
                     "id": job_id,
                     "title": title,
                     "remote": remote_of(board, job),
-                    "employer": job.get("company_name") or "",
+                    "employer": employer_of(board, job),
                 }
             )
     return jobs
@@ -305,8 +495,8 @@ def crawl(page, search_url: str, max_pages: int) -> list[Listing]:
                 continue
             _, slug, job_id = job
             name, employer = hit_names(board, hit.get("title") or "", slug)
-            found[external_id(board, job_id)] = Listing(
-                external_id=external_id(board, job_id),
+            found[external_id(board, slug, job_id)] = Listing(
+                external_id=external_id(board, slug, job_id),
                 url=job_url(*job),
                 title=name[:255],
                 employer=employer[:255],
@@ -329,9 +519,9 @@ def crawl(page, search_url: str, max_pages: int) -> list[Listing]:
             if not title_matches(title, job["title"]) or wants_remote and not job["remote"]:
                 continue
             found.setdefault(
-                external_id(board, job["id"]),
+                external_id(board, slug, job["id"]),
                 Listing(
-                    external_id=external_id(board, job["id"]),
+                    external_id=external_id(board, slug, job["id"]),
                     url=job_url(board, slug, job["id"]),
                     title=job["title"][:255],
                     employer=(job["employer"] or info.get("name") or pretty(slug))[:255],
@@ -340,7 +530,160 @@ def crawl(page, search_url: str, max_pages: int) -> list[Listing]:
     return list(found.values())
 
 
+def found_posting(title: str, employer: str, lines: list[str], remote: bool) -> dict:
+    return {"title": title, "employer": employer, "text": "\n".join(lines), "remote": remote}
+
+
+def listed(board: str, slug: str, job_id: str) -> dict | None:
+    field = ID_FIELDS.get(board, "id")
+    return next(
+        (
+            job
+            for job in board_listing(board, slug)
+            if normal_id(board, str(job.get(field))) == job_id
+        ),
+        None,
+    )
+
+
+def place_name(location) -> str:
+    if isinstance(location, dict):
+        parts = [location.get(key) for key in ("city", "region", "state", "country")]
+        return ", ".join(str(part) for part in parts if part)
+    return str(location or "")
+
+
+def label_of(value) -> str:
+    return str((value.get("label") or "") if isinstance(value, dict) else (value or ""))
+
+
+def workable_posting(slug: str, job_id: str) -> dict | None:
+    job = get_json(f"https://apply.workable.com/api/v2/accounts/{slug}/jobs/{job_id}")
+    if not job or not job.get("title"):
+        return None
+    lines = [
+        job["title"],
+        f"Location: {place_name(job.get('location'))}",
+        f"Workplace: {job.get('workplace') or ('remote' if job.get('remote') else '')}",
+        "",
+        strip_html(job.get("description") or ""),
+        "",
+        strip_html(job.get("requirements") or ""),
+        "",
+        strip_html(job.get("benefits") or ""),
+    ]
+    return found_posting(job["title"], "", lines, remote_of("workable", job))
+
+
+def recruitee_posting(slug: str, job_id: str) -> dict | None:
+    offer = (get_json(f"https://{slug}.recruitee.com/api/offers/{job_id}") or {}).get("offer")
+    if not offer or not offer.get("title") or offer.get("status") not in (None, "published"):
+        return None
+    lines = [
+        offer["title"],
+        f"Company: {offer.get('company_name') or ''}",
+        f"Location: {offer.get('location') or ''}",
+        f"Remote: {'yes' if offer.get('remote') else 'no'}",
+        "",
+        strip_html(offer.get("description") or ""),
+        "",
+        strip_html(offer.get("requirements") or ""),
+    ]
+    return found_posting(
+        offer["title"], offer.get("company_name") or "", lines, remote_of("recruitee", offer)
+    )
+
+
+def personio_posting(slug: str, job_id: str) -> dict | None:
+    job = listed("personio", slug, job_id)
+    if job is None:
+        return None
+    lines = [
+        job["name"],
+        f"Location: {', '.join(job['offices'])}",
+        f"Schedule: {job['schedule']} {job['employmentType']}".strip(),
+        f"Seniority: {job['seniority']}, {job['experience']} years".strip(", "),
+        f"Keywords: {job['keywords']}",
+    ]
+    for name, value in job["sections"] or native_sections(slug, job_id):
+        lines += ["", name, strip_html(value)]
+    return found_posting(job["name"], "", lines, remote_of("personio", job))
+
+
+def native_sections(slug: str, job_id: str) -> list:
+    url = f"https://{slug}.jobs.personio.de/xml"
+    jobs = cached(url, lambda: personio_positions(get_xml(url)))
+    return next((job["sections"] for job in jobs if job["id"] == job_id), [])
+
+
+def bamboohr_posting(slug: str, job_id: str) -> dict | None:
+    payload = get_json(f"https://{slug}.bamboohr.com/careers/{job_id}/detail") or {}
+    job = (payload.get("result") or {}).get("jobOpening") or {}
+    status = (job.get("jobOpeningStatus") or "open").lower()
+    if not job.get("jobOpeningName") or status != "open":
+        return None
+    lines = [
+        job["jobOpeningName"],
+        f"Location: {place_name(job.get('location'))}",
+        f"Remote: {'yes' if remote_of('bamboohr', job) else 'no'}",
+        "",
+        strip_html(job.get("description") or ""),
+    ]
+    return found_posting(job["jobOpeningName"], "", lines, remote_of("bamboohr", job))
+
+
+def smartrecruiters_posting(slug: str, job_id: str) -> dict | None:
+    job = get_json(f"https://api.smartrecruiters.com/v1/companies/{slug}/postings/{job_id}")
+    if not job or not job.get("name") or job.get("active") is False:
+        return None
+    location = job.get("location") or {}
+    lines = [
+        job["name"],
+        f"Company: {employer_of('smartrecruiters', job)}",
+        f"Location: {location.get('fullLocation') or place_name(location)}",
+        f"Remote: {'yes' if location.get('remote') else 'no'}",
+    ]
+    for section in ((job.get("jobAd") or {}).get("sections") or {}).values():
+        lines += ["", section.get("title") or "", strip_html(section.get("text") or "")]
+    return found_posting(
+        job["name"], employer_of("smartrecruiters", job), lines, remote_of("smartrecruiters", job)
+    )
+
+
+def rippling_posting(slug: str, job_id: str) -> dict | None:
+    job = get_json(f"https://api.rippling.com/platform/api/ats/v2/board/{slug}/jobs/{job_id}")
+    if not job or not job.get("name"):
+        return None
+    description = job.get("description") or {}
+    lines = [
+        job["name"],
+        f"Company: {job.get('companyName') or ''}",
+        f"Location: {'; '.join(str(place) for place in job.get('workLocations') or [])}",
+        f"Employment: {label_of(job.get('employmentType'))}",
+        "",
+        strip_html(description.get("role") or ""),
+        "",
+        strip_html(description.get("company") or ""),
+    ]
+    remote = remote_of("rippling", job) or remote_of(
+        "rippling", listed("rippling", slug, job_id) or {}
+    )
+    return found_posting(job["name"], job.get("companyName") or "", lines, remote)
+
+
+POSTINGS = {
+    "workable": workable_posting,
+    "recruitee": recruitee_posting,
+    "personio": personio_posting,
+    "bamboohr": bamboohr_posting,
+    "smartrecruiters": smartrecruiters_posting,
+    "rippling": rippling_posting,
+}
+
+
 def load_posting(board: str, slug: str, job_id: str) -> dict | None:
+    if board in POSTINGS:
+        return POSTINGS[board](slug, job_id)
     if board == "ashby":
         job = next(
             (j for j in board_listing(board, slug) if str(j.get("id")).lower() == job_id), None
@@ -452,16 +795,16 @@ def apply(
 
 def navigator_goal(title: str, resume_title: str, letter: str, status: ResponseStatus) -> str:
     lines = [
-        f'Apply to the job "{title}" on this company job board (Ashby, Greenhouse or Lever).',
+        f'Apply to the job "{title}" on this company job board.',
         (
             "If the page shows the job description, press 'Apply' or 'Apply for this job' to "
             "reach the form. Fill every field from the CV, candidate_contact and candidate_facts, "
             "and use the upload action for the résumé or CV file field."
         ),
         (
-            "Never use 'Apply with LinkedIn', 'Autofill with MyGreenhouse', 'Apply with Indeed' or "
-            "any sign-in or account option; if the form cannot be sent without signing in or "
-            "creating an account, reply stuck."
+            "Never use 'Apply with LinkedIn', 'Autofill with MyGreenhouse', 'Apply with Indeed', "
+            "'Continue with Google' or any sign-in or account option; if the form cannot be sent "
+            "without signing in or creating an account, reply stuck."
         ),
         (
             "Submit the form. The application is sent only when the page confirms it (e.g. "

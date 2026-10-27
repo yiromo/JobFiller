@@ -1796,6 +1796,121 @@ class AtsSourceTests(SimpleTestCase):
         self.assertIs(adapter_for(ASHBY_JOB), ats)
         self.assertEqual(ats.apply_url(ASHBY_JOB), f"{ASHBY_JOB}/application")
 
+    def test_newer_boards_reduce_job_links_to_one_canonical_posting(self):
+        rippling = "9cd647df-0857-4768-954e-9d71468c311b"
+        cases = {
+            "https://apply.workable.com/huggingface/j/81b46579fe/apply/": (
+                ("workable", "huggingface", "81B46579FE"),
+                "https://apply.workable.com/huggingface/j/81B46579FE/apply/",
+            ),
+            "https://somnio.recruitee.com/o/backend-developer/c/new": (
+                ("recruitee", "somnio", "backend-developer"),
+                "https://somnio.recruitee.com/o/backend-developer/c/new",
+            ),
+            "https://acme.jobs.personio.com/job/2730632?language=de": (
+                ("personio", "acme", "2730632"),
+                "https://acme.jobs.personio.de/job/2730632/apply?language=en",
+            ),
+            "https://flyio.bamboohr.com/careers/35?source=x": (
+                ("bamboohr", "flyio", "35"),
+                "https://flyio.bamboohr.com/careers/35",
+            ),
+            "https://jobs.smartrecruiters.com/Canva/6000000001468836-senior-backend-engineer": (
+                ("smartrecruiters", "Canva", "6000000001468836"),
+                "https://jobs.smartrecruiters.com/Canva/6000000001468836",
+            ),
+            f"https://ats.rippling.com/en-CA/pythian/jobs/{rippling}": (
+                ("rippling", "pythian", rippling),
+                f"https://ats.rippling.com/pythian/jobs/{rippling}/apply",
+            ),
+        }
+        for link, (job, apply) in cases.items():
+            self.assertEqual(ats.parse_job(link), job, link)
+            self.assertEqual(ats.parse_job(ats.job_url(*job)), job, link)
+            self.assertEqual(ats.apply_url(link), apply, link)
+            self.assertIs(adapter_for(link), ats)
+        self.assertIsNone(ats.parse_job("https://www.bamboohr.com/careers/12"))
+        self.assertIsNone(ats.parse_job("https://somnio.recruitee.com/"))
+        self.assertEqual(ats.board_of("https://recruitee.com/?q=Go"), "recruitee")
+
+    def test_company_scoped_ids_name_the_company(self):
+        self.assertEqual(ats.external_id("bamboohr", "flyio", "35"), "bamboohr:flyio/35")
+        self.assertEqual(ats.external_id("rippling", "pythian", "x"), "rippling:x")
+        self.assertEqual(ats.external_id("ashby", "acme", "x"), "ashby:x")
+
+    def test_newer_boards_list_remote_jobs_once_per_id(self):
+        listings = {
+            "workable": [
+                {"shortcode": "ab12", "title": "Go Engineer", "telecommuting": True},
+                {"shortcode": "cd34", "title": "Designer", "telecommuting": False},
+            ],
+            "recruitee": [
+                {"slug": "go-engineer", "title": "Go Engineer", "remote": True},
+                {"slug": "old", "title": "Old", "remote": True, "status": "closed"},
+            ],
+            "bamboohr": [
+                {"id": "35", "jobOpeningName": "Go Engineer", "locationType": "1"},
+                {"id": "36", "jobOpeningName": "Office", "locationType": "0", "isRemote": None},
+            ],
+            "smartrecruiters": [
+                {"id": "6", "name": "Go Engineer", "location": {"remote": True}, "company": {}},
+            ],
+            "rippling": [
+                {"id": "U", "name": "Go Engineer", "locations": [{"workplaceType": "ON_SITE"}]},
+                {"id": "U", "name": "Go Engineer", "locations": [{"workplaceType": "REMOTE"}]},
+            ],
+        }
+        for board, listing in listings.items():
+            with patch("apps.hunter.sources.ats.board_listing", return_value=listing):
+                jobs = ats.board_jobs(board, "acme")
+            self.assertEqual(jobs[0]["title"], "Go Engineer", board)
+            self.assertTrue(jobs[0]["remote"] or board == "rippling", board)
+        with patch("apps.hunter.sources.ats.board_listing", return_value=listings["recruitee"]):
+            self.assertEqual(
+                [job["id"] for job in ats.board_jobs("recruitee", "x")], ["go-engineer"]
+            )
+        with patch("apps.hunter.sources.ats.board_listing", return_value=listings["rippling"]):
+            self.assertEqual(
+                [job["remote"] for job in ats.board_jobs("rippling", "x")], [False, True]
+            )
+        with patch("apps.hunter.sources.ats.board_listing", return_value=listings["workable"]):
+            self.assertEqual(
+                [(job["id"], job["remote"]) for job in ats.board_jobs("workable", "x")],
+                [("AB12", True), ("CD34", False)],
+            )
+
+    def test_personio_reads_its_xml_feed_and_finds_remote_offices(self):
+        feed = ats.ElementTree.fromstring(
+            "<workzag-jobs><position><id>7</id><name>Go Engineer</name><office>Berlin</office>"
+            "<additionalOffices><office>Germany (Remote)</office></additionalOffices>"
+            "<jobDescriptions><jobDescription><name>Tasks</name><value><![CDATA[<p>Build</p>]]>"
+            "</value></jobDescription></jobDescriptions></position></workzag-jobs>"
+        )
+        [job] = ats.personio_positions(feed)
+        self.assertEqual((job["id"], job["name"]), ("7", "Go Engineer"))
+        self.assertTrue(ats.remote_of("personio", job))
+        with patch("apps.hunter.sources.ats.board_listing", return_value=[job]):
+            found = ats.posting("https://acme.jobs.personio.de/job/7")
+        self.assertIn("Build", found["text"])
+        self.assertTrue(found["remote"])
+        with patch("apps.hunter.sources.ats.fetch", return_value=b"<html"):
+            self.assertRaises(ValueError, ats.get_xml, "https://acme.jobs.personio.de/xml")
+
+    def test_newer_board_search_titles_name_the_employer(self):
+        cases = [
+            ("workable", "Go Engineer - EMEA Remote - Hugging Face", "huggingface"),
+            ("recruitee", "Somnio Software - Go Engineer", "somnio"),
+            ("personio", "Go Engineer | Jobs at 1KOMMA5°", "x"),
+            ("smartrecruiters", "Canva Go Engineer | SmartRecruiters", "canva"),
+            ("rippling", "Go Engineer | Pythian", "pythian"),
+        ]
+        employers = [ats.hit_names(*case)[1] for case in cases]
+        titles = {ats.hit_names(*case)[0] for case in cases}
+        self.assertEqual(
+            employers, ["Hugging Face", "Somnio Software", "1KOMMA5°", "Canva", "Pythian"]
+        )
+        self.assertEqual(titles, {"Go Engineer", "Go Engineer - EMEA Remote"})
+
     def test_a_source_url_expands_to_one_search_per_title(self):
         urls = ats.expand_source("https://jobs.lever.co/?q=Backend+Engineer&q=Go+Developer", [])
         self.assertEqual(

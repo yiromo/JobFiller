@@ -142,7 +142,8 @@ Don't put DB queries or business logic in views — mirror an existing app. Apps
   URL plus `vjk=<jk>`, which shows the job in the side panel. Only visible `a[data-jk]` cards
   count: Indeed plants an invisible trap link. The captcha guard must stay visibility-based:
   both sites carry invisible reCAPTCHA Enterprise frames that are not a challenge.
-  `sources/ats.py` (site `ats`) finds jobs on Ashby, Greenhouse and Lever boards with no account:
+  `sources/ats.py` (site `ats`) finds jobs on Ashby, Greenhouse, Lever, Workable, Recruitee, Personio,
+  BambooHR, SmartRecruiters and Rippling boards with no account:
   a source URL is the board host plus one `q=` per job title (`https://jobs.lever.co/?q=Backend+Engineer`,
   optional `where=`, default `Remote`), searched through Tavily with `include_domains` (the user's
   "site:jobs.ashbyhq.com" idea; driving google.com would hit its bot check). A search runs at most
