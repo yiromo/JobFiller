@@ -1,3 +1,4 @@
+import copy
 import math
 import random
 import re
@@ -10,7 +11,7 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.db import connection
-from django.db.models import Q
+from django.db.models import Case, IntegerField, Q, When
 from django.utils import timezone
 from openai import OpenAIError
 from playwright.sync_api import Error as PlaywrightError
@@ -39,7 +40,8 @@ MODEL_ERRORS = (OpenAIError, ValueError, TypeError, AttributeError, KeyError)
 UNSCORED_PREFIXES = ("Not scored", "Scoring failed")
 BOARD_MISSES = 3
 STOPPING = threading.Event()
-REFUSALS_RE = re.compile(r"refused this job (\d+) times?")
+REFUSALS_RE = re.compile(r"(?:refused|got stuck on) this job (\d+) times?")
+RETRIED_NOTES = ("refused this job", "got stuck on this job")
 REFUSAL_LIMIT = 3
 
 
@@ -608,9 +610,18 @@ def apply_ready(
     queue = queue.filter(status__in=statuses).exclude(cv=None)
     if adapter.MAX_SENDS_PER_RUN and not only and not rehearse:
         limit = min(limit, adapter.MAX_SENDS_PER_RUN)
+    retried = Case(
+        *[When(note__contains=marker, then=1) for marker in RETRIED_NOTES],
+        default=0,
+        output_field=IntegerField(),
+    )
+    queue = queue.annotate(retried=retried).defer("text").order_by("retried", "-match_score", "id")
     attempted = False
     misses = 0
-    for vacancy in queue.order_by("-match_score", "id")[:limit]:
+    tried = 0
+    for vacancy in queue:
+        if tried >= limit:
+            break
         reason = "" if only else skip_reason(vacancy)
         if reason:
             vacancy.status = Vacancy.Status.SKIPPED
@@ -631,6 +642,7 @@ def apply_ready(
         )
         if not claimed:
             continue
+        tried += 1
         try:
             result = apply_one(
                 page, adapter, vacancy, titles, log, summary, headed, rehearse, forced=bool(only)
@@ -797,11 +809,15 @@ def apply_one(
         )
         log(f"  REHEARSAL {vacancy.title}: {note}")
         return False
-    if not applied and adapter.TRY_LATER and note.startswith(adapter.TRY_LATER):
+    refused = bool(adapter.TRY_LATER) and note.startswith(adapter.TRY_LATER)
+    if not applied and (refused or not submitted and only_stuck(vacancy, note)):
         found = REFUSALS_RE.search(vacancy.note or "")
         refusals = (int(found.group(1)) if found else 0) + 1
         times = "1 time" if refusals == 1 else f"{refusals} times"
-        note = f"{adapter.NAME} refused this job {times}; nothing was saved. {note}"
+        if refused:
+            note = f"{adapter.NAME} refused this job {times}; nothing was saved. {note}"
+        else:
+            note = f"The agent got stuck on this job {times}; nothing was submitted. {note}"
         vacancy.submitted_at = None
         if refusals < REFUSAL_LIMIT:
             Vacancy.objects.filter(pk=vacancy.pk).update(
@@ -819,6 +835,12 @@ def apply_one(
     (summary.applied if applied else summary.review).append(vacancy)
     log(f"  {'APPLIED' if applied else 'REVIEW '} {vacancy.title}: {note}")
     return True
+
+
+def only_stuck(vacancy: Vacancy, note: str) -> bool:
+    held = copy.copy(vacancy)
+    held.note = note
+    return review.kind_of(held) == review.STUCK
 
 
 def navigate(

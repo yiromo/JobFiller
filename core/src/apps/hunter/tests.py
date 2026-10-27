@@ -1749,6 +1749,78 @@ class TryLaterTests(LinkedCvCase):
         self.assertIn("refused this job 3 times", row.note)
         self.assertEqual([item.pk for item in summary.review], [row.pk])
 
+    def run_stuck(self, submit=False, limit=10):
+        adapter = FakeAdapter(
+            self.status_ok(), (False, "Navigator stuck: The page did not change.")
+        )
+        if submit:
+            original = adapter.apply
+
+            def apply(*args, **kwargs):
+                kwargs["on_submit"]()
+                return original(*args, **kwargs)
+
+            adapter.apply = apply
+        summary = RunSummary()
+        with patch("apps.hunter.service.evidence.capture"):
+            service.apply_ready(None, adapter, limit, [self.link], lambda line: None, summary)
+        return adapter, summary
+
+    def status_ok(self):
+        return hh.parse_status({"resumes": {"1": {"hash": "hash"}}})
+
+    def test_a_stuck_job_goes_back_in_the_queue_and_is_held_the_third_time(self):
+        row = self.vacancy("98")
+        for count in (1, 2):
+            _, summary = self.run_stuck()
+            row.refresh_from_db()
+            self.assertEqual(row.status, Vacancy.Status.READY)
+            self.assertIn(f"got stuck on this job {count} time", row.note)
+            self.assertEqual(summary.review, [])
+        _, summary = self.run_stuck()
+        row.refresh_from_db()
+        self.assertEqual(row.status, Vacancy.Status.NEEDS_REVIEW)
+        self.assertIn("got stuck on this job 3 times", row.note)
+        self.assertEqual(review.kind_of(row), review.STUCK)
+        self.assertEqual([item.pk for item in summary.review], [row.pk])
+
+    def test_a_stuck_job_that_pressed_submit_is_held_at_once(self):
+        row = self.vacancy("99")
+        self.run_stuck(submit=True)
+        row.refresh_from_db()
+        self.assertEqual(row.status, Vacancy.Status.NEEDS_REVIEW)
+        self.assertIsNotNone(row.submitted_at)
+        self.assertNotIn("got stuck on this job", row.note)
+
+    def test_a_retried_job_waits_behind_fresh_ones(self):
+        retried, fresh = self.vacancy("100"), self.vacancy("101")
+        Vacancy.objects.filter(pk=retried.pk).update(
+            match_score=99, note="The agent got stuck on this job 1 time; nothing was submitted."
+        )
+        adapter = FakeAdapter(self.status_ok())
+        service.apply_ready(None, adapter, 1, [self.link], lambda line: None, RunSummary())
+        self.assertEqual(adapter.applied, [fresh.url])
+
+    def test_skipped_duplicates_do_not_use_up_send_slots(self):
+        Vacancy.objects.create(
+            source="hh",
+            external_id="102",
+            url="https://astana.hh.kz/vacancy/102",
+            title="Go Engineer",
+            employer="Acme",
+            status=Vacancy.Status.APPLIED,
+            applied_at=timezone.now(),
+        )
+        twin, other = self.vacancy("103"), self.vacancy("104")
+        Vacancy.objects.filter(pk=twin.pk).update(
+            title="Go Engineer", employer="Acme", match_score=99
+        )
+        adapter = FakeAdapter(self.status_ok())
+        service.apply_ready(None, adapter, 1, [self.link], lambda line: None, RunSummary())
+        twin.refresh_from_db()
+        self.assertEqual(twin.status, Vacancy.Status.SKIPPED)
+        self.assertEqual(adapter.applied, [other.url])
+
     def test_the_server_answer_names_the_last_non_get_responses(self):
         def response(method, status, url, body):
             item = MagicMock(status=status, url=url)

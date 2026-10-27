@@ -51,7 +51,7 @@ EMAIL_CODE_NOTE = re.compile(
     r"(security|verification|one[- ]time|otp) code|\bOTP\b|emailed a (security )?code",
     re.IGNORECASE,
 )
-STUCK_NOTES = ("Navigator", "Browser error")
+STUCK_NOTES = ("Navigator", "Browser error", "The agent got stuck")
 CV_NOTE = "Flagship CV did not pass review"
 
 

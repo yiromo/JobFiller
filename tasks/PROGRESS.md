@@ -1,5 +1,16 @@
 # Progress log
 
+- **Skipped jobs no longer use up send slots, and stuck jobs get retried** — `apply_ready` took
+  the top `limit` rows and only then dropped repeats and skip-list jobs, so skips ate the slots:
+  over two days the log had 394 skips against 159 real attempts. It now walks the whole queue and
+  counts only claimed jobs toward the limit. A job the navigator got stuck on (review kind
+  `stuck`, Submit never pressed) goes back to `ready` with the same counter `TRY_LATER` uses
+  ("got stuck on this job N times"), behind every fresh job, and the third time it is held. A
+  stuck run that pressed Submit, a captcha, an account wall or a question for the user is held as
+  before. The 443 jobs already held as stuck were requeued once with a count of 2, so each gets
+  one more try. hh also searches remote jobs in Russia and Belarus (`work_format=REMOTE`,
+  `area=113`/`16`), since the Kazakhstan search had run dry.
+
 - **Six more company job boards** — `sources/ats.py` now also lists Workable, Recruitee,
   Personio, BambooHR, SmartRecruiters and Rippling boards through their public APIs (Workable's
   widget and v2 job API, Recruitee `/api/offers/`, Personio's `/xml` feed, BambooHR
