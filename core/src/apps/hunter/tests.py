@@ -162,6 +162,7 @@ class FakeAdapter:
     MAX_SENDS_PER_RUN = 0
     TRY_LATER = ()
     EMPLOYER_BOARDS = False
+    DISTINCT_UPLOAD_NAMES = False
 
     def __init__(self, status, outcome=(True, "Applied on hh.kz.")):
         self.status = status
@@ -895,6 +896,22 @@ class ApplyScopeTests(LinkedCvCase):
         vacancy.refresh_from_db()
         self.assertEqual(vacancy.cv_id, tailored.id)
         self.assertIn("Tailored CV: Tailored.pdf (from a.pdf)", vacancy.match_reason)
+
+    def test_linkedin_gets_the_cv_id_only_when_another_cv_shares_its_name(self):
+        linkedin_site = SimpleNamespace(DISTINCT_UPLOAD_NAMES=True)
+        first = Cv.objects.create(
+            file="cvs/x1/CV_AI_Engineer.pdf", original_filename="CV_AI_Engineer.pdf"
+        )
+        self.assertEqual(service.upload_name_for(linkedin_site, first), "")
+        second = Cv.objects.create(
+            file="cvs/x2/CV_AI_Engineer.pdf", original_filename="CV_AI_Engineer.pdf"
+        )
+        self.assertEqual(
+            service.upload_name_for(linkedin_site, second), f"CV_AI_Engineer_{second.id}.pdf"
+        )
+        self.assertEqual(
+            service.upload_name_for(SimpleNamespace(DISTINCT_UPLOAD_NAMES=False), second), ""
+        )
 
     def test_the_navigator_is_told_to_upload_a_tailored_cv(self):
         vacancy, _ = self.tailoring_case()

@@ -234,7 +234,6 @@ def tailor_cv(vacancy, log) -> None:
             vacancy.cv_id,
             TAILOR_INSTRUCTIONS,
             position_text=vacancy.text,
-            filename=f"{vacancy.cv.full_name or 'CV'} {first_words(vacancy.title, 3)}",
         )
     except CvGenerationError as error:
         log(f"  tailored CV failed for {vacancy.title}: {first_line(error)}; using the original")
@@ -296,8 +295,6 @@ def write_flagship_cv(source, posting: str, employer: str, title: str, log) -> t
                 source.id,
                 instructions,
                 position_text=posting,
-                filename=f"{source.full_name or 'CV'} {first_words(employer, 2)} "
-                f"{first_words(title, 3)}",
             )
         except CvGenerationError as error:
             findings = [f"the CV writer failed: {first_line(error)}"]
@@ -838,6 +835,7 @@ def navigate(
         rehearse=rehearse,
         on_submit=on_submit,
         upload_path=cv_file_path(vacancy.cv),
+        upload_name=upload_name_for(adapter, vacancy.cv),
         contact=contact_for(vacancy.cv),
         facts=settings.HUNTER_FACTS,
         external_hops=1 if status.external_apply else 0,
@@ -911,6 +909,15 @@ def applicant_for(cv) -> dict:
         "cv_path": cv_file_path(cv),
         "linkedin": dsml.linkedin_url(cv.raw_text or ""),
     }
+
+
+def upload_name_for(adapter, cv) -> str:
+    if not adapter.DISTINCT_UPLOAD_NAMES:
+        return ""
+    if not Cv.objects.filter(original_filename=cv.original_filename).exclude(pk=cv.pk).exists():
+        return ""
+    stem, dot, suffix = cv.original_filename.rpartition(".")
+    return f"{stem}_{cv.id}.{suffix}" if dot else f"{cv.original_filename}_{cv.id}"
 
 
 def cv_file_path(cv) -> str:

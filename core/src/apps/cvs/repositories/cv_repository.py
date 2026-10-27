@@ -1,3 +1,6 @@
+from contextlib import suppress
+from pathlib import Path
+
 from apps.cvs.dto import CvDTO
 from apps.cvs.models import Cv
 
@@ -39,8 +42,13 @@ class CvRepository(ICvRepository):
         obj = Cv.objects.filter(id=cv_id).first()
         if obj is None:
             return False
+        folder = Path(obj.file.path).parent if obj.file else None
+        own_folder = obj.file and Path(obj.file.name).parent != Path("cvs")
         obj.file.delete(save=False)
         obj.delete()
+        if own_folder:
+            with suppress(OSError):
+                folder.rmdir()
         return True
 
     @staticmethod

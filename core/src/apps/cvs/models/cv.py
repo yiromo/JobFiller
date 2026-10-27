@@ -1,8 +1,14 @@
+import secrets
+
 from django.db import models
 
 
+def cv_upload_to(instance, filename: str) -> str:
+    return f"cvs/{secrets.token_hex(4)}/{filename}"
+
+
 class Cv(models.Model):
-    file = models.FileField(upload_to="cvs/")
+    file = models.FileField(upload_to=cv_upload_to)
     original_filename = models.CharField(max_length=255)
     raw_text = models.TextField(blank=True, default="")
     full_name = models.CharField(max_length=255, blank=True, default="")

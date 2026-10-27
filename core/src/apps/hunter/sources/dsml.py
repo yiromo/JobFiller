@@ -22,6 +22,7 @@ SEND_GAP = (20, 60)
 MAX_SENDS_PER_RUN = 0
 TRY_LATER = ("DSML.kz answered: Failed to save",)
 EMPLOYER_BOARDS = False
+DISTINCT_UPLOAD_NAMES = False
 NAVIGABLE = ("The DSML guest form did not open",)
 BASE = "https://dsml.kz"
 COVER_LIMIT = 1200

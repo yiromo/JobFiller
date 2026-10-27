@@ -1,5 +1,24 @@
 # Progress log
 
+- **Generated CVs get clean names and carry their id** — a generated CV was named
+  `<Name>_<Employer>_<Title>.pdf`, and Django's storage added a random `_J8FCT`
+  suffix on a clash, which is what an employer saw. Every CV file now goes to its own
+  `cvs/<token>/` folder (`cv_upload_to`, migration `cvs.0003`), so the basename is never altered,
+  and `generate_from` names it `CV_<headline role>.pdf` (`CV_Senior_Full_Stack_Developer.pdf`)
+  unless the caller passes a name; the hunter no longer passes one. The CV id is written into the
+  PDF's metadata as `/CvId`, and deleting a CV removes its folder. LinkedIn is the exception: its
+  Easy Apply list shows résumés by file name only, so an adapter with `DISTINCT_UPLOAD_NAMES`
+  uploads `CV_AI_Engineer_<id>.pdf` (a Playwright file payload, nothing copied on disk) when
+  another CV row already has that name. Existing files keep their old names and paths.
+
+- **The navigator ticks checkboxes and radios hidden behind a styled label** — Kolesa Group's
+  career form keeps its personal-data consent `<input type="checkbox">` off-screen inside a
+  `<label>`, so `check` and a forced click both failed with "outside of the viewport" and the run
+  stopped as stuck; Codebridge's Webflow form hides its language radios the same way. `act` now
+  falls back to `el.click()` on the input itself (`TICK_HIDDEN_INPUT_JS`), which ticks it and
+  fires the events Vue's v-model and Webflow listen to. `vet` still decides whether a control may
+  be ticked at all; this only changes how an allowed one is clicked.
+
 - **The agent enters a security code the site emails to you** — Greenhouse asks for an
   8-character code mailed to the applicant before it takes an application, and the navigator
   held those jobs as "captcha" (Affirm, GitLab, Kunai, PlanetScale, Chainguard). The code is the

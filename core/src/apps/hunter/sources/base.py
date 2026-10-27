@@ -15,6 +15,7 @@ CONTRACT = (
     "MAX_SENDS_PER_RUN",
     "TRY_LATER",
     "EMPLOYER_BOARDS",
+    "DISTINCT_UPLOAD_NAMES",
     "handles",
     "origin",
     "expand_source",

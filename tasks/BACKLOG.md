@@ -74,3 +74,7 @@ Roughly in order. Not started unless noted in `PROGRESS.md`.
      a merge) before the extension can act on hh rows.
    - `save_session` overwrites the cookie snapshot even when the profile has been logged out, so the
      snapshot only rescues a fresh profile, not an expired one.
+14. **Masked phone fields in the navigator** — a `+7` pre-filled mask (Kolesa Group's career
+   form) took the first typed `7` as the country code and dropped the last digit; the model
+   retyped the same digits. After typing into a `tel` or masked field, read the displayed value
+   back and retry without the country digit when the digits do not match.

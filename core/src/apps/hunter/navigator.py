@@ -1,9 +1,11 @@
 import base64
 import json
+import mimetypes
 import random
 import re
 from collections import Counter
 from dataclasses import dataclass, field
+from pathlib import Path
 from urllib.parse import urlparse
 
 from django.conf import settings
@@ -268,6 +270,11 @@ PAGE_TEXT_JS = (
   return ((dialog ? dialog.innerText + "\\n----\\n" : "") + document.body.innerText);
 }"""
 )
+TICK_HIDDEN_INPUT_JS = """(el) => {
+  if (!["checkbox", "radio"].includes(el.type) || el.disabled) return false;
+  if (!el.checked) el.click();
+  return el.checked;
+}"""
 SCROLL_JS = (
     "(ref) => {"
     + DEEP_JS
@@ -517,6 +524,7 @@ class Navigator:
         rehearse=False,
         on_submit=None,
         upload_path="",
+        upload_name="",
         allowed_hosts=None,
         contact=None,
         facts="",
@@ -536,6 +544,7 @@ class Navigator:
         self.host = host_of(page.url)
         self.allowed_hosts = set(allowed_hosts or ()) | {self.host}
         self.upload_path = upload_path
+        self.upload_name = upload_name
         self.contact = {key: value for key, value in (contact or {}).items() if value}
         self.facts = facts
         self.eeo = [row for row in (eeo or []) if row.get("answer")]
@@ -800,7 +809,11 @@ class Navigator:
                 try:
                     locator.check(timeout=8000)
                 except PlaywrightError:
-                    locator.click(timeout=8000, force=True)
+                    try:
+                        locator.click(timeout=8000, force=True)
+                    except PlaywrightError:
+                        if not locator.evaluate(TICK_HIDDEN_INPUT_JS):
+                            raise
             elif action == "select" and element.get("tag") != "select":
                 return self.pick_option(locator, value)
             elif action == "select":
@@ -855,12 +868,22 @@ class Navigator:
                 self.page.wait_for_timeout(random.randint(150, 600))
 
     def upload(self, locator, element: dict) -> None:
+        files = self.upload_file()
         if element.get("type") == "file":
-            locator.set_input_files(self.upload_path, timeout=8000)
+            locator.set_input_files(files, timeout=8000)
             return
         with self.page.expect_file_chooser(timeout=8000) as chooser:
             locator.click(timeout=8000)
-        chooser.value.set_files(self.upload_path)
+        chooser.value.set_files(files)
+
+    def upload_file(self):
+        if not self.upload_name:
+            return self.upload_path
+        return {
+            "name": self.upload_name,
+            "mimeType": mimetypes.guess_type(self.upload_name)[0] or "application/octet-stream",
+            "buffer": Path(self.upload_path).read_bytes(),
+        }
 
     def learn(self, result: Result) -> None:
         if result.status in {"done", "rehearsed"}:

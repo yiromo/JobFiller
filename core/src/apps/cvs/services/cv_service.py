@@ -1,6 +1,7 @@
 import re
 
 from django.core.files.base import ContentFile
+from pypdf import PdfWriter
 
 from agent import cv_writer
 from agent.profile import extract_profile
@@ -59,14 +60,23 @@ class CvService:
                 "git_url": source.git_url,
             },
         )
-        name = _pdf_filename(filename or f"CV {source.full_name} {data['title']}")
-        return (
-            self.upload(ContentFile(pdf_bytes, name=name), name),
-            data["added_skills"],
-            data["warnings"] + render_warnings,
-        )
+        name = _pdf_filename(filename or f"CV {_role(data['title'])}")
+        cv = self.upload(ContentFile(pdf_bytes, name=name), name)
+        _stamp_id(cv)
+        return cv, data["added_skills"], data["warnings"] + render_warnings
+
+
+def _role(headline: str) -> str:
+    return re.sub(r"\(.*?\)", " ", headline or "")
 
 
 def _pdf_filename(label: str) -> str:
-    stem = re.sub(r"[^A-Za-z0-9]+", "_", label).strip("_") or "Generated_CV"
+    stem = re.sub(r"[^A-Za-z0-9]+", "_", label).strip("_") or "CV"
     return f"{stem[:120]}.pdf"
+
+
+def _stamp_id(cv: CvDTO) -> None:
+    writer = PdfWriter(clone_from=cv.file_path)
+    writer.add_metadata({"/CvId": str(cv.id)})
+    with open(cv.file_path, "wb") as target:
+        writer.write(target)
