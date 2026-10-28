@@ -1,5 +1,12 @@
 # Progress log
 
+- **"Open browser" for a captcha failed with "Failed to launch the browser process"** — the
+  systemd agent starts at login before GNOME exports `DISPLAY`/`WAYLAND_DISPLAY`/`XAUTHORITY`, so
+  its process had no display and a visible Camoufox could not start; the uncaught Playwright error
+  also ended the whole run, skipping every later site. `open_browser` now copies those three
+  variables from `systemctl --user show-environment` before a visible launch, and a launch that
+  still fails is treated like an unanswered ask: the job goes back to `ready` and the site waits.
+
 - **Skipped jobs no longer use up send slots, and stuck jobs get retried** — `apply_ready` took
   the top `limit` rows and only then dropped repeats and skip-list jobs, so skips ate the slots:
   over two days the log had 394 skips against 159 real attempts. It now walks the whole queue and

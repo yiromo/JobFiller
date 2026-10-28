@@ -1,5 +1,6 @@
 import base64
 import json
+import os
 import tempfile
 import threading
 from datetime import UTC, datetime, timedelta
@@ -10,10 +11,12 @@ from unittest.mock import MagicMock, patch
 from django.conf import settings
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
+from playwright.sync_api import Error as PlaywrightError
 
 from agent import cv_reviewer, mimo
 from apps.cvs.models import Cv
 from apps.hunter import (
+    browser,
     captcha,
     evidence,
     inbox,
@@ -1106,14 +1109,14 @@ class CaptchaHelpTests(LinkedCvCase):
         self.assertIn(review.CAPTCHA_NOTE, vacancy.note)
         self.assertEqual(state.sent_last_day(), 0)
 
-    def run_once_with(self, error, answered):
+    def run_once_with(self, error, answered, opened=None):
         adapter = FakeAdapter(self.status)
         error.vacancy = self.vacancy("81", status=Vacancy.Status.NEEDS_REVIEW)
         with (
             patch("apps.hunter.service.site_groups", return_value=[(adapter, ["u"])]),
             patch("apps.hunter.service.run_site", side_effect=error),
             patch("apps.hunter.service.captcha.ask_to_solve", return_value=answered) as ask,
-            patch("apps.hunter.service.assisted_apply") as assisted,
+            patch("apps.hunter.service.assisted_apply", side_effect=opened) as assisted,
             patch("apps.hunter.service.retry_paused"),
         ):
             try:
@@ -1134,6 +1137,16 @@ class CaptchaHelpTests(LinkedCvCase):
         _, assisted, failed = self.run_once_with(CaptchaError("captcha"), answered=False)
         assisted.assert_not_called()
         self.assertIsNotNone(failed)
+        self.assertIsNotNone(captcha.cooling_until("hh"))
+
+    def test_a_visible_browser_that_fails_to_open_requeues_the_job_and_pauses_the_site(self):
+        error = CaptchaError("captcha")
+        _, assisted, failed = self.run_once_with(
+            error, answered=True, opened=PlaywrightError("Failed to launch the browser process.")
+        )
+        assisted.assert_called_once()
+        self.assertIsNotNone(failed)
+        self.assertEqual(Vacancy.objects.get(pk=error.vacancy.pk).status, Vacancy.Status.READY)
         self.assertIsNotNone(captcha.cooling_until("hh"))
 
     def test_a_captcha_on_an_employer_page_does_not_pause_the_site(self):
@@ -1230,6 +1243,27 @@ class CaptchaHelpTests(LinkedCvCase):
         adapter.MAX_SENDS_PER_RUN = 1
         service.apply_ready(None, adapter, 10, [self.link], lambda line: None, RunSummary())
         self.assertEqual(len(adapter.applied), 1)
+
+
+class SessionDisplayTests(SimpleTestCase):
+    def test_a_visible_browser_takes_the_display_from_the_login_session(self):
+        found = MagicMock(stdout="DISPLAY=:0\nWAYLAND_DISPLAY=wayland-0\nPATH=/elsewhere\n")
+        with (
+            patch.dict("os.environ", {"PATH": "/usr/bin"}, clear=True),
+            patch("apps.hunter.browser.subprocess.run", return_value=found),
+        ):
+            browser.session_display()
+            self.assertEqual(os.environ["DISPLAY"], ":0")
+            self.assertEqual(os.environ["WAYLAND_DISPLAY"], "wayland-0")
+            self.assertEqual(os.environ["PATH"], "/usr/bin")
+
+    def test_no_systemd_leaves_the_environment_alone(self):
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("apps.hunter.browser.subprocess.run", side_effect=FileNotFoundError),
+        ):
+            browser.session_display()
+            self.assertNotIn("DISPLAY", os.environ)
 
 
 class DesktopAskTests(SimpleTestCase):

@@ -1100,7 +1100,13 @@ def try_site(
             held = getattr(error, "vacancy", None)
             if not (unattended and held and captcha.ask_to_solve(adapter, held, log)):
                 raise
-            assisted_apply(adapter, links, held, limit, log, summary)
+            try:
+                assisted_apply(adapter, links, held, limit, log, summary)
+            except PlaywrightError as failure:
+                log(f"{adapter.NAME}: the visible browser did not open: {failure}")
+                if any(v.pk == held.pk for v in summary.applied):
+                    return ""
+                raise error from failure
     except CaptchaError as error:
         held = getattr(error, "vacancy", None)
         if not (unattended and held):

@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import threading
 import time
 from contextlib import contextmanager, suppress
@@ -15,6 +16,7 @@ from playwright.sync_api import Error as PlaywrightError
 FINGERPRINT_FILE = "fingerprint.json"
 SESSION_FILE = "session.json"
 LAUNCHING = threading.Lock()
+DISPLAY_VARS = ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY")
 
 
 def profile_dir(site: str) -> Path:
@@ -83,10 +85,27 @@ def headless_mode(value: str):
     return value in {"1", "true", "yes"}
 
 
+def session_display() -> None:
+    with suppress(OSError, subprocess.SubprocessError):
+        found = subprocess.run(
+            ["systemctl", "--user", "show-environment"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        ).stdout
+        for line in found.splitlines():
+            name, _, value = line.partition("=")
+            if name in DISPLAY_VARS and value:
+                os.environ[name] = value
+
+
 @contextmanager
 def open_browser(site: str, headless=None):
     if headless is None:
         headless = headless_mode(settings.HUNTER_HEADLESS)
+    if headless is False:
+        session_display()
     browser = Camoufox(
         persistent_context=True,
         user_data_dir=str(profile_dir(site) / "firefox"),
