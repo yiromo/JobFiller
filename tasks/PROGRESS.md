@@ -1,5 +1,37 @@
 # Progress log
 
+- **Fit over volume, outreach drafts, and the letter size that was ignored** — sends to
+  LinkedIn and the ATS boards drew almost no human replies, while hh.kz drew most of them. The
+  postings' own location fields showed why: about 88% of the past international sends were
+  remote jobs limited to one country where the candidate cannot be hired, and the scoring prompt
+  told the model not to lower the score for that (the user's earlier choice, reversed at their
+  request). `posting.lock` now reads the LinkedIn job header (`<place> · N hours ago`) and the ATS
+  `Location:` line, treats a place outside `HUNTER_OPEN_LOCATIONS` as locked unless the text hires
+  from anywhere, via EOR or B2B, and falls back to explicit text rules ("must be located in",
+  "authorized to work in", "no sponsorship"). Locked jobs are skipped before scoring, so they cost
+  no model call, and again in `skip_reason` for rows already ready. hh and dsml are never gated
+  (`HUNTER_LOCATION_GATE` turns it off). `inbox.min_score` never drops below
+  `HUNTER_HARD_MIN_SCORE` (70) whatever the scope, and AI-trainer, annotation and expert-network
+  titles and platforms join the skip lists. `posted_at` comes from LinkedIn's relative age or a
+  `Posted:` line the ATS readers now write from each board's API date, and breaks ties inside a
+  score band in the apply queue. `outreach.py` drafts (never sends: LinkedIn messaging stays
+  manual and Gmail stays read-only) a message of at most 90 words for up to
+  `HUNTER_OUTREACH_PER_DAY` open jobs scoring `HUNTER_OUTREACH_MIN_SCORE` or more, at the end of
+  each unattended run. The contact comes from one Tavily search of public LinkedIn results and
+  is kept only if the cited result contains both the name and the quoted evidence. A missing
+  contact is stored as skipped, so no credit is spent on it again. The message is linted by
+  `agent/style.py` (stock phrases, dashes, length, any number not in the CV or the posting) with
+  one rewrite. `outreach signals` (run by hand, weekly) looks up a hiring signal in the last
+  60 days of news for up to 15 employers and drafts to an engineering lead. `outreach list|show|mark`
+  records what the user sent and who replied. `hunter_funnel` prints the weekly human-reply rate
+  per site, the experiment's metric; `style_check` runs a blind recruiter read over recent
+  letters. Separately, `read_choice` read only `{"value": …}`, while the letter-size file
+  saved before 2026-10-02 holds `{"size": …}`, so every letter since then fell back to "medium".
+  The reader now accepts both. Every Tavily call now goes through `ats.tavily`, which moves on
+  to `TAVILY_BACKUP_API_KEY` when the main key answers 401, 429, 432 or 433. An ATS source URL
+  can say `where=Worldwide`, which searches for roles open anywhere and keeps the remote-only
+  listing filter.
+
 - **A Wi-Fi drop no longer costs an hour of hunting** — a browser error (`PlaywrightError`, e.g.
   `Page.goto: NS_ERROR_UNKNOWN_HOST`) now ends only the site it happened on: `try_site` reports it
   like a login problem and the remaining sites still run, where before it escaped `run_once` and

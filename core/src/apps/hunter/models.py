@@ -38,6 +38,7 @@ class Vacancy(models.Model):
     cover_letter = models.TextField(blank=True)
     applied_at = models.DateTimeField(null=True, blank=True)
     submitted_at = models.DateTimeField(null=True, blank=True)
+    posted_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -95,3 +96,41 @@ class MailMessage(models.Model):
 
     def __str__(self):
         return f"{self.kind}: {self.subject or self.message_id}"
+
+
+class Outreach(models.Model):
+    class Kind(models.TextChoices):
+        POSTING = "posting"
+        SIGNAL = "signal"
+
+    class Status(models.TextChoices):
+        DRAFT = "draft"
+        SENT = "sent"
+        REPLIED = "replied"
+        SKIPPED = "skipped"
+
+    kind = models.CharField(max_length=16, choices=Kind.choices)
+    vacancy = models.OneToOneField(
+        Vacancy, null=True, blank=True, on_delete=models.SET_NULL, related_name="outreach"
+    )
+    employer = models.CharField(max_length=255)
+    role = models.CharField(max_length=255, blank=True)
+    signal = models.TextField(blank=True)
+    signal_url = models.URLField(max_length=2048, blank=True)
+    contact_name = models.CharField(max_length=255, blank=True)
+    contact_title = models.CharField(max_length=255, blank=True)
+    contact_url = models.URLField(max_length=2048, blank=True)
+    contact_quote = models.TextField(blank=True)
+    message = models.TextField(blank=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
+    note = models.TextField(blank=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "hunter_outreach"
+        ordering = ("-created_at", "-id")
+
+    def __str__(self):
+        return f"{self.kind}: {self.employer} ({self.status})"

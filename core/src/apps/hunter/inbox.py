@@ -69,7 +69,8 @@ def write_choice(name: str, value, choices: tuple) -> str:
 
 def read_choice(name: str, choices: tuple, default: str) -> str:
     try:
-        value = json.loads(choice_path(name).read_text()).get("value")
+        stored = json.loads(choice_path(name).read_text())
+        value = stored.get("value", stored.get("size"))
     except (OSError, ValueError, AttributeError):
         return default
     return value if value in choices else default
@@ -91,10 +92,14 @@ def read_apply_scope() -> str:
     return read_choice("scope", APPLY_SCOPES, DEFAULT_SCOPE)
 
 
-def min_score() -> int:
+def scope_score() -> int:
     scope = read_apply_scope()
     if scope == "all":
         return 0
     if scope == "broad":
         return min(settings.HUNTER_BROAD_MIN_SCORE, settings.HUNTER_MIN_SCORE)
     return settings.HUNTER_MIN_SCORE
+
+
+def min_score() -> int:
+    return max(scope_score(), settings.HUNTER_HARD_MIN_SCORE)

@@ -13,22 +13,25 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 from playwright.sync_api import Error as PlaywrightError
 
-from agent import cv_reviewer, llm, mimo
+from agent import cover_letter, cv_reviewer, llm, mimo, style
 from apps.cvs.models import Cv
 from apps.hunter import (
     browser,
     captcha,
     evidence,
+    funnel,
     inbox,
     mail,
     navigator,
     notify,
+    outreach,
+    posting,
     review,
     service,
     state,
 )
 from apps.hunter.management.commands import agent_desk, hunt
-from apps.hunter.models import MailMessage, ResumeLink, Vacancy
+from apps.hunter.models import MailMessage, Outreach, ResumeLink, Vacancy
 from apps.hunter.service import RunSummary, letter_language
 from apps.hunter.sources import (
     ADAPTERS,
@@ -805,7 +808,9 @@ class DsmlAdapterTests(SimpleTestCase):
         self.assertEqual(dsml.confirmation("Please add an email or Telegram"), "")
 
 
-@override_settings(MIMO_API_KEY="key", HUNTER_MIN_SCORE=75, HUNTER_BROAD_MIN_SCORE=60)
+@override_settings(
+    MIMO_API_KEY="key", HUNTER_MIN_SCORE=75, HUNTER_BROAD_MIN_SCORE=60, HUNTER_HARD_MIN_SCORE=0
+)
 class ApplyScopeTests(LinkedCvCase):
     def setUp(self):
         super().setUp()
@@ -3525,3 +3530,304 @@ class EmailCodeTests(LinkedCvCase):
         }
         self.assertEqual(self.read(messages)[0], "aBCDeFG4")
         self.assertEqual(self.read(messages, employer="Unknown Co")[0], "OTHERco1")
+
+
+def linkedin_text(place: str, body: str = "", age: str = "2 hours ago") -> str:
+    return f"Backend Engineer\nAcme\nAcme Backend Engineer {place} · {age} · 9 applicants\n{body}"
+
+
+def remote_job(source="linkedin", text="", external_id="1", **fields) -> Vacancy:
+    return Vacancy(
+        source=source,
+        external_id=external_id,
+        url=f"https://example.com/{external_id}",
+        title="Backend Engineer",
+        employer="Acme",
+        text=text,
+        **fields,
+    )
+
+
+@override_settings(HUNTER_LOCATION_GATE=True)
+class LocationGateTests(SimpleTestCase):
+    def test_a_linkedin_job_in_one_country_is_locked(self):
+        reason = posting.lock(remote_job(text=linkedin_text("United States")))
+        self.assertEqual(reason, "the job is limited to United States")
+
+    def test_open_places_and_hiring_from_anywhere_pass(self):
+        self.assertEqual(posting.lock(remote_job(text=linkedin_text("Kazakhstan"))), "")
+        self.assertEqual(posting.lock(remote_job(text=linkedin_text("EMEA"))), "")
+        anywhere = linkedin_text("Germany", "Fully remote: work from anywhere.")
+        self.assertEqual(posting.lock(remote_job(text=anywhere)), "")
+
+    def test_anywhere_inside_one_country_and_customers_worldwide_stay_locked(self):
+        for body in (
+            "Fully remote: work from anywhere in the United States.",
+            "We serve customers worldwide.",
+        ):
+            with self.subTest(body=body):
+                self.assertTrue(posting.lock(remote_job(text=linkedin_text("United States", body))))
+
+    def test_an_ats_location_line_and_explicit_text_rules_are_read(self):
+        locked = remote_job("ats", "Backend\nLocation: Remote - US Only\n\nWe build tools.")
+        self.assertIn("Remote - US Only", posting.lock(locked))
+        plain = remote_job("ats", "Backend\nLocation: Remote\n\nYou must be located in Canada.")
+        self.assertIn("must be located in", posting.lock(plain))
+        eor = remote_job("ats", "Backend\nLocation: Remote\n\nMust be based in Canada or via EOR.")
+        self.assertEqual(posting.lock(eor), "")
+
+    def test_hh_jobs_and_a_disabled_gate_are_never_locked(self):
+        self.assertEqual(posting.lock(remote_job("hh", "Only US citizens")), "")
+        with override_settings(HUNTER_LOCATION_GATE=False):
+            self.assertEqual(posting.lock(remote_job(text=linkedin_text("United States"))), "")
+
+    def test_posting_dates_come_from_linkedin_age_or_a_posted_line(self):
+        now = timezone.now()
+        job = remote_job(text=linkedin_text("Kazakhstan", age="3 hours ago"))
+        self.assertEqual(posting.posted_at(job, now), now - timedelta(hours=3))
+        ats_job = remote_job("ats", "Backend\nPosted: 2026-11-01T10:00:00Z\n")
+        self.assertEqual(posting.posted_at(ats_job), datetime(2026, 11, 1, 10, tzinfo=UTC))
+        self.assertIsNone(posting.posted_at(remote_job("hh", "text")))
+        self.assertEqual(posting.posted_line(1793534400000), "Posted: 2026-11-01T12:00:00+00:00")
+        self.assertEqual(posting.posted_line("yesterday"), "")
+
+
+@override_settings(MIMO_API_KEY="key", HUNTER_LOCATION_GATE=True)
+class FitGateTests(LinkedCvCase):
+    def setUp(self):
+        super().setUp()
+        self.directory = tempfile.TemporaryDirectory()
+        self.data = override_settings(DATA_DIR=Path(self.directory.name))
+        self.data.enable()
+
+    def tearDown(self):
+        self.data.disable()
+        self.directory.cleanup()
+
+    @override_settings(HUNTER_MIN_SCORE=75, HUNTER_BROAD_MIN_SCORE=50, HUNTER_HARD_MIN_SCORE=70)
+    def test_the_hard_floor_holds_under_every_scope(self):
+        for scope, threshold in (("broad", 70), ("all", 70), ("relevant", 75)):
+            inbox.write_apply_scope(scope)
+            self.assertEqual(inbox.min_score(), threshold)
+
+    def test_a_letter_size_saved_in_the_old_format_is_read(self):
+        Path(self.directory.name, "hunter-inbox").mkdir(parents=True, exist_ok=True)
+        inbox.choice_path("letter").write_text(json.dumps({"size": "very_short"}))
+        self.assertEqual(inbox.read_letter_size(), "very_short")
+
+    def test_locked_jobs_are_skipped_before_scoring(self):
+        locked = remote_job(text=linkedin_text("United States"), external_id="41")
+        locked.status = Vacancy.Status.BELOW_THRESHOLD
+        locked.save()
+        open_job = remote_job(text=linkedin_text("Kazakhstan"), external_id="42")
+        open_job.status = Vacancy.Status.BELOW_THRESHOLD
+        open_job.save()
+        ranked = {str(open_job.id): (self.cv, 88, "Fits.")}
+        with patch("apps.hunter.service.rank_jobs", return_value=ranked) as rank:
+            service.score_vacancies([locked, open_job], [self.link])
+        locked.refresh_from_db()
+        open_job.refresh_from_db()
+        self.assertEqual(len(rank.call_args.args[0]), 1)
+        self.assertEqual(locked.status, Vacancy.Status.SKIPPED)
+        self.assertTrue(locked.note.startswith("Location-locked: the job is limited to"))
+        self.assertEqual(open_job.status, Vacancy.Status.READY)
+
+    def test_the_apply_queue_skips_a_locked_job_already_marked_ready(self):
+        job = remote_job(text=linkedin_text("United States"), external_id="43")
+        job.status = Vacancy.Status.READY
+        self.assertTrue(service.skip_reason(job).startswith("Location-locked"))
+
+    def test_ai_trainer_titles_are_not_engineering_roles(self):
+        job = remote_job(external_id="44")
+        job.title = "Software Engineering AI Trainer (UK)"
+        self.assertIn("ai trainer", service.skip_reason(job))
+
+    def test_the_scorer_is_told_locked_roles_are_a_mismatch(self):
+        with override_settings(HUNTER_FACTS="Works from Kazakhstan.", HUNTER_STACK=""):
+            text = service.scoring_preferences()
+        self.assertIn("major mismatch, unless the posting also takes contractors", text)
+        self.assertNotIn("do not lower the score", text)
+
+
+class StyleTests(SimpleTestCase):
+    def test_stock_phrases_dashes_and_length_are_flagged(self):
+        found = style.tells("I am excited to join — truly a perfect fit.", max_words=5)
+        self.assertEqual(len(found), 4)
+        self.assertEqual(style.tells("Built the billing API at Kaspi."), [])
+
+    def test_numbers_must_come_from_a_source(self):
+        self.assertEqual(
+            style.unsupported_numbers("Cut latency 40% for 3 teams", "40% faster"), ["3"]
+        )
+
+    def test_a_letter_with_tells_is_rewritten_once(self):
+        with patch(
+            "agent.cover_letter.llm.complete",
+            side_effect=["I am excited to apply.", "I built the payments API."],
+        ) as complete:
+            letter = cover_letter.generate("Built payments API", "Backend role", "Sam")
+        self.assertEqual(letter, "I built the payments API.")
+        self.assertIn('stock phrase "i am excited"', complete.call_args.args[2])
+
+
+@override_settings(TAVILY_API_KEY="key", MIMO_API_KEY="key", HUNTER_LOCATION_GATE=True)
+class OutreachTests(LinkedCvCase):
+    RESULTS = (
+        {
+            "title": "Dana Lee - Engineering Manager - Acme | LinkedIn",
+            "url": "https://www.linkedin.com/in/dana",
+            "content": "Dana Lee. Engineering Manager at Acme, payments platform.",
+        },
+    )
+
+    def job(self, external_id="51", place="Kazakhstan", employer="Acme", score=85):
+        job = remote_job(text=linkedin_text(place, "Build payment APIs."), external_id=external_id)
+        job.employer = employer
+        job.cv = self.cv
+        job.match_score = score
+        job.status = Vacancy.Status.APPLIED
+        job.save()
+        return job
+
+    def test_a_contact_must_appear_in_the_result_it_cites(self):
+        good = {
+            "name": "Dana Lee",
+            "url": self.RESULTS[0]["url"],
+            "quote": "Engineering Manager at Acme",
+        }
+        self.assertIsNotNone(outreach.grounded(good, list(self.RESULTS), "name"))
+        made_up = {**good, "name": "Chris Park"}
+        self.assertIsNone(outreach.grounded(made_up, list(self.RESULTS), "name"))
+        wrong_url = {**good, "url": "https://example.com"}
+        self.assertIsNone(outreach.grounded(wrong_url, list(self.RESULTS), "name"))
+
+    def test_a_high_fit_open_job_gets_a_draft_that_is_never_sent(self):
+        job = self.job()
+        self.cv.raw_text = "Built payment APIs in Go."
+        self.cv.save()
+        contact = {
+            "name": "Dana Lee",
+            "title": "Engineering Manager",
+            "url": self.RESULTS[0]["url"],
+            "quote": "Engineering Manager at Acme",
+        }
+        message = "Hi Dana, I saw Acme builds payment APIs. I built payment APIs in Go. Open to a 15-minute call? Sam"
+        with (
+            patch("apps.hunter.outreach.tavily", return_value=list(self.RESULTS)),
+            patch("apps.hunter.outreach.llm.complete", side_effect=[json.dumps(contact), message]),
+            patch("apps.hunter.outreach.notify.send_desktop") as desktop,
+        ):
+            made = outreach.draft_due(lambda line: None)
+        self.assertEqual(len(made), 1)
+        item = Outreach.objects.get(vacancy=job)
+        self.assertEqual(
+            (item.status, item.contact_name, item.message), ("draft", "Dana Lee", message)
+        )
+        self.assertEqual(item.note, "")
+        self.assertIsNone(item.sent_at)
+        desktop.assert_called_once()
+
+    def test_no_grounded_contact_records_a_skip_so_credits_are_not_spent_again(self):
+        job = self.job()
+        made_up = {"name": "Chris Park", "url": self.RESULTS[0]["url"], "quote": "Acme"}
+        with (
+            patch("apps.hunter.outreach.tavily", return_value=list(self.RESULTS)),
+            patch("apps.hunter.outreach.llm.complete", return_value=json.dumps(made_up)),
+        ):
+            outreach.draft_due(lambda line: None)
+        self.assertEqual(Outreach.objects.get(vacancy=job).status, Outreach.Status.SKIPPED)
+        self.assertEqual(outreach.posting_candidates(5), [])
+
+    def test_locked_low_fit_and_already_contacted_employers_are_left_out(self):
+        self.job("52", place="United States", employer="Locked Co")
+        self.job("53", score=70, employer="Low Co")
+        self.job("54", employer="Seen Co")
+        Outreach.objects.create(kind=Outreach.Kind.SIGNAL, employer="Seen Co")
+        wanted = self.job("55", employer="Good Co")
+        self.assertEqual(outreach.posting_candidates(5), [wanted])
+
+    @override_settings(TAVILY_API_KEY="", TAVILY_BACKUP_API_KEY="")
+    def test_nothing_runs_without_a_search_key(self):
+        self.job()
+        with patch("apps.hunter.outreach.tavily") as search:
+            self.assertEqual(outreach.draft_due(lambda line: None), [])
+        search.assert_not_called()
+
+    def test_a_signal_draft_needs_a_quoted_news_result(self):
+        news = [
+            {
+                "title": "Acme raises $20M",
+                "url": "https://news.example/acme",
+                "content": "Acme raised $20M to grow its engineering team.",
+            }
+        ]
+        signal = {
+            "signal": "Acme raised $20M to grow engineering.",
+            "url": news[0]["url"],
+            "quote": "raised $20M to grow its engineering team",
+        }
+        with (
+            patch("apps.hunter.outreach.tavily", return_value=news),
+            patch("apps.hunter.outreach.llm.complete", return_value=json.dumps(signal)),
+        ):
+            self.assertEqual(outreach.find_signal("Acme")["signal_url"], news[0]["url"])
+        with (
+            patch("apps.hunter.outreach.tavily", return_value=news),
+            patch(
+                "apps.hunter.outreach.llm.complete",
+                return_value=json.dumps({**signal, "quote": "tripled revenue"}),
+            ),
+        ):
+            self.assertEqual(outreach.find_signal("Acme"), {})
+
+
+class FunnelTests(LinkedCvCase):
+    def test_human_replies_count_once_per_job_and_skip_trainer_platforms(self):
+        now = timezone.now()
+        real = self.vacancy("61", status=Vacancy.Status.APPLIED)
+        trainer = self.vacancy("62", status=Vacancy.Status.APPLIED)
+        Vacancy.objects.filter(pk=real.pk).update(applied_at=now, employer="Kaspi")
+        Vacancy.objects.filter(pk=trainer.pk).update(applied_at=now, employer="Anyone AI")
+        for uid, (vacancy, kind) in enumerate(
+            (
+                (real, "recruiter"),
+                (real, "interview"),
+                (trainer, "interview"),
+                (trainer, "rejection"),
+            )
+        ):
+            MailMessage.objects.create(
+                account="a", uidvalidity=1, uid=uid, kind=kind, vacancy=vacancy, received_at=now
+            )
+        rows = funnel.weekly(1)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["sent"], rows[0]["human"], rows[0]["rejected"]), (2, 1, 1))
+        self.assertEqual(rows[0]["rate"], 50.0)
+
+
+class TavilyKeyTests(SimpleTestCase):
+    def failure(self, code):
+        return ats.urllib.error.HTTPError(ats.TAVILY_URL, code, "limit", {}, None)
+
+    @override_settings(TAVILY_API_KEY="main", TAVILY_BACKUP_API_KEY="spare")
+    def test_a_used_up_key_falls_back_to_the_backup(self):
+        with patch(
+            "apps.hunter.sources.ats.get_json", side_effect=[self.failure(432), {"results": [1]}]
+        ) as call:
+            self.assertEqual(ats.tavily({"query": "q"}), {"results": [1]})
+        self.assertEqual(call.call_args.args[2], {"Authorization": "Bearer spare"})
+
+    @override_settings(TAVILY_API_KEY="main", TAVILY_BACKUP_API_KEY="spare")
+    def test_other_errors_do_not_switch_keys(self):
+        with (
+            patch("apps.hunter.sources.ats.get_json", side_effect=self.failure(500)) as call,
+            self.assertRaises(ats.urllib.error.HTTPError),
+        ):
+            ats.tavily({"query": "q"})
+        self.assertEqual(call.call_count, 1)
+
+    def test_a_worldwide_search_asks_for_open_roles(self):
+        self.assertIn("work from anywhere", ats.search_place("Worldwide"))
+        self.assertEqual(
+            ats.search_terms("https://jobs.lever.co/?q=Backend&where=Worldwide")[2], "Worldwide"
+        )

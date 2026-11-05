@@ -55,6 +55,9 @@ uv run python manage.py mail_login ADDR                           # Gmail API si
 uv run python manage.py mail_relink [--titles] [--days 30]        # link unlinked job email to sent jobs
 uv run python manage.py hh_resumes [--link CV_ID=HASH]         # list/link hh résumés
 uv run python manage.py hunter_targets [--limit 20] [--days 30] # best employers to ask for referrals
+uv run python manage.py outreach draft|signals|list|show ID|mark ID sent|replied|skipped  # drafts only, never sends
+uv run python manage.py hunter_funnel [--weeks 8]              # weekly human-reply rate per site
+uv run python manage.py style_check [--limit 30] [--no-model]  # blind recruiter read of recent letters
 uv run python manage.py hunter_cv --vacancy ID [--source CV_ID] # flagship CV + adversarial review, no send
 uv run python manage.py hunt [--apply] [--headed] [--loop MIN] # hh.kz agent (dry run by default)
 uv run python manage.py hunt --vacancy ID [--rehearse]         # send one row (or rehearse: never submits)
@@ -416,6 +419,15 @@ which splices them into the in-memory plan so a second Fill click doesn't repeat
   bind-mounted `data/hunter`. Its rows use `uidvalidity` 1 and the Gmail id masked to 63 bits,
   since a 64-bit id does not fit SQLite's integer; Takeout rows are adopted by Message-ID as
   with IMAP. This is the official API the user set up, not the browser route they declined.
+- **Location decides most outcomes, and outreach never sends.** `posting.lock` skips a LinkedIn,
+  ATS or Indeed job whose own location field (LinkedIn header, ATS `Location:` line) or text
+  limits it to a country outside `HUNTER_OPEN_LOCATIONS`, before scoring and again before a send;
+  body-text rescue phrases must be about hiring ("work from anywhere", EOR, B2B), never a bare
+  "worldwide", which matches company blurbs. `HUNTER_HARD_MIN_SCORE` is a floor under every apply
+  scope. `outreach.py` only drafts: a contact counts only when the cited Tavily result contains
+  both the name and the quote, and every number in a draft must appear in the CV or the posting
+  (`agent/style.py`). Do not add a send path; LinkedIn messaging stays manual and Gmail stays
+  `gmail.readonly`.
 - **Sites run in priority order, two at a time.** `site_groups` sorts by `HUNTER_SITE_PRIORITY`
   (`ats,dsml,indeed,linkedin,hh`) and an unattended run hands the groups to a
   `HUNTER_PARALLEL_SITES`-wide thread pool (manual `--vacancy`/`--headed`/`--rehearse` runs stay

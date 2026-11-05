@@ -11,7 +11,7 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.db import connection
-from django.db.models import Case, IntegerField, Q, When
+from django.db.models import Case, F, IntegerField, Q, When
 from django.utils import timezone
 from playwright.sync_api import Error as PlaywrightError
 
@@ -22,7 +22,7 @@ from apps.cvs.models import Cv
 from apps.opportunities.service import rank_jobs
 from apps.opportunities.telegraph import TelegraphPage
 
-from . import captcha, evidence, inbox, mail, review
+from . import captcha, evidence, inbox, mail, outreach, posting, review
 from .browser import open_browser
 from .models import MailMessage, ResumeLink, Vacancy
 from .navigator import CONFIRMED_RE, PAGE_TEXT_JS, REHEARSED, Navigator, host_of
@@ -178,6 +178,9 @@ def skip_reason(vacancy: Vacancy) -> str:
     phrase = skipped_title(vacancy)
     if phrase:
         return f'The title "{vacancy.title}" is not an engineering role ({phrase}).'
+    locked = posting.lock(vacancy)
+    if locked:
+        return posting.lock_note(locked)
     rejection = recent_rejection(vacancy)
     if rejection:
         return (
@@ -404,9 +407,10 @@ def scoring_preferences() -> str:
         "Roles that are not hands-on software engineering (project, product, program or delivery "
         "management, scrum master, business analyst, no-code or low-code building, manual QA, "
         "support, AI data labelling or training) are a major mismatch, and so are roles built "
-        f"mainly around {', '.join(settings.HUNTER_EXCLUDED_SKILLS) or 'nothing'}. The "
-        "candidate applies to remote roles even when they are limited to US or EU residents; do "
-        "not lower the score for that. Roles open worldwide, anywhere, "
+        f"mainly around {', '.join(settings.HUNTER_EXCLUDED_SKILLS) or 'nothing'}. A remote "
+        "role limited to residents of, or people authorized to work in, a country where the "
+        "candidate cannot work is a major mismatch, unless the posting also takes contractors, "
+        "B2B or employer-of-record hires from other countries. Roles open worldwide, anywhere, "
         "or to contractors and employer-of-record hires in any country fit the candidate's "
         "location best; score them higher. A posting that requires at least 2 more years of "
         "experience than the candidate's stated years for its main language or skill is a major "
@@ -418,6 +422,17 @@ def score_vacancies(vacancies: list[Vacancy], links: list[ResumeLink]) -> None:
     cvs = list({link.cv_id: link.cv for link in links}.values())
     resume_for = {(link.source, link.cv_id): link.resume_id for link in links}
     threshold = inbox.min_score()
+    open_jobs = []
+    for vacancy in vacancies:
+        locked = posting.lock(vacancy)
+        if not locked:
+            open_jobs.append(vacancy)
+            continue
+        vacancy.status = Vacancy.Status.SKIPPED
+        vacancy.note = posting.lock_note(locked)
+        vacancy.match_reason = "Not scored: location-locked."
+        vacancy.save()
+    vacancies = open_jobs
     for start in range(0, len(vacancies), SCORE_BATCH):
         batch = vacancies[start : start + SCORE_BATCH]
         try:
@@ -530,6 +545,7 @@ def discover(page, adapter, search_url: str, max_pages: int, log, budget: int) -
             text=details.text,
             status=Vacancy.Status.BELOW_THRESHOLD,
         )
+        vacancy.posted_at = posting.posted_at(vacancy)
         if status.already_applied:
             vacancy.status = Vacancy.Status.APPLIED
             vacancy.note = f"Already applied on {adapter.NAME}."
@@ -617,7 +633,11 @@ def apply_ready(
         default=0,
         output_field=IntegerField(),
     )
-    queue = queue.annotate(retried=retried).defer("text").order_by("retried", "-match_score", "id")
+    queue = (
+        queue.annotate(retried=retried, band=F("match_score") / 10)
+        .defer("text")
+        .order_by("retried", "-band", F("posted_at").desc(nulls_last=True), "-match_score", "id")
+    )
     attempted = False
     misses = 0
     tried = 0
@@ -1037,6 +1057,8 @@ def run_once(
             raise failure
     if unattended and not STOPPING.is_set():
         retry_paused(groups, links, limit, max_pages, log, summary, errors)
+    if unattended and not STOPPING.is_set():
+        outreach.draft_due(log)
     if errors:
         raise RuntimeError(
             "; ".join(

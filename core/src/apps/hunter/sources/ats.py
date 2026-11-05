@@ -14,6 +14,7 @@ from xml.etree import ElementTree
 from django.conf import settings
 from django.utils import timezone
 
+from ..posting import posted_line
 from .base import Listing, ResponseStatus, VacancyPage
 
 SITE = "ats"
@@ -31,6 +32,7 @@ MAX_SENDS_PER_RUN = 0
 TRY_LATER = ()
 NAVIGABLE = ()
 TAVILY_URL = "https://api.tavily.com/search"
+TAVILY_SWITCH_CODES = (401, 429, 432, 433)
 SEARCH_RESULTS = 20
 CACHE_SECONDS = 600
 MAX_BOARDS = 300
@@ -288,22 +290,37 @@ def cached(key: str, load):
 def search_place(where: str) -> str:
     if where.lower() == "remote":
         return "(Remote OR Worldwide OR Anywhere)"
+    if where.lower() == "worldwide":
+        return '(Worldwide OR "work from anywhere" OR "any country" OR "remote anywhere")'
     return where
 
 
+def tavily_keys() -> list[str]:
+    return [key for key in (settings.TAVILY_API_KEY, settings.TAVILY_BACKUP_API_KEY) if key]
+
+
+def tavily(body: dict) -> dict:
+    keys = tavily_keys()
+    if not keys:
+        raise ValueError("TAVILY_API_KEY is not set, so the web search cannot run.")
+    for index, key in enumerate(keys):
+        try:
+            return get_json(TAVILY_URL, body, {"Authorization": f"Bearer {key}"}) or {}
+        except urllib.error.HTTPError as error:
+            if error.code not in TAVILY_SWITCH_CODES or index == len(keys) - 1:
+                raise
+    return {}
+
+
 def search(board: str, title: str, where: str) -> list[dict]:
-    if not settings.TAVILY_API_KEY:
-        raise ValueError("TAVILY_API_KEY is not set, so the job-board search cannot run.")
-    payload = get_json(
-        TAVILY_URL,
+    payload = tavily(
         {
             "query": f'"{title}" {search_place(where)}'.strip(),
             "include_domains": SEARCH_DOMAINS[board],
             "max_results": SEARCH_RESULTS,
-        },
-        {"Authorization": f"Bearer {settings.TAVILY_API_KEY}"},
+        }
     )
-    return list((payload or {}).get("results") or [])
+    return list(payload.get("results") or [])
 
 
 def hit_names(board: str, text: str, slug: str) -> tuple[str, str]:
@@ -506,7 +523,7 @@ def crawl(page, search_url: str, max_pages: int) -> list[Listing]:
         newest = sorted(state["boards"].items(), key=lambda item: item[1].get("seen", ""))
         state["boards"] = dict(newest[-MAX_BOARDS:])
         write_state(state)
-    wants_remote = where.lower() == "remote"
+    wants_remote = where.lower() in ("remote", "worldwide")
     for key, info in state["boards"].items():
         kind, slug = key.split(":", 1)
         if kind != board:
@@ -565,6 +582,7 @@ def workable_posting(slug: str, job_id: str) -> dict | None:
         job["title"],
         f"Location: {place_name(job.get('location'))}",
         f"Workplace: {job.get('workplace') or ('remote' if job.get('remote') else '')}",
+        posted_line(job.get("published")),
         "",
         strip_html(job.get("description") or ""),
         "",
@@ -584,6 +602,7 @@ def recruitee_posting(slug: str, job_id: str) -> dict | None:
         f"Company: {offer.get('company_name') or ''}",
         f"Location: {offer.get('location') or ''}",
         f"Remote: {'yes' if offer.get('remote') else 'no'}",
+        posted_line(offer.get("published_at")),
         "",
         strip_html(offer.get("description") or ""),
         "",
@@ -642,6 +661,7 @@ def smartrecruiters_posting(slug: str, job_id: str) -> dict | None:
         f"Company: {employer_of('smartrecruiters', job)}",
         f"Location: {location.get('fullLocation') or place_name(location)}",
         f"Remote: {'yes' if location.get('remote') else 'no'}",
+        posted_line(job.get("releasedDate")),
     ]
     for section in ((job.get("jobAd") or {}).get("sections") or {}).values():
         lines += ["", section.get("title") or "", strip_html(section.get("text") or "")]
@@ -695,6 +715,7 @@ def load_posting(board: str, slug: str, job_id: str) -> dict | None:
             f"Location: {job.get('location') or ''}",
             f"Workplace: {job.get('workplaceType') or ('Remote' if job.get('isRemote') else '')}",
             f"Employment: {job.get('employmentType') or ''}",
+            posted_line(job.get("publishedAt")),
             "",
             job.get("descriptionPlain") or strip_html(job.get("descriptionHtml") or ""),
         ]
@@ -713,6 +734,7 @@ def load_posting(board: str, slug: str, job_id: str) -> dict | None:
             job.get("title") or "",
             f"Company: {job.get('company_name') or ''}",
             f"Location: {location}",
+            posted_line(job.get("first_published") or job.get("updated_at")),
             "",
             strip_html(job.get("content") or ""),
         ]
@@ -731,6 +753,7 @@ def load_posting(board: str, slug: str, job_id: str) -> dict | None:
         f"Location: {categories.get('location') or ''}",
         f"Workplace: {job.get('workplaceType') or ''}",
         f"Commitment: {categories.get('commitment') or ''}",
+        posted_line(job.get("createdAt")),
         "",
         job.get("descriptionPlain") or "",
     ]

@@ -137,6 +137,7 @@ if "test" in sys.argv[1:3]:
     LLM_PROVIDER_BY_TASK = []
     ANTHROPIC_API_KEY = ""
 TAVILY_API_KEY = config("TAVILY_API_KEY", default="")
+TAVILY_BACKUP_API_KEY = config("TAVILY_BACKUP_API_KEY", default="")
 TELEGRAM_API_ID = config("TELEGRAM_API_ID", default=0, cast=int)
 TELEGRAM_API_HASH = config("TELEGRAM_API_HASH", default="")
 TELEGRAM_CHANNEL_TITLE = config(
@@ -147,6 +148,22 @@ JOB_SOURCE_URLS = config("JOB_SOURCE_URLS", default="", cast=Csv())
 HUNTER_HEADLESS = config("HUNTER_HEADLESS", default="virtual")
 HUNTER_MIN_SCORE = config("HUNTER_MIN_SCORE", default=75, cast=int)
 HUNTER_BROAD_MIN_SCORE = config("HUNTER_BROAD_MIN_SCORE", default=50, cast=int)
+HUNTER_HARD_MIN_SCORE = config("HUNTER_HARD_MIN_SCORE", default=70, cast=int)
+HUNTER_LOCATION_GATE = config("HUNTER_LOCATION_GATE", default=True, cast=bool)
+HUNTER_OPEN_LOCATIONS = config(
+    "HUNTER_OPEN_LOCATIONS",
+    default="Kazakhstan,Almaty,Astana,Central Asia,CIS,Worldwide,Anywhere,Global,International,"
+    "EMEA,APAC,Asia",
+    cast=Csv(),
+)
+HUNTER_ELIGIBILITY = config(
+    "HUNTER_ELIGIBILITY", default="the candidate cannot be hired in that location."
+)
+HUNTER_OUTREACH_MIN_SCORE = config("HUNTER_OUTREACH_MIN_SCORE", default=80, cast=int)
+HUNTER_OUTREACH_PER_DAY = config("HUNTER_OUTREACH_PER_DAY", default=3, cast=int)
+HUNTER_OUTREACH_DAYS = config("HUNTER_OUTREACH_DAYS", default=14, cast=int)
+HUNTER_OUTREACH_TARGETS = config("HUNTER_OUTREACH_TARGETS", default="", cast=Csv())
+HUNTER_FRESH_HOURS = config("HUNTER_FRESH_HOURS", default=24, cast=int)
 HUNTER_MAX_APPLIES_PER_RUN = config("HUNTER_MAX_APPLIES_PER_RUN", default=10, cast=int)
 HUNTER_MAX_NEW_PER_RUN = config("HUNTER_MAX_NEW_PER_RUN", default=40, cast=int)
 HUNTER_MAX_APPLIES_PER_DAY = config("HUNTER_MAX_APPLIES_PER_DAY", default=50, cast=int)
@@ -158,7 +175,8 @@ HUNTER_SKIP_EMPLOYERS = config(
     "HUNTER_SKIP_EMPLOYERS",
     default=(
         "Jobgether,Lensa,JobLeads,micro1,Prolific,RemoteHunter,Turing,Jobot,TalentHop,"
-        "Torentify,TaskVerse,Wiraa,Ladders,The Ai Training Company"
+        "Torentify,TaskVerse,Wiraa,Ladders,The Ai Training Company,Anyone AI,Outlier,"
+        "DataAnnotation"
     ),
     cast=Csv(),
 )
@@ -169,7 +187,8 @@ HUNTER_SKIP_TITLES = config(
     "HUNTER_SKIP_TITLES",
     default=(
         "no-code,low-code,no code,low code,nocode,lowcode,project manager,product manager,"
-        "program manager,delivery manager,scrum master,product owner,business analyst"
+        "program manager,delivery manager,scrum master,product owner,business analyst,"
+        "ai trainer,ai tutor,data annotation,annotator,rlhf,expert network"
     ),
     cast=Csv(),
 )
