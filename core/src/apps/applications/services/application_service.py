@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 
 from django.conf import settings
 
-from agent import analyzer, cover_letter, question_answer
+from agent import analyzer, cover_letter, llm, question_answer
 from agent.eeo_mapper import resolve_eeo_fields
 from agent.field_mapper import build_fill_plan, is_cover_letter_field
 from agent.llm_mapper import augment_skipped_fields
@@ -29,7 +29,7 @@ class NoCvOnApplicationError(Exception):
     pass
 
 
-class MimoNotConfiguredError(Exception):
+class LlmNotConfiguredError(Exception):
     pass
 
 
@@ -156,7 +156,7 @@ class ApplicationService:
             return field_mapping
 
         text = None
-        if settings.MIMO_API_KEY and size != cover_letter.OFF:
+        if llm.ready("letter") and size != cover_letter.OFF:
             try:
                 text = cover_letter.generate(
                     cv.raw_text, page_text, cv.full_name, about_text, size=size
@@ -224,8 +224,8 @@ class ApplicationService:
         if cv is None:
             raise NoCvOnApplicationError
 
-        if not settings.MIMO_API_KEY:
-            raise MimoNotConfiguredError
+        if not llm.ready("letter"):
+            raise LlmNotConfiguredError
 
         text = cover_letter.generate(cv.raw_text, page_text, cv.full_name, about_text, size=size)
 
@@ -249,8 +249,8 @@ class ApplicationService:
         if cv is None:
             raise NoCvOnApplicationError
 
-        if not settings.MIMO_API_KEY:
-            raise MimoNotConfiguredError
+        if not (llm.ready("analysis") and llm.ready("queries")):
+            raise LlmNotConfiguredError
         if not settings.TAVILY_API_KEY:
             raise SearchNotConfiguredError
 
@@ -265,8 +265,8 @@ class ApplicationService:
         if cv is None:
             raise NoCvOnApplicationError
 
-        if not settings.MIMO_API_KEY:
-            raise MimoNotConfiguredError
+        if not llm.ready("answer"):
+            raise LlmNotConfiguredError
 
         text = question_answer.generate(cv.raw_text, question, page_text)
         return {"text": text}

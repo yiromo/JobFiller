@@ -2,10 +2,8 @@ import io
 import logging
 
 import docx
-from django.conf import settings
-from openai import OpenAI
 
-from agent import mimo
+from agent import llm
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +46,6 @@ def generate(
     size: str = DEFAULT_SIZE,
     max_chars: int = 0,
 ) -> str:
-    client = OpenAI(api_key=settings.MIMO_API_KEY, base_url=settings.MIMO_BASE_URL)
     about_block = (
         f'\n\nAbout the company/role (from the posting\'s "About" section):\n{about_text[:2000]}'
         if about_text
@@ -60,25 +57,13 @@ def generate(
         f"Job posting text:\n{(page_text or '')[:8000]}"
         f"{about_block}"
     )
-    response = mimo.chat(
-        client,
-        model=settings.MIMO_MODEL,
-        messages=[
-            {
-                "role": "system",
-                "content": system_prompt(size, max_chars)
-                + (
-                    f"\nWrite the whole letter in {language}, including the greeting, "
-                    'which replaces "Dear Hiring Team,".'
-                    if language
-                    else ""
-                ),
-            },
-            {"role": "user", "content": user_content},
-        ],
-        timeout=45,
+    system = system_prompt(size, max_chars) + (
+        f"\nWrite the whole letter in {language}, including the greeting, "
+        'which replaces "Dear Hiring Team,".'
+        if language
+        else ""
     )
-    return response.choices[0].message.content.strip()
+    return llm.complete("letter", system, user_content, timeout=60)
 
 
 def system_prompt(size: str, max_chars: int = 0) -> str:

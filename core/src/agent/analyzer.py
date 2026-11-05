@@ -3,7 +3,8 @@ import logging
 import urllib.request
 
 from django.conf import settings
-from openai import OpenAI
+
+from agent import llm
 
 logger = logging.getLogger(__name__)
 
@@ -76,20 +77,12 @@ def _tavily_search(
 
 
 def _extract_queries(page_text: str, about_text: str) -> dict:
-    client = OpenAI(api_key=settings.MIMO_API_KEY, base_url=settings.MIMO_BASE_URL)
     user_content = json.dumps(
         {"job_posting_text": (page_text or "")[:6000], "about_text": (about_text or "")[:2000]}
     )
-    response = client.chat.completions.create(
-        model=settings.MIMO_MODEL,
-        messages=[
-            {"role": "system", "content": _EXTRACT_SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ],
-        response_format={"type": "json_object"},
-        timeout=45,
+    return json.loads(
+        llm.complete("queries", _EXTRACT_SYSTEM_PROMPT, user_content, json_mode=True, timeout=45)
     )
-    return json.loads(response.choices[0].message.content)
 
 
 def _synthesize(
@@ -101,7 +94,6 @@ def _synthesize(
     company_results: list[dict],
     market_results: list[dict],
 ) -> dict:
-    client = OpenAI(api_key=settings.MIMO_API_KEY, base_url=settings.MIMO_BASE_URL)
     user_content = json.dumps(
         {
             "candidate_name": applicant_name,
@@ -113,17 +105,10 @@ def _synthesize(
             "market_search_results": market_results,
         }
     )
-    response = client.chat.completions.create(
-        model=settings.MIMO_MODEL,
-        messages=[
-            {"role": "system", "content": _SYNTHESIS_SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ],
-        response_format={"type": "json_object"},
-        timeout=60,
+    parsed = json.loads(
+        llm.complete("analysis", _SYNTHESIS_SYSTEM_PROMPT, user_content, json_mode=True, timeout=90)
     )
-    parsed = json.loads(response.choices[0].message.content)
-    logger.warning("MiMo raw analysis: %s", parsed)
+    logger.warning("LLM raw analysis: %s", parsed)
     return {
         "fit_score": int(parsed.get("fit_score") or 0),
         "fit_summary": str(parsed.get("fit_summary") or ""),

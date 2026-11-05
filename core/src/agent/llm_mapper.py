@@ -2,9 +2,7 @@ import json
 import logging
 import re
 
-from django.conf import settings
-from openai import OpenAI
-
+from agent import llm
 from agent.field_mapper import (
     EEO_KEYWORDS,
     PHONE_KEYWORDS,
@@ -102,7 +100,7 @@ def augment_skipped_fields(
     page_text: str,
     screenshot: str = "",
 ) -> list[dict]:
-    if not settings.MIMO_API_KEY:
+    if not llm.ready("fields"):
         return field_mapping
 
     fields_by_ref = {field["ref"]: field for field in form_snapshot}
@@ -121,7 +119,7 @@ def augment_skipped_fields(
     except Exception:
         # A flaky/misconfigured LLM call must degrade to the heuristic's plan,
         # never crash the scan.
-        logger.exception("MiMo field-mapping call failed; leaving fields skipped")
+        logger.exception("LLM field-mapping call failed; leaving fields skipped")
         return field_mapping
 
     return [
@@ -135,7 +133,6 @@ def augment_skipped_fields(
 def _call_llm(
     candidates: list[dict], cv_raw_text: str, page_text: str, screenshot: str = ""
 ) -> list[dict]:
-    client = OpenAI(api_key=settings.MIMO_API_KEY, base_url=settings.MIMO_BASE_URL)
     user_content = json.dumps(
         {
             "cv_text": cv_raw_text[:8000],
@@ -155,26 +152,18 @@ def _call_llm(
             ],
         }
     )
-    user_message = (
-        [
-            {"type": "text", "text": user_content},
-            {"type": "image_url", "image_url": {"url": screenshot}},
-        ]
-        if screenshot
-        else user_content
+    parsed = json.loads(
+        llm.complete(
+            "fields",
+            _SYSTEM_PROMPT,
+            user_content,
+            image=screenshot,
+            json_mode=True,
+            timeout=60,
+        )
     )
-    response = client.chat.completions.create(
-        model=settings.MIMO_VISION_MODEL if screenshot else settings.MIMO_MODEL,
-        messages=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": user_message},
-        ],
-        response_format={"type": "json_object"},
-        timeout=45,
-    )
-    parsed = json.loads(response.choices[0].message.content)
     fields = parsed.get("fields", [])
-    logger.warning("MiMo raw field mapping: %s", fields)
+    logger.warning("LLM raw field mapping: %s", fields)
     return fields
 
 

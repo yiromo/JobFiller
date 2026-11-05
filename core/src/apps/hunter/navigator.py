@@ -10,16 +10,15 @@ from urllib.parse import urlparse
 
 from django.conf import settings
 from django.utils import timezone
-from openai import OpenAI, OpenAIError
 from playwright.sync_api import Error as PlaywrightError
 
-from agent import mimo
+from agent import llm
 from agent.field_mapper import EEO_KEYWORDS
 from agent.llm_mapper import _ATTESTATION_KEYWORDS
 
 from .models import SiteLesson
 
-MODEL_ERRORS = (OpenAIError, ValueError, TypeError, AttributeError, KeyError)
+MODEL_ERRORS = (*llm.ERRORS, ValueError, TypeError, AttributeError, KeyError)
 CHOICE_TAGS = {"label", "option"}
 CHOICE_TYPES = {"radio", "checkbox"}
 CHOICE_ROLES = {"radio", "checkbox", "option", "switch"}
@@ -540,7 +539,6 @@ class Navigator:
         self.log = log
         self.rehearse = rehearse
         self.on_submit = on_submit
-        self.client = OpenAI(api_key=settings.MIMO_API_KEY, base_url=settings.MIMO_BASE_URL)
         self.host = host_of(page.url)
         self.allowed_hosts = set(allowed_hosts or ()) | {self.host}
         self.upload_path = upload_path
@@ -762,27 +760,16 @@ class Navigator:
             "page_text": self.page.evaluate(PAGE_TEXT_JS)[:6000],
             "elements": elements,
         }
-        response = mimo.chat(
-            self.client,
-            model=settings.MIMO_VISION_MODEL,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": json.dumps(context, ensure_ascii=False)},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/jpeg;base64,{screenshot}"},
-                        },
-                    ],
-                },
-            ],
-            response_format={"type": "json_object"},
+        answer = llm.complete(
+            "navigate",
+            SYSTEM_PROMPT,
+            json.dumps(context, ensure_ascii=False),
+            image=f"data:image/jpeg;base64,{screenshot}",
+            json_mode=True,
             timeout=90,
         )
         try:
-            decision = json.loads(response.choices[0].message.content or "{}")
+            decision = json.loads(answer or "{}")
         except json.JSONDecodeError:
             decision = {}
         return decision if isinstance(decision, dict) else {}
@@ -895,28 +882,21 @@ class Navigator:
             for entry in self.trace
         ]
         try:
-            response = mimo.chat(
-                self.client,
-                model=settings.MIMO_MODEL,
-                messages=[
-                    {"role": "system", "content": LESSON_PROMPT},
+            text = llm.complete(
+                "lesson",
+                LESSON_PROMPT,
+                json.dumps(
                     {
-                        "role": "user",
-                        "content": json.dumps(
-                            {
-                                "site": self.host,
-                                "previous_notes": self.lesson.text,
-                                "goal": self.goal.split("\n", 1)[0],
-                                "steps": steps,
-                                "outcome": f"{result.status}: {result.note}",
-                            },
-                            ensure_ascii=False,
-                        ),
+                        "site": self.host,
+                        "previous_notes": self.lesson.text,
+                        "goal": self.goal.split("\n", 1)[0],
+                        "steps": steps,
+                        "outcome": f"{result.status}: {result.note}",
                     },
-                ],
+                    ensure_ascii=False,
+                ),
                 timeout=60,
             )
-            text = (response.choices[0].message.content or "").strip()
             if text:
                 self.lesson.text = text[:2000]
         except MODEL_ERRORS as error:

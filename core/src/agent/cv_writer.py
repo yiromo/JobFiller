@@ -7,10 +7,7 @@ import tempfile
 import unicodedata
 from pathlib import Path
 
-from django.conf import settings
-from openai import OpenAI
-
-from agent import mimo
+from agent import llm
 
 logger = logging.getLogger(__name__)
 
@@ -576,9 +573,10 @@ def _added_skills(skills: dict, cv_raw_text: str, claimed: list[str]) -> list[st
 
 
 def rewrite(cv_raw_text: str, instructions: str, position_text: str = "") -> dict:
-    if not settings.MIMO_API_KEY:
-        raise ToolchainMissing("MIMO_API_KEY is not set in core/.env, so no CV can be written.")
-    client = OpenAI(api_key=settings.MIMO_API_KEY, base_url=settings.MIMO_BASE_URL)
+    if not llm.ready("cv"):
+        raise ToolchainMissing(
+            f"{llm.key_name('cv')} is not set in core/.env, so no CV can be written."
+        )
     user_content = json.dumps(
         {
             "source_cv_text": (cv_raw_text or "")[:12000],
@@ -587,17 +585,11 @@ def rewrite(cv_raw_text: str, instructions: str, position_text: str = "") -> dic
         }
     )
     try:
-        response = mimo.chat(
-            client,
-            model=settings.MIMO_MODEL,
-            messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": user_content},
-            ],
-            response_format={"type": "json_object"},
-            timeout=120,
+        parsed = json.loads(
+            llm.complete(
+                "cv", _SYSTEM_PROMPT, user_content, json_mode=True, timeout=240, deadline=600
+            )
         )
-        parsed = json.loads(response.choices[0].message.content)
     except Exception as exc:
         logger.exception("CV rewrite failed")
         raise CvGenerationError(f"The model could not rewrite the CV: {exc}") from exc

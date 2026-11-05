@@ -1,9 +1,7 @@
 import json
 import logging
 
-from django.conf import settings
-from openai import OpenAI
-
+from agent import llm
 from agent.llm_mapper import validate_override
 
 logger = logging.getLogger(__name__)
@@ -32,13 +30,13 @@ given, in the same order, using the exact "ref" values given."""
 
 
 def resolve_eeo_fields(fields: list[dict], eeo_answers: list[dict]) -> list[dict]:
-    if not settings.MIMO_API_KEY or not fields or not eeo_answers:
+    if not llm.ready("eeo") or not fields or not eeo_answers:
         return [_skip(field["ref"]) for field in fields]
 
     try:
         overrides = {o["ref"]: o for o in _call_llm(fields, eeo_answers)}
     except Exception:
-        logger.exception("MiMo EEO mapping call failed; leaving fields skipped")
+        logger.exception("LLM EEO mapping call failed; leaving fields skipped")
         return [_skip(field["ref"]) for field in fields]
 
     return [
@@ -54,7 +52,6 @@ def _skip(ref: str) -> dict:
 
 
 def _call_llm(fields: list[dict], eeo_answers: list[dict]) -> list[dict]:
-    client = OpenAI(api_key=settings.MIMO_API_KEY, base_url=settings.MIMO_BASE_URL)
     user_content = json.dumps(
         {
             "answers": [
@@ -76,16 +73,9 @@ def _call_llm(fields: list[dict], eeo_answers: list[dict]) -> list[dict]:
             ],
         }
     )
-    response = client.chat.completions.create(
-        model=settings.MIMO_MODEL,
-        messages=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ],
-        response_format={"type": "json_object"},
-        timeout=45,
+    parsed = json.loads(
+        llm.complete("eeo", _SYSTEM_PROMPT, user_content, json_mode=True, timeout=45)
     )
-    parsed = json.loads(response.choices[0].message.content)
     fields_out = parsed.get("fields", [])
-    logger.warning("MiMo raw EEO mapping: %s", fields_out)
+    logger.warning("LLM raw EEO mapping: %s", fields_out)
     return fields_out

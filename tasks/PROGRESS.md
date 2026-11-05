@@ -1,5 +1,30 @@
 # Progress log
 
+- **Claude or MiMo, switched in `.env`** — every model call now goes through `agent/llm.py`
+  (`llm.complete(task, system, user, image=, json_mode=)`), which sends it to MiMo through the
+  OpenAI SDK as before or to Claude through the `anthropic` SDK. `LLM_PROVIDER=claude|mimo` picks
+  the provider for all tasks and `LLM_PROVIDER_BY_TASK=navigate=mimo,...` overrides single tasks;
+  `llm.ready(task)` replaces every `MIMO_API_KEY` gate so features follow the active provider's
+  key. The Claude model is picked per task by volume and stakes: Haiku 5.5 for the hunter's
+  unattended traffic (scoring, roundup selection, mail sorting, position extraction, option and
+  EEO matching, analyzer query extraction, navigator steps and lessons), Sonnet 5.5 for text the
+  employer reads or that fills a form (cover letters, question answers, field mapping, fit
+  analysis), Opus 5.5 at high effort for the flagship CV writer and its reviewer, which stays at
+  least as strong as the writer. `CLAUDE_MODEL_BY_TASK` and `CLAUDE_EFFORT_BY_TASK` override
+  them. The navigator sends a screenshot on each of up to 25-60 steps for about 30 sends a day,
+  which is where a $100 monthly credit would go on a bigger model. Claude has no `json_object`
+  mode and some answers have free-form keys (CV skill categories), so JSON tasks get a "JSON
+  object only" line and the answer is unwrapped from any code fence before `json.loads`. Sonnet
+  and Opus requests ask for server-side refusal fallbacks (`fallbacks: "default"`); a refusal or
+  a cut-off answer raises `llm.LlmError` (the CV writer and reviewer stream with a 64k-token budget
+  so high-effort thinking has room), and `llm.ERRORS` joins every hunter `MODEL_ERRORS`
+  tuple so a Claude failure degrades like a MiMo one. `manage.py test` always runs on MiMo
+  settings, so no test can reach the paid API. The scoring prompts now ask for the closest CV even
+  on a poor fit, because Claude returned `cv_id: null` for mismatches, which made Telegram rows
+  "needs review" instead of "below threshold". On 8 real jobs MiMo had scored 62-90, Haiku 5.5
+  scored 0-12 points lower and Sonnet 5.5 up to 35 lower, so Haiku also keeps closer to the
+  `HUNTER_MIN_SCORE` that was tuned on MiMo; the same 3 jobs cleared 75 under MiMo and Haiku.
+
 - **"Open browser" for a captcha failed with "Failed to launch the browser process"** — the
   systemd agent starts at login before GNOME exports `DISPLAY`/`WAYLAND_DISPLAY`/`XAUTHORITY`, so
   its process had no display and a visible Camoufox could not start; the uncaught Playwright error

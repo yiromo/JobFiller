@@ -13,7 +13,7 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 from playwright.sync_api import Error as PlaywrightError
 
-from agent import cv_reviewer, mimo
+from agent import cv_reviewer, llm, mimo
 from apps.cvs.models import Cv
 from apps.hunter import (
     browser,
@@ -2384,7 +2384,7 @@ class MailSortingTests(LinkedCvCase):
         emails = {
             uid: {"sender": "", "subject": "", "received_at": None, "text": ""} for uid in (4, 5)
         }
-        with patch.object(mail, "OpenAI", return_value=client):
+        with patch("agent.llm.OpenAI", return_value=client):
             rows = mail.classify(emails)
         self.assertEqual(
             rows[4], {"kind": "interview", "employer": "Acme", "summary": "Call", "position": ""}
@@ -3134,6 +3134,138 @@ class MimoDeadlineTests(SimpleTestCase):
         client.chat.completions.create.return_value = "answer"
         self.assertEqual(mimo.chat(client, model="m"), "answer")
         client.chat.completions.create.assert_called_once_with(model="m")
+
+
+def claude_message(text, stop_reason="end_turn"):
+    return SimpleNamespace(
+        stop_reason=stop_reason,
+        stop_details=SimpleNamespace(category="cyber") if stop_reason == "refusal" else None,
+        content=[
+            SimpleNamespace(type="thinking", thinking=""),
+            SimpleNamespace(type="text", text=text),
+        ],
+    )
+
+
+@override_settings(
+    ANTHROPIC_API_KEY="claude-key",
+    MIMO_API_KEY="",
+    LLM_PROVIDER="claude",
+    LLM_PROVIDER_BY_TASK=[],
+    CLAUDE_MODEL_BY_TASK=[],
+    CLAUDE_EFFORT_BY_TASK=[],
+)
+class LlmProviderTests(SimpleTestCase):
+    def test_the_switch_and_per_task_overrides_pick_the_provider_and_its_key(self):
+        self.assertEqual(llm.provider("score"), "claude")
+        self.assertTrue(llm.ready("score"))
+        self.assertEqual(llm.key_name("score"), "ANTHROPIC_API_KEY")
+        with override_settings(LLM_PROVIDER_BY_TASK=["navigate=mimo", "bad"]):
+            self.assertEqual(llm.provider("navigate"), "mimo")
+            self.assertFalse(llm.ready("navigate"))
+            self.assertEqual(llm.provider("cv"), "claude")
+        with override_settings(LLM_PROVIDER="gpt"):
+            self.assertEqual(llm.provider("cv"), "mimo")
+
+    def test_models_and_effort_follow_the_task_unless_overridden(self):
+        self.assertEqual(llm.claude_choice("navigate"), (llm.HAIKU, "medium"))
+        self.assertEqual(llm.claude_choice("letter"), (llm.SONNET, "medium"))
+        self.assertEqual(llm.claude_choice("review"), (llm.OPUS, "high"))
+        with override_settings(
+            CLAUDE_MODEL_BY_TASK=["navigate=claude-sonnet-5-5"],
+            CLAUDE_EFFORT_BY_TASK=["navigate=low", "cv=huge"],
+        ):
+            self.assertEqual(llm.claude_choice("navigate"), (llm.SONNET, "low"))
+            self.assertEqual(llm.claude_choice("cv"), (llm.OPUS, "high"))
+
+    def test_haiku_gets_the_screenshot_as_an_image_block_and_fenced_json_is_unwrapped(self):
+        client = MagicMock()
+        client.messages.create.return_value = claude_message('```json\n{"action": "click"}\n```')
+        with patch("agent.llm.anthropic.Anthropic", return_value=client) as made:
+            answer = llm.complete(
+                "navigate", "rules", "page", image="data:image/jpeg;base64,aGVsbG8=", json_mode=True
+            )
+        self.assertEqual(json.loads(answer), {"action": "click"})
+        self.assertEqual(made.call_args.kwargs["api_key"], "claude-key")
+        request = client.messages.create.call_args.kwargs
+        self.assertEqual(request["model"], llm.HAIKU)
+        self.assertEqual(request["output_config"], {"effort": "medium"})
+        self.assertIn("JSON object only", request["system"])
+        image, text = request["messages"][0]["content"]
+        self.assertEqual(
+            image["source"], {"type": "base64", "media_type": "image/jpeg", "data": "aGVsbG8="}
+        )
+        self.assertEqual(text, {"type": "text", "text": "page"})
+        self.assertNotIn("fallbacks", request)
+        client.beta.messages.create.assert_not_called()
+
+    def test_opus_and_sonnet_ask_for_server_side_fallbacks(self):
+        client = MagicMock()
+        client.beta.messages.create.return_value = claude_message("Dear Hiring Team")
+        with patch("agent.llm.anthropic.Anthropic", return_value=client):
+            self.assertEqual(llm.complete("letter", "rules", "cv"), "Dear Hiring Team")
+        request = client.beta.messages.create.call_args.kwargs
+        self.assertEqual(request["model"], llm.SONNET)
+        self.assertEqual(request["fallbacks"], "default")
+        self.assertEqual(request["betas"], [llm.FALLBACK_BETA])
+        self.assertEqual(request["messages"][0]["content"], [{"type": "text", "text": "cv"}])
+
+    def test_a_refusal_or_a_cut_off_answer_is_an_llm_error_the_hunter_catches(self):
+        client = MagicMock()
+        for stop, words in (("refusal", "cyber"), ("max_tokens", "ran out")):
+            client.beta.messages.create.return_value = claude_message("", stop)
+            with (
+                patch("agent.llm.anthropic.Anthropic", return_value=client),
+                self.assertRaisesRegex(llm.LlmError, words),
+            ):
+                llm.complete("answer", "rules", "cv", json_mode=True)
+        self.assertTrue(issubclass(llm.LlmError, llm.ERRORS))
+        self.assertEqual(client.close.call_count, 2)
+
+    def test_cv_writing_streams_with_a_large_budget(self):
+        client = MagicMock()
+        stream = client.beta.messages.stream.return_value.__enter__.return_value
+        stream.get_final_message.return_value = claude_message('Here: {"title": "Engineer"}')
+        with patch("agent.llm.anthropic.Anthropic", return_value=client):
+            answer = llm.complete("cv", "rules", "cv", json_mode=True)
+        self.assertEqual(json.loads(answer), {"title": "Engineer"})
+        request = client.beta.messages.stream.call_args.kwargs
+        self.assertEqual(request["model"], llm.OPUS)
+        self.assertEqual(request["max_tokens"], llm.LONG_MAX_TOKENS)
+        self.assertEqual(request["output_config"], {"effort": "high"})
+        client.beta.messages.create.assert_not_called()
+
+    def test_json_answers_that_parse_are_left_whole(self):
+        self.assertEqual(llm.json_text('[{"a": 1}, {"b": 2}]'), '[{"a": 1}, {"b": 2}]')
+        self.assertEqual(llm.json_text('{"note": "a } b"}'), '{"note": "a } b"}')
+        self.assertEqual(llm.json_text('Sure: {"a": 1}.'), '{"a": 1}')
+
+    def test_a_claude_answer_that_never_finishes_is_given_up(self):
+        release = threading.Event()
+        client = MagicMock()
+        client.messages.create.side_effect = lambda **request: release.wait(5)
+        with (
+            patch("agent.llm.anthropic.Anthropic", return_value=client),
+            self.assertRaisesRegex(llm.LlmError, "within"),
+        ):
+            llm.complete("mail", "rules", "mail", deadline=0.1)
+        release.set()
+        client.close.assert_called()
+
+    @override_settings(LLM_PROVIDER="mimo", MIMO_API_KEY="mimo-key")
+    def test_mimo_keeps_the_openai_request_shape(self):
+        client = MagicMock()
+        client.chat.completions.create.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content='{"ids": [1]}'))]
+        )
+        with patch("agent.llm.OpenAI", return_value=client):
+            answer = llm.complete("select", "rules", "jobs", json_mode=True, timeout=30)
+        self.assertEqual(json.loads(answer), {"ids": [1]})
+        request = client.chat.completions.create.call_args.kwargs
+        self.assertEqual(request["response_format"], {"type": "json_object"})
+        self.assertEqual(request["model"], settings.MIMO_MODEL)
+        self.assertEqual(request["timeout"], 30)
+        self.assertEqual(request["messages"][0], {"role": "system", "content": "rules"})
 
 
 class EmailCodeTests(LinkedCvCase):

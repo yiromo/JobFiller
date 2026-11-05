@@ -28,9 +28,8 @@ from django.utils import timezone
 from google.auth.exceptions import GoogleAuthError
 from google.auth.transport.requests import AuthorizedSession
 from google.oauth2.credentials import Credentials
-from openai import OpenAI, OpenAIError
 
-from agent import mimo
+from agent import llm
 
 from . import notify, review
 from .models import MailMessage, Vacancy
@@ -57,7 +56,7 @@ TITLE_MATCH_SHARE = 0.8
 RELINK_BATCH = 30
 BOARD_SENDERS = {"hh": ("hh.kz", "hh.ru")}
 EXCLUDE = "-in:sent -in:drafts -in:chats"
-MODEL_ERRORS = (OpenAIError, ValueError, TypeError, AttributeError, KeyError)
+MODEL_ERRORS = (*llm.ERRORS, ValueError, TypeError, AttributeError, KeyError)
 MAIL_ERRORS = (imaplib.IMAP4.error, OSError, DatabaseError, GoogleAuthError)
 PARSE_ERRORS = (ValueError, TypeError, AttributeError, LookupError, AssertionError)
 SYNC_ERRORS = (*MAIL_ERRORS, *MODEL_ERRORS, *PARSE_ERRORS, RuntimeError)
@@ -264,7 +263,6 @@ def fetch(imap, uids: list[int]) -> dict[int, dict]:
 
 
 def classify(emails: dict[int, dict]) -> dict[int, dict]:
-    client = OpenAI(api_key=settings.MIMO_API_KEY, base_url=settings.MIMO_BASE_URL)
     payload = [
         {
             "id": str(uid),
@@ -275,17 +273,14 @@ def classify(emails: dict[int, dict]) -> dict[int, dict]:
         }
         for uid, mail in emails.items()
     ]
-    response = mimo.chat(
-        client,
-        model=settings.MIMO_MODEL,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": json.dumps({"emails": payload}, ensure_ascii=False)},
-        ],
-        response_format={"type": "json_object"},
+    answer = llm.complete(
+        "mail",
+        SYSTEM_PROMPT,
+        json.dumps({"emails": payload}, ensure_ascii=False),
+        json_mode=True,
         timeout=TIMEOUT_SECONDS,
     )
-    rows = json.loads(response.choices[0].message.content).get("emails", [])
+    rows = json.loads(answer).get("emails", [])
     sorted_rows = {}
     for row in rows:
         if not isinstance(row, dict):
@@ -307,7 +302,6 @@ def classify(emails: dict[int, dict]) -> dict[int, dict]:
 
 
 def extract_positions(messages: list[MailMessage]) -> dict[int, str]:
-    client = OpenAI(api_key=settings.MIMO_API_KEY, base_url=settings.MIMO_BASE_URL)
     payload = [
         {
             "id": str(message.pk),
@@ -317,19 +311,16 @@ def extract_positions(messages: list[MailMessage]) -> dict[int, str]:
         }
         for message in messages
     ]
-    response = mimo.chat(
-        client,
-        model=settings.MIMO_MODEL,
-        messages=[
-            {"role": "system", "content": POSITION_PROMPT},
-            {"role": "user", "content": json.dumps({"emails": payload}, ensure_ascii=False)},
-        ],
-        response_format={"type": "json_object"},
+    answer = llm.complete(
+        "position",
+        POSITION_PROMPT,
+        json.dumps({"emails": payload}, ensure_ascii=False),
+        json_mode=True,
         timeout=TIMEOUT_SECONDS,
     )
     known = {message.pk for message in messages}
     positions = {}
-    for row in json.loads(response.choices[0].message.content).get("emails", []):
+    for row in json.loads(answer).get("emails", []):
         if not isinstance(row, dict):
             continue
         try:
@@ -430,7 +421,7 @@ def relink(log, days: int = 30, classify_positions: bool = False) -> int:
             kind__in=SHOWN, vacancy__isnull=True, received_at__gte=since
         ).order_by("received_at")
     )
-    if classify_positions and settings.MIMO_API_KEY:
+    if classify_positions and llm.ready("position"):
         missing = [message for message in rows if not message.position]
         for start in range(0, len(missing), RELINK_BATCH):
             batch = missing[start : start + RELINK_BATCH]
@@ -791,8 +782,8 @@ def mbox_files(path: Path, workdir: Path) -> list[Path]:
 
 
 def import_mbox(path, address: str, log, limit: int = 0) -> list:
-    if not settings.MIMO_API_KEY:
-        raise RuntimeError("MIMO_API_KEY is not set, so email cannot be sorted.")
+    if not llm.ready("mail"):
+        raise RuntimeError(f"{llm.key_name('mail')} is not set, so email cannot be sorted.")
     account = Account(address=address, password="", days=None)
     rows = MailMessage.objects.filter(account=address)
     known_keys = set(rows.filter(uidvalidity=IMPORTED).values_list("uid", flat=True))
@@ -878,8 +869,8 @@ def sync(log, limit: int | None = None, only: str = "") -> list:
     chosen = [account for account in accounts() if not only or account.address == only]
     if not chosen:
         return []
-    if not settings.MIMO_API_KEY:
-        log("Mail: MIMO_API_KEY is not set, so email is not sorted.")
+    if not llm.ready("mail"):
+        log(f"Mail: {llm.key_name('mail')} is not set, so email is not sorted.")
         return []
     cap = settings.HUNTER_MAIL_PER_RUN if limit is None else limit
     saved = []

@@ -1,5 +1,4 @@
-from django.conf import settings
-from openai import OpenAI
+from agent import llm
 
 _SYSTEM_PROMPT = """You write a direct answer to a single open-ended job-application question, \
 grounded strictly in the candidate's CV and the job posting text given. Rules:
@@ -15,18 +14,9 @@ Respond with the answer's plain text only — no preamble, no markdown, no resta
 
 
 def generate(cv_raw_text: str, question: str, page_text: str) -> str:
-    client = OpenAI(api_key=settings.MIMO_API_KEY, base_url=settings.MIMO_BASE_URL)
     user_content = (
         f"Question: {question}\n\n"
         f"CV text:\n{cv_raw_text[:8000]}\n\n"
         f"Job posting text:\n{(page_text or '')[:6000]}"
     )
-    response = client.chat.completions.create(
-        model=settings.MIMO_MODEL,
-        messages=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ],
-        timeout=45,
-    )
-    return response.choices[0].message.content.strip()
+    return llm.complete("answer", _SYSTEM_PROMPT, user_content, timeout=45)

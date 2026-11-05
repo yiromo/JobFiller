@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 
 from decouple import Csv, config
@@ -122,13 +123,19 @@ REST_FRAMEWORK = {
     ],
 }
 
-# ---------------------------------------------------------------------------
-# MiMo (agent LLM) — not wired in yet, see tasks/BACKLOG.md.
-# ---------------------------------------------------------------------------
 MIMO_API_KEY = config("MIMO_API_KEY", default="")
 MIMO_BASE_URL = config("MIMO_BASE_URL", default="https://api.xiaomimimo.com/v1")
 MIMO_MODEL = config("MIMO_MODEL", default="mimo-v2.6-flash")
 MIMO_VISION_MODEL = config("MIMO_VISION_MODEL", default="mimo-v2.6-flash")
+ANTHROPIC_API_KEY = config("ANTHROPIC_API_KEY", default="")
+LLM_PROVIDER = config("LLM_PROVIDER", default="mimo")
+LLM_PROVIDER_BY_TASK = config("LLM_PROVIDER_BY_TASK", default="", cast=Csv())
+CLAUDE_MODEL_BY_TASK = config("CLAUDE_MODEL_BY_TASK", default="", cast=Csv())
+CLAUDE_EFFORT_BY_TASK = config("CLAUDE_EFFORT_BY_TASK", default="", cast=Csv())
+if "test" in sys.argv[1:3]:
+    LLM_PROVIDER = "mimo"
+    LLM_PROVIDER_BY_TASK = []
+    ANTHROPIC_API_KEY = ""
 TAVILY_API_KEY = config("TAVILY_API_KEY", default="")
 TELEGRAM_API_ID = config("TELEGRAM_API_ID", default=0, cast=int)
 TELEGRAM_API_HASH = config("TELEGRAM_API_HASH", default="")

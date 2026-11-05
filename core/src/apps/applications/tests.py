@@ -20,7 +20,7 @@ class VisionScanTests(SimpleTestCase):
         self.assertTrue(serializer.is_valid(), serializer.errors)
 
     @override_settings(MIMO_API_KEY="test", MIMO_VISION_MODEL="mimo-v2.6-flash")
-    @patch("agent.llm_mapper.OpenAI")
+    @patch("agent.llm.OpenAI")
     def test_vision_field_mapping_sends_image_and_text(self, openai_class):
         openai_class.return_value.chat.completions.create.return_value = MagicMock(
             choices=[MagicMock(message=MagicMock(content='{"fields": []}'))]

@@ -10,7 +10,7 @@ from apps.applications.dto import ScanRequestDTO
 from apps.applications.services.application_service import (
     ApplicationNotFoundError,
     CoverLetterOffError,
-    MimoNotConfiguredError,
+    LlmNotConfiguredError,
     NoCvOnApplicationError,
     SearchNotConfiguredError,
 )
@@ -75,9 +75,9 @@ class GenerateCoverLetterView(APIView):
                 {"detail": "select a CV and re-scan before generating a cover letter"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        except MimoNotConfiguredError:
+        except LlmNotConfiguredError:
             return Response(
-                {"detail": "MiMo is not configured on this server"},
+                {"detail": "No LLM is configured on this server"},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
         except Exception:
@@ -124,9 +124,9 @@ class AnalyzeApplicationView(APIView):
                 {"detail": "select a CV and re-scan before analyzing"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        except MimoNotConfiguredError:
+        except LlmNotConfiguredError:
             return Response(
-                {"detail": "MiMo is not configured on this server"},
+                {"detail": "No LLM is configured on this server"},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
         except SearchNotConfiguredError:
@@ -162,9 +162,9 @@ class GenerateAnswerView(APIView):
                 {"detail": "select a CV and re-scan before generating an answer"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        except MimoNotConfiguredError:
+        except LlmNotConfiguredError:
             return Response(
-                {"detail": "MiMo is not configured on this server"},
+                {"detail": "No LLM is configured on this server"},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
         except Exception:

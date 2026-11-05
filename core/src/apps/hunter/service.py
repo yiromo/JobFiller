@@ -13,10 +13,9 @@ from django.conf import settings
 from django.db import connection
 from django.db.models import Case, IntegerField, Q, When
 from django.utils import timezone
-from openai import OpenAIError
 from playwright.sync_api import Error as PlaywrightError
 
-from agent import cover_letter, cv_reviewer
+from agent import cover_letter, cv_reviewer, llm
 from agent.cv_writer import CvGenerationError
 from apps.cvs.container import CvsContainer
 from apps.cvs.models import Cv
@@ -36,7 +35,7 @@ RETRY_WAIT = timedelta(minutes=35)
 RETRY_PASSES = 2
 WAIT_LOG_SECONDS = 300
 DUPLICATE_DAYS = 60
-MODEL_ERRORS = (OpenAIError, ValueError, TypeError, AttributeError, KeyError)
+MODEL_ERRORS = (*llm.ERRORS, ValueError, TypeError, AttributeError, KeyError)
 UNSCORED_PREFIXES = ("Not scored", "Scoring failed")
 BOARD_MISSES = 3
 STOPPING = threading.Event()
@@ -95,7 +94,7 @@ def navigator_mode(site: str = "") -> str:
     mode = (
         (settings.HUNTER_NAVIGATOR_BY_SITE.get(site) or settings.HUNTER_NAVIGATOR).strip().lower()
     )
-    if not settings.MIMO_API_KEY or mode not in {"on", "rehearse"}:
+    if not llm.ready("navigate") or mode not in {"on", "rehearse"}:
         return "off"
     return mode
 
@@ -104,7 +103,7 @@ def external_mode() -> str:
     mode = str(settings.HUNTER_EXTERNAL_APPLY).strip().lower()
     if mode in {"1", "true", "yes"}:
         mode = "on"
-    if not settings.MIMO_API_KEY or mode not in {"on", "rehearse"}:
+    if not llm.ready("navigate") or mode not in {"on", "rehearse"}:
         return "off"
     return mode
 
@@ -217,7 +216,7 @@ def referral_targets(limit: int = 20, days: int = 30) -> list[dict]:
 
 def needs_tailoring(adapter, vacancy) -> bool:
     return (
-        bool(settings.MIMO_API_KEY)
+        llm.ready("cv")
         and not adapter.USES_RESUME_LINKS
         and vacancy.match_score is not None
         and vacancy.match_score < settings.HUNTER_MIN_SCORE
@@ -259,7 +258,8 @@ def tailor_cv(vacancy, log) -> None:
 
 def is_flagship(adapter, vacancy) -> bool:
     return (
-        bool(settings.MIMO_API_KEY)
+        llm.ready("cv")
+        and llm.ready("review")
         and not adapter.USES_RESUME_LINKS
         and FLAGSHIP_MARK not in vacancy.match_reason
         and bool(employer_in(vacancy, settings.HUNTER_FLAGSHIP_EMPLOYERS))
@@ -437,7 +437,9 @@ def score_vacancies(vacancies: list[Vacancy], links: list[ResumeLink]) -> None:
             vacancy.cv = cv
             vacancy.resume_id = resume_for.get((vacancy.source, cv.id), "") if cv else ""
             vacancy.match_score = score
-            vacancy.match_reason = reason or f"{UNSCORED_PREFIXES[0]}; is MIMO_API_KEY set?"
+            vacancy.match_reason = (
+                reason or f"{UNSCORED_PREFIXES[0]}; is {llm.key_name('score')} set?"
+            )
             ready = score is not None and score >= threshold
             if not ready:
                 vacancy.status = Vacancy.Status.BELOW_THRESHOLD
@@ -710,7 +712,7 @@ def apply_one(
         tailor_cv(vacancy, log)
     letter = vacancy.cover_letter
     size = letter_size(status)
-    if not letter and settings.MIMO_API_KEY and adapter.WANTS_LETTER and size != cover_letter.OFF:
+    if not letter and llm.ready("letter") and adapter.WANTS_LETTER and size != cover_letter.OFF:
         try:
             letter = cover_letter.generate(
                 vacancy.cv.raw_text,

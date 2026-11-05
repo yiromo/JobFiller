@@ -2,11 +2,9 @@ import json
 import logging
 import re
 
-from django.conf import settings
 from django.utils import timezone
-from openai import OpenAI
 
-from agent import mimo
+from agent import llm
 
 logger = logging.getLogger(__name__)
 
@@ -69,9 +67,10 @@ Respond with this JSON object only:
 def review(
     source_text: str, cv_text: str, posting_text: str, employer: str = "", excluded=()
 ) -> dict:
-    if not settings.MIMO_API_KEY:
-        raise CvReviewError("MIMO_API_KEY is not set in core/.env, so no CV can be reviewed.")
-    client = OpenAI(api_key=settings.MIMO_API_KEY, base_url=settings.MIMO_BASE_URL)
+    if not llm.ready("review"):
+        raise CvReviewError(
+            f"{llm.key_name('review')} is not set in core/.env, so no CV can be reviewed."
+        )
     content = json.dumps(
         {
             "today": timezone.localdate().isoformat(),
@@ -83,17 +82,11 @@ def review(
     )
     for attempt in range(ATTEMPTS):
         try:
-            response = mimo.chat(
-                client,
-                model=settings.MIMO_MODEL,
-                messages=[
-                    {"role": "system", "content": _SYSTEM_PROMPT},
-                    {"role": "user", "content": content},
-                ],
-                response_format={"type": "json_object"},
-                timeout=120,
+            parsed = json.loads(
+                llm.complete(
+                    "review", _SYSTEM_PROMPT, content, json_mode=True, timeout=240, deadline=600
+                )
             )
-            parsed = json.loads(response.choices[0].message.content)
             break
         except Exception as exc:
             logger.exception("CV review failed")

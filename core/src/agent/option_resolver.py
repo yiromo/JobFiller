@@ -1,9 +1,7 @@
 import json
 import logging
 
-from django.conf import settings
-from openai import OpenAI
-
+from agent import llm
 from agent.llm_mapper import validate_override
 
 logger = logging.getLogger(__name__)
@@ -23,13 +21,13 @@ the same order, using the exact "ref" values given."""
 
 
 def resolve_options(fields: list[dict]) -> list[dict]:
-    if not settings.MIMO_API_KEY or not fields:
+    if not llm.ready("options") or not fields:
         return [_skip(f["ref"]) for f in fields]
 
     try:
         overrides = {o["ref"]: o for o in _call_llm(fields)}
     except Exception:
-        logger.exception("MiMo option resolution call failed; leaving fields skipped")
+        logger.exception("LLM option resolution call failed; leaving fields skipped")
         return [_skip(f["ref"]) for f in fields]
 
     results = []
@@ -47,7 +45,6 @@ def _skip(ref: str) -> dict:
 
 
 def _call_llm(fields: list[dict]) -> list[dict]:
-    client = OpenAI(api_key=settings.MIMO_API_KEY, base_url=settings.MIMO_BASE_URL)
     user_content = json.dumps(
         {
             "fields": [
@@ -61,16 +58,9 @@ def _call_llm(fields: list[dict]) -> list[dict]:
             ]
         }
     )
-    response = client.chat.completions.create(
-        model=settings.MIMO_MODEL,
-        messages=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ],
-        response_format={"type": "json_object"},
-        timeout=45,
+    parsed = json.loads(
+        llm.complete("options", _SYSTEM_PROMPT, user_content, json_mode=True, timeout=45)
     )
-    parsed = json.loads(response.choices[0].message.content)
     fields_out = parsed.get("fields", [])
-    logger.warning("MiMo raw option resolution: %s", fields_out)
+    logger.warning("LLM raw option resolution: %s", fields_out)
     return fields_out

@@ -16,6 +16,7 @@ dependencies = [
     "telethon>=1.36,<2",
     "camoufox[geoip]>=0.5.6",
     "google-auth-oauthlib>=1.5.0",
+    "anthropic>=2.5.0",
 ]
 
 [dependency-groups]
