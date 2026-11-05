@@ -27,7 +27,7 @@ from apps.hunter import (
     service,
     state,
 )
-from apps.hunter.management.commands import agent_desk
+from apps.hunter.management.commands import agent_desk, hunt
 from apps.hunter.models import MailMessage, ResumeLink, Vacancy
 from apps.hunter.service import RunSummary, letter_language
 from apps.hunter.sources import (
@@ -1718,6 +1718,30 @@ class SitePriorityTests(LinkedCvCase):
         self.assertEqual(lines, ["sent", "sent"])
         self.assertIsNone(failed)
 
+    @override_settings(HUNTER_PARALLEL_SITES=1)
+    def test_a_browser_error_on_one_site_lets_the_next_site_run(self):
+        first, second = FakeAdapter(None), FakeAdapter(None)
+        first.SITE, first.NAME, second.SITE, second.NAME = "hh", "hh.kz", "linkedin", "LinkedIn"
+        visited = []
+
+        def run_site(adapter, *args, **kwargs):
+            visited.append(adapter.SITE)
+            if adapter.SITE == "hh":
+                raise PlaywrightError("Page.goto: NS_ERROR_UNKNOWN_HOST\nCall log: ...")
+
+        with (
+            patch(
+                "apps.hunter.service.site_groups",
+                return_value=[(first, ["a"]), (second, ["b"])],
+            ),
+            patch("apps.hunter.service.run_site", side_effect=run_site),
+            patch("apps.hunter.service.retry_paused"),
+            self.assertRaises(RuntimeError) as raised,
+        ):
+            service.run_once(apply=True, limit=5, max_pages=1, log=lambda line: None)
+        self.assertEqual(visited, ["hh", "linkedin"])
+        self.assertEqual(str(raised.exception), "hh.kz: Page.goto: NS_ERROR_UNKNOWN_HOST")
+
     @override_settings(HUNTER_MAX_APPLIES_PER_DAY=2)
     def test_sends_stop_when_another_lane_fills_the_daily_cap(self):
         first, second = self.vacancy("91"), self.vacancy("92")
@@ -1741,6 +1765,50 @@ class SitePriorityTests(LinkedCvCase):
         finally:
             service.STOPPING.clear()
         self.assertEqual(Vacancy.objects.get(external_id="93").status, Vacancy.Status.READY)
+
+
+class NetworkRetryTests(SimpleTestCase):
+    def delays(self, errors, network=(True,)):
+        delays = []
+
+        def sleep(seconds):
+            delays.append(seconds)
+            if len(delays) >= len(errors):
+                raise KeyboardInterrupt
+
+        options = {
+            "vacancy": "",
+            "headed": False,
+            "apply": False,
+            "limit": 5,
+            "max_pages": 1,
+            "rehearse": False,
+            "loop": 60,
+        }
+        with (
+            patch.object(hunt.mail, "sync"),
+            patch.object(hunt, "run_once", side_effect=[RuntimeError(e) for e in errors]),
+            patch.object(hunt, "online", side_effect=list(network) * 10),
+            patch.object(hunt.time, "sleep", side_effect=sleep),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            hunt.Command(stderr=MagicMock()).run_loop(options, None, lambda line: None)
+        return delays
+
+    def test_a_dns_failure_runs_again_in_minutes_instead_of_an_hour(self):
+        self.assertEqual(self.delays(["hh.kz: Page.goto: NS_ERROR_UNKNOWN_HOST"]), [300])
+
+    def test_the_agent_waits_for_the_network_before_the_short_retry(self):
+        delays = self.delays(["Page.goto: NS_ERROR_UNKNOWN_HOST"] * 3, network=(False, True))
+        self.assertEqual(delays[:2], [hunt.NETWORK_POLL_SECONDS, 300])
+
+    def test_a_long_outage_falls_back_to_the_normal_loop(self):
+        delays = self.delays(["Page.goto: NS_ERROR_UNKNOWN_HOST"] * 4)
+        self.assertEqual(delays[:3], [300, 300, 300])
+        self.assertGreater(delays[3], 3000)
+
+    def test_other_errors_keep_the_normal_loop(self):
+        self.assertGreater(self.delays(["hh.kz: not logged in"])[0], 3000)
 
 
 class TryLaterTests(LinkedCvCase):

@@ -1127,6 +1127,9 @@ def try_site(
     except RuntimeError as error:
         log(f"{adapter.NAME}: {error}")
         return str(error)
+    except PlaywrightError as error:
+        log(f"{adapter.NAME}: {first_line(error)}")
+        return first_line(error)
     return ""
 
 

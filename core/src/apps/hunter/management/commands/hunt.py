@@ -1,10 +1,12 @@
 import os
 import random
 import signal
+import socket
 import sys
 import threading
 import time
 from datetime import timedelta
+from urllib.parse import urlparse
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
@@ -14,6 +16,43 @@ from apps.hunter import mail, notify
 from apps.hunter.service import STOPPING, RunSummary, first_line, run_once
 from apps.hunter.sources.hh import CaptchaError
 from apps.hunter.state import Tracker
+
+NETWORK_ERRORS = ("NS_ERROR_UNKNOWN_HOST", "NS_ERROR_NET_", "NS_ERROR_OFFLINE", "Connection error")
+NETWORK_RETRY_MINUTES = 5
+NETWORK_RETRIES = 3
+NETWORK_POLL_SECONDS = 30
+NETWORK_LOG_SECONDS = 300
+
+
+def network_failure(error: str) -> bool:
+    return any(marker in error for marker in NETWORK_ERRORS)
+
+
+def online() -> bool:
+    hosts = {urlparse(url).hostname for url in settings.JOB_SOURCE_URLS} - {None}
+    for host in sorted(hosts):
+        try:
+            socket.getaddrinfo(host, 443)
+        except OSError:
+            continue
+        return True
+    return not hosts
+
+
+def wait_for_network(limit_seconds: float, log) -> None:
+    deadline = time.monotonic() + limit_seconds
+    if online():
+        return
+    log("The network is down; waiting for it to come back.")
+    told = time.monotonic()
+    while time.monotonic() < deadline:
+        time.sleep(NETWORK_POLL_SECONDS)
+        if online():
+            log("The network is back.")
+            return
+        if time.monotonic() - told >= NETWORK_LOG_SECONDS:
+            log("Still waiting for the network.")
+            told = time.monotonic()
 
 
 def stop(*_) -> None:
@@ -69,6 +108,7 @@ class Command(BaseCommand):
     def run_loop(self, options, tracker, log) -> None:
         last_error = ""
         last_capped = False
+        network_retries = 0
         while True:
             if tracker:
                 tracker.cycle_started()
@@ -115,7 +155,16 @@ class Command(BaseCommand):
                 if error:
                     raise CommandError(error)
                 return
-            delay = options["loop"] * 60 * random.uniform(0.85, 1.15)
+            network_retries = network_retries + 1 if network_failure(error) else 0
+            retry_soon = 0 < network_retries <= NETWORK_RETRIES
+            if retry_soon:
+                wait_for_network(options["loop"] * 60, log)
+                log(f"Network error; running again in {NETWORK_RETRY_MINUTES} min.")
+            delay = (
+                NETWORK_RETRY_MINUTES * 60
+                if retry_soon
+                else options["loop"] * 60 * random.uniform(0.85, 1.15)
+            )
             if tracker:
                 tracker.cycle_finished(summary, error, timezone.now() + timedelta(seconds=delay))
             time.sleep(delay)

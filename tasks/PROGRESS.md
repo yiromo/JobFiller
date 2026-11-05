@@ -1,5 +1,17 @@
 # Progress log
 
+- **A Wi-Fi drop no longer costs an hour of hunting** — a browser error (`PlaywrightError`, e.g.
+  `Page.goto: NS_ERROR_UNKNOWN_HOST`) now ends only the site it happened on: `try_site` reports it
+  like a login problem and the remaining sites still run, where before it escaped `run_once` and
+  skipped every later site. When a cycle ends on a network error (`NS_ERROR_UNKNOWN_HOST`,
+  `NS_ERROR_NET_*`, `NS_ERROR_OFFLINE`, `Connection error`), `hunt --loop` polls DNS for the
+  `JOB_SOURCE_URLS` hosts every 30 s (up to one loop interval) and runs again 5 minutes after it
+  resolves, at most three times in a row before falling back to the normal interval. The wait
+  happens before `cycle_finished`, so `next_cycle_at` is set once the network is back, and a
+  "still waiting" line every 5 minutes keeps the heartbeat inside `RUNNING_GRACE`. Since the
+  browser error no longer escapes, `retry_paused` now also runs after one. Seen four
+  times on 2026-11-05 alone, each time the laptop's Wi-Fi reconnecting.
+
 - **Claude or MiMo, switched in `.env`** — every model call now goes through `agent/llm.py`
   (`llm.complete(task, system, user, image=, json_mode=)`), which sends it to MiMo through the
   OpenAI SDK as before or to Claude through the `anthropic` SDK. `LLM_PROVIDER=claude|mimo` picks
