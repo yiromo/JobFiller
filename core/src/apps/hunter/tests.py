@@ -18,6 +18,7 @@ from apps.cvs.models import Cv
 from apps.hunter import (
     browser,
     captcha,
+    coverage,
     evidence,
     funnel,
     inbox,
@@ -43,7 +44,7 @@ from apps.hunter.sources import (
     linkedin,
     missing_contract,
 )
-from apps.hunter.sources.base import CaptchaError
+from apps.hunter.sources.base import CaptchaError, Listing, ResponseStatus, VacancyPage
 
 
 class HhParsingTests(SimpleTestCase):
@@ -3831,3 +3832,332 @@ class TavilyKeyTests(SimpleTestCase):
         self.assertEqual(
             ats.search_terms("https://jobs.lever.co/?q=Backend&where=Worldwide")[2], "Worldwide"
         )
+
+
+GUEST_PAGE = """
+<li><div class="base-card" data-entity-urn="urn:li:jobPosting:111">
+<h3 class="base-search-card__title"> Backend Engineer &amp; Go </h3>
+<h4 class="base-search-card__subtitle"> <a href="x"> Acme </a> </h4>
+<span class="job-search-card__location"> United States </span>
+<time class="job-search-card__listdate--new" datetime="2026-11-05"> 3 hours ago </time>
+</div></li>
+<li><div class="base-card" data-entity-urn="urn:li:jobPosting:222">
+<h3 class="base-search-card__title"> Python Developer </h3>
+<h4 class="base-search-card__subtitle"> <a href="x"> Kaspi </a> </h4>
+<span class="job-search-card__location"> Almaty, Kazakhstan </span>
+<time class="job-search-card__listdate" datetime="2026-11-01"> 5 days ago </time>
+</div></li>
+"""
+LINKEDIN_SOURCE = (
+    "https://www.linkedin.com/jobs/search-results/?keywords=Python&geoId=92000000"
+    "&f_TPR=r86400&currentJobId=5"
+)
+
+
+class LinkedInGuestTests(SimpleTestCase):
+    def test_cards_carry_place_and_posting_time(self):
+        cards = linkedin.guest_cards(GUEST_PAGE)
+        self.assertEqual([card.external_id for card in cards], ["111", "222"])
+        self.assertEqual(cards[0].title, "Backend Engineer & Go")
+        self.assertEqual((cards[0].employer, cards[0].place), ("Acme", "United States"))
+        self.assertEqual(cards[0].url, "https://www.linkedin.com/jobs/view/111/")
+        age = timezone.now() - cards[0].posted_at
+        self.assertTrue(timedelta(hours=2, minutes=59) < age < timedelta(hours=3, minutes=1))
+
+    def test_the_guest_url_keeps_search_filters_only(self):
+        url = linkedin.guest_url(LINKEDIN_SOURCE, 2)
+        self.assertTrue(url.startswith(linkedin.GUEST_SEARCH))
+        self.assertIn("geoId=92000000", url)
+        self.assertIn("start=20", url)
+        self.assertNotIn("currentJobId", url)
+
+    def test_search_uses_the_guest_endpoint_and_stops_at_a_short_page(self):
+        with (
+            patch("apps.hunter.sources.linkedin.guest_get", return_value=GUEST_PAGE) as get,
+            patch("apps.hunter.sources.linkedin.browser_crawl") as browser,
+        ):
+            found = linkedin.crawl(None, LINKEDIN_SOURCE, 2)
+        self.assertEqual(len(found), 2)
+        get.assert_called_once()
+        browser.assert_not_called()
+
+    def test_a_blocked_or_empty_guest_search_falls_back_to_the_browser(self):
+        for body in (None, "<html>nothing</html>"):
+            with (
+                self.subTest(body=body),
+                patch("apps.hunter.sources.linkedin.guest_get", return_value=body),
+                patch("apps.hunter.sources.linkedin.browser_crawl", return_value=["x"]) as browser,
+            ):
+                self.assertEqual(linkedin.crawl("page", LINKEDIN_SOURCE, 1), ["x"])
+            browser.assert_called_once_with("page", LINKEDIN_SOURCE, 1)
+
+
+@override_settings(HUNTER_LOCATION_GATE=True)
+class PlaceSkipTests(TestCase):
+    def adapter(self, text=""):
+        listings = [
+            Listing(
+                "111",
+                "https://www.linkedin.com/jobs/view/111/",
+                "Backend",
+                "Acme",
+                place="United States",
+            ),
+            Listing(
+                "222",
+                "https://www.linkedin.com/jobs/view/222/",
+                "Python",
+                "Kaspi",
+                place="Kazakhstan",
+            ),
+        ]
+        page = VacancyPage(title="", employer="", text="Python role", has_respond_button=True)
+        status = ResponseStatus(False, False, False, False, 4000)
+        return SimpleNamespace(
+            SITE="linkedin",
+            NAME="LinkedIn",
+            crawl=MagicMock(return_value=listings),
+            guest_text=MagicMock(return_value=text),
+            read_vacancy=MagicMock(return_value=page),
+            response_status=MagicMock(return_value=status),
+            is_logged_in=MagicMock(return_value=True),
+            pause=MagicMock(),
+        )
+
+    def test_a_locked_card_is_stored_as_skipped_without_opening_it(self):
+        adapter = self.adapter()
+        lines = []
+        found = service.discover(None, adapter, "url", 1, lines.append, 10)
+        self.assertEqual([item.external_id for item in found], ["222"])
+        adapter.read_vacancy.assert_called_once_with(
+            None, "https://www.linkedin.com/jobs/view/222/"
+        )
+        skipped = Vacancy.objects.get(external_id="111")
+        self.assertEqual(skipped.status, Vacancy.Status.SKIPPED)
+        self.assertIn("limited to United States", skipped.note)
+        self.assertIn("1 limited to a location", lines[1])
+
+    def test_a_failed_description_fetch_opens_the_job_instead_of_skipping_it(self):
+        found = service.discover(None, self.adapter(None), "url", 1, lambda line: None, 10)
+        self.assertEqual(len(found), 2)
+
+    def test_a_card_that_hires_from_anywhere_is_opened(self):
+        adapter = self.adapter("Fully remote, work from anywhere.")
+        found = service.discover(None, adapter, "url", 1, lambda line: None, 10)
+        self.assertEqual(len(found), 2)
+
+
+WORKDAY_JOB = (
+    "https://nvidia.wd5.myworkdayjobs.com/en-US/NVIDIAExternalCareerSite/job/"
+    "Israel-Yokneam/Software-Engineer--SPE_JR2015623"
+)
+TEAMTAILOR_FEED = """<?xml version="1.0"?>
+<rss version="2.0" xmlns:tt="https://teamtailor.com/locations"><channel>
+<item><title>Backend Engineer</title><description>&lt;p&gt;Go and Kafka&lt;/p&gt;</description>
+<pubDate>Tue, 03 Nov 2026 19:37:57 +0100</pubDate>
+<link>https://acme.teamtailor.com/jobs/8660969-backend-engineer</link>
+<remoteStatus>fully</remoteStatus>
+<tt:locations><tt:location><tt:city>Stockholm</tt:city><tt:country>Sweden</tt:country>
+</tt:location></tt:locations></item>
+</channel></rss>"""
+
+
+class NewBoardTests(SimpleTestCase):
+    def setUp(self):
+        ats.CACHE.clear()
+        self.addCleanup(ats.CACHE.clear)
+
+    def test_board_urls_resolve_to_board_and_slug(self):
+        cases = {
+            "https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite": (
+                "workday",
+                "nvidia.wd5/NVIDIAExternalCareerSite",
+            ),
+            WORKDAY_JOB: ("workday", "nvidia.wd5/NVIDIAExternalCareerSite"),
+            "https://jobs.ashbyhq.com/elevenlabs": ("ashby", "elevenlabs"),
+            "https://acme.teamtailor.com/jobs": ("teamtailor", "acme"),
+            "https://ats.rippling.com/en-US/acme/jobs": ("rippling", "acme"),
+            "https://example.com/careers": ("", ""),
+        }
+        for url, expected in cases.items():
+            with self.subTest(url=url):
+                self.assertEqual(ats.board_from_url(url), expected)
+
+    def test_a_workday_job_keeps_its_path_and_a_short_id(self):
+        board, slug, job_id = ats.parse_job(WORKDAY_JOB)
+        self.assertEqual(job_id, "job/Israel-Yokneam/Software-Engineer--SPE_JR2015623")
+        self.assertEqual(ats.external_id(board, slug, job_id), "workday:nvidia/JR2015623")
+        self.assertEqual(
+            ats.job_url(board, slug, job_id),
+            "https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite/" + job_id,
+        )
+        self.assertIsNone(ats.parse_job("https://myworkdayjobs.com/?q=Backend"))
+
+    def test_workday_search_pages_until_a_short_page(self):
+        full = {
+            "jobPostings": [{"title": "Backend", "externalPath": f"/job/x_{n}"} for n in range(20)]
+        }
+        last = {
+            "jobPostings": [
+                {"title": "Backend", "externalPath": "/job/x_99", "locationsText": "Remote"}
+            ]
+        }
+        with patch("apps.hunter.sources.ats.get_json", side_effect=[full, last]) as call:
+            jobs = ats.board_jobs("workday", "acme.wd1/Careers", "Backend")
+        self.assertEqual(len(jobs), 21)
+        self.assertEqual(call.call_args.args[1]["searchText"], "Backend")
+        self.assertEqual(call.call_args.args[1]["offset"], 20)
+        self.assertTrue(jobs[-1]["remote"])
+
+    def test_a_workday_job_needs_an_account(self):
+        info = {
+            "jobPostingInfo": {
+                "title": "Backend",
+                "jobDescription": "<p>Go</p>",
+                "startDate": "2026-11-01",
+            }
+        }
+        with patch("apps.hunter.sources.ats.get_json", return_value=info):
+            status = ats.response_status(None, WORKDAY_JOB)
+        self.assertTrue(status.account_required)
+
+    def test_a_teamtailor_feed_gives_jobs_and_a_posting(self):
+        root = ats.ElementTree.fromstring(TEAMTAILOR_FEED)
+        with patch("apps.hunter.sources.ats.get_xml", return_value=root):
+            jobs = ats.board_jobs("teamtailor", "acme")
+            found = ats.posting("https://acme.teamtailor.com/jobs/8660969-backend-engineer")
+        self.assertEqual(
+            jobs, [{"id": "8660969", "title": "Backend Engineer", "remote": True, "employer": ""}]
+        )
+        self.assertIn("Location: Stockholm, Sweden", found["text"])
+        self.assertIn("Posted: 2026-11-03T19:37:57+01:00", found["text"])
+        self.assertIn("Go and Kafka", found["text"])
+
+
+class WatchlistTests(TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.data = override_settings(DATA_DIR=Path(self.directory.name), TAVILY_API_KEY="key")
+        self.data.enable()
+        ats.CACHE.clear()
+
+    def tearDown(self):
+        self.data.disable()
+        self.directory.cleanup()
+        ats.CACHE.clear()
+
+    def test_watched_boards_are_listed_without_a_search(self):
+        listing = [
+            {
+                "id": "11111111-2222-3333-4444-555555555555",
+                "title": "Backend Engineer",
+                "workplaceType": "Remote",
+            }
+        ]
+        with patch("apps.hunter.sources.ats.board_listing", return_value=listing):
+            key, count = ats.watch("https://jobs.ashbyhq.com/acme", "Acme")
+        self.assertEqual((key, count), ("ashby:acme", 1))
+        ats.write_state({"searched": {}, "boards": {}})
+        state = ats.read_state()
+        state["searched"]["https://jobs.ashbyhq.com/?q=Backend+Engineer&where=Worldwide"] = (
+            timezone.now().isoformat()
+        )
+        ats.write_state(state)
+        with (
+            patch("apps.hunter.sources.ats.board_listing", return_value=listing),
+            patch("apps.hunter.sources.ats.search") as search,
+        ):
+            found = ats.crawl(
+                None, "https://jobs.ashbyhq.com/?q=Backend+Engineer&where=Worldwide", 1
+            )
+        search.assert_not_called()
+        self.assertEqual([item.employer for item in found], ["Acme"])
+        self.assertTrue(ats.unwatch("ashby:acme"))
+        self.assertEqual(ats.read_watchlist(), {})
+
+    def test_a_board_without_search_domains_never_calls_tavily(self):
+        with (
+            patch("apps.hunter.sources.ats.search") as search,
+            patch("apps.hunter.sources.ats.board_listing", return_value=[]),
+        ):
+            ats.crawl(None, "https://myworkdayjobs.com/?q=Backend&where=Worldwide", 1)
+        search.assert_not_called()
+
+    @override_settings(HUNTER_OUTREACH_TARGETS=[])
+    def test_watched_companies_become_reverse_search_targets(self):
+        ats.write_watchlist({"greenhouse:acme": {"name": "Acme"}})
+        self.assertEqual(outreach.reverse_targets(5)[0], ("Acme", None))
+
+
+class CoverageTests(LinkedCvCase):
+    POSTING = (
+        "We need Python, Kafka, PostgreSQL and Kubernetes. Go to our site to apply.\n"
+        "Nice to have: Rust, Terraform."
+    )
+
+    def test_only_required_skills_count_and_go_needs_capital_g(self):
+        value, missing = coverage.measure(self.POSTING, "Python and PostgreSQL in production.")
+        self.assertEqual((value, missing), (50, ["Kafka", "Kubernetes"]))
+
+    def test_common_words_are_not_skills(self):
+        text = "We react quickly to incidents, spark ideas, start in spring, use Python and Kafka."
+        self.assertEqual(coverage.terms_in(text), {"Python", "Kafka"})
+
+    def test_short_postings_get_no_number(self):
+        self.assertEqual(coverage.measure("Python and Go.", ""), (None, []))
+
+    @override_settings(HUNTER_MIN_COVERAGE=0)
+    def test_the_gate_is_off_by_default(self):
+        self.assertFalse(coverage.below(10))
+
+    @override_settings(MIMO_API_KEY="key", HUNTER_MIN_COVERAGE=60, HUNTER_HARD_MIN_SCORE=0)
+    def test_a_set_minimum_holds_back_low_coverage_rows(self):
+        self.cv.raw_text = "Python"
+        self.cv.save()
+        low = self.vacancy("71")
+        Vacancy.objects.filter(pk=low.pk).update(text=self.POSTING)
+        with tempfile.TemporaryDirectory() as folder, override_settings(DATA_DIR=Path(folder)):
+            service.apply_scope_threshold()
+        low.refresh_from_db()
+        self.assertEqual((low.coverage, low.status), (25, Vacancy.Status.BELOW_THRESHOLD))
+        self.assertIn("Covers 25%", service.skip_reason(low))
+
+    @override_settings(MIMO_API_KEY="key", HUNTER_MIN_COVERAGE=0)
+    def test_scoring_stores_coverage_and_names_missing_skills(self):
+        job = self.vacancy("72", status=Vacancy.Status.BELOW_THRESHOLD)
+        Vacancy.objects.filter(pk=job.pk).update(text=self.POSTING)
+        job.refresh_from_db()
+        self.cv.raw_text = "Python, Kafka, PostgreSQL"
+        self.cv.save()
+        with patch(
+            "apps.hunter.service.rank_jobs", return_value={str(job.id): (self.cv, 90, "Fits.")}
+        ):
+            service.score_vacancies([job], [self.link])
+        job.refresh_from_db()
+        self.assertEqual(job.coverage, 75)
+        self.assertIn("not in the CV: Kubernetes", job.match_reason)
+
+
+@override_settings(TAVILY_API_KEY="key", MIMO_API_KEY="key", HUNTER_LOCATION_GATE=True)
+class AccountWallTests(LinkedCvCase):
+    def test_an_account_only_job_is_held_for_the_user_and_offered_to_outreach(self):
+        status = ResponseStatus(False, False, False, False, 4000, account_required=True)
+        adapter = SimpleNamespace(
+            SITE="ats",
+            NAME="Company job boards",
+            crawl=MagicMock(
+                return_value=[Listing("workday:acme/R1", WORKDAY_JOB, "Backend", "Acme")]
+            ),
+            read_vacancy=MagicMock(
+                return_value=VacancyPage("Backend", "Acme", "Location: Remote", True)
+            ),
+            response_status=MagicMock(return_value=status),
+            is_logged_in=MagicMock(return_value=True),
+            pause=MagicMock(),
+        )
+        [job] = service.discover(None, adapter, "url", 1, lambda line: None, 5)
+        self.assertEqual(job.note, posting.ACCOUNT_NOTE)
+        Vacancy.objects.filter(pk=job.pk).update(
+            status=Vacancy.Status.NEEDS_REVIEW, match_score=90, cv=self.cv
+        )
+        self.assertEqual([item.pk for item in outreach.posting_candidates(3)], [job.pk])

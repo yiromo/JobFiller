@@ -1,6 +1,15 @@
+import html
+import random
 import re
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
+from django.utils import timezone
+
+from ..posting import ago
 from .base import CaptchaError, Listing, ResponseStatus, VacancyPage, external_goal, pause
 
 SITE = "linkedin"
@@ -27,6 +36,21 @@ JOB_ID_RE = re.compile(r"/jobs/view/(\d+)")
 APPLIED_RE = re.compile(r"\bApplied\b[^.\n]{0,40}\bago\b|Application submitted|Application sent")
 CLOSED_RE = re.compile(r"No longer accepting applications", re.IGNORECASE)
 CHECKPOINT_RE = re.compile(r"/checkpoint/|/authwall|captcha", re.IGNORECASE)
+GUEST_SEARCH = f"{BASE}/jobs-guest/jobs/api/seeMoreJobPostings/search"
+GUEST_JOB = f"{BASE}/jobs-guest/jobs/api/jobPosting/{{id}}"
+GUEST_PARAMS = {"keywords", "geoId", "location", "distance", "f_TPR", "f_WT", "f_AL", "f_E", "f_JT"}
+GUEST_PAGE_SIZE = 10
+GUEST_GAP = (3.0, 7.0)
+GUEST_TEXT_GAP = (1.5, 3.0)
+USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64; rv:135.0) Gecko/20100101 Firefox/135.0"
+GUEST_CARD_RE = re.compile(r"<li>(.*?)</li>", re.DOTALL)
+GUEST_ID_RE = re.compile(r"urn:li:jobPosting:(\d+)")
+GUEST_TITLE_RE = re.compile(r'base-search-card__title">(.*?)</h3>', re.DOTALL)
+GUEST_COMPANY_RE = re.compile(r'base-search-card__subtitle">(.*?)</h4>', re.DOTALL)
+GUEST_PLACE_RE = re.compile(r'job-search-card__location">(.*?)</span>', re.DOTALL)
+GUEST_TIME_RE = re.compile(r'<time[^>]*datetime="([^"]+)"[^>]*>(.*?)</time>', re.DOTALL)
+GUEST_TEXT_RE = re.compile(r"show-more-less-html__markup[^>]*>(.*?)</div>", re.DOTALL)
+TAG_RE = re.compile(r"<[^>]+>")
 
 CARDS_JS = """
 (card) => [...document.querySelectorAll(card)].map(node => {
@@ -119,7 +143,101 @@ def wait_for(page, selector: str, timeout_ms: int = 25000) -> bool:
     return False
 
 
+def plain(markup: str) -> str:
+    return re.sub(r"\s+", " ", html.unescape(TAG_RE.sub(" ", markup or ""))).strip()
+
+
+def guest_get(url: str) -> str | None:
+    request = urllib.request.Request(
+        url, headers={"User-Agent": USER_AGENT, "Accept-Language": "en-US,en;q=0.8"}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            body = response.read().decode("utf-8", "replace")
+            final = response.geturl()
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    return None if CHECKPOINT_RE.search(final) else body
+
+
+def guest_url(search_url: str, number: int) -> str:
+    query = [(k, v) for k, v in parse_qsl(urlparse(search_url).query) if k in GUEST_PARAMS]
+    query.append(("start", str(number * GUEST_PAGE_SIZE)))
+    return f"{GUEST_SEARCH}?{urlencode(query)}"
+
+
+def guest_cards(body: str) -> list[Listing]:
+    cards = []
+    for card in GUEST_CARD_RE.findall(body or ""):
+        found = GUEST_ID_RE.search(card)
+        title = GUEST_TITLE_RE.search(card)
+        if not found or not title:
+            continue
+        company = GUEST_COMPANY_RE.search(card)
+        place = GUEST_PLACE_RE.search(card)
+        stamp = GUEST_TIME_RE.search(card)
+        cards.append(
+            Listing(
+                external_id=found.group(1),
+                url=job_url(found.group(1)),
+                title=plain(title.group(1)),
+                employer=plain(company.group(1)) if company else "",
+                place=plain(place.group(1)) if place else "",
+                posted_at=posted_on(stamp.group(1), plain(stamp.group(2))) if stamp else None,
+            )
+        )
+    return cards
+
+
+def posted_on(day: str, label: str) -> datetime | None:
+    found = ago(label)
+    if found:
+        return found
+    try:
+        return timezone.make_aware(datetime.fromisoformat(day))
+    except ValueError:
+        return None
+
+
+def guest_wait() -> None:
+    time.sleep(random.uniform(*GUEST_GAP))
+
+
+def guest_crawl(search_url: str, max_pages: int) -> list[Listing] | None:
+    found: dict[str, Listing] = {}
+    for number in range(max(1, max_pages) * 3):
+        if number:
+            guest_wait()
+        body = guest_get(guest_url(search_url, number))
+        if body is None:
+            return list(found.values()) if found else None
+        cards = guest_cards(body)
+        if not cards:
+            return list(found.values()) if found or number else None
+        for card in cards:
+            found.setdefault(card.external_id, card)
+        if len(cards) < GUEST_PAGE_SIZE:
+            break
+    return list(found.values())
+
+
+def guest_text(external_id: str) -> str | None:
+    time.sleep(random.uniform(*GUEST_TEXT_GAP))
+    body = guest_get(GUEST_JOB.format(id=external_id))
+    if body is None:
+        return None
+    found = GUEST_TEXT_RE.search(body)
+    return plain(found.group(1)) if found else ""
+
+
 def crawl(page, search_url: str, max_pages: int) -> list[Listing]:
+    listings = guest_crawl(search_url, max_pages)
+    if listings is not None:
+        return listings
+    return browser_crawl(page, search_url, max_pages)
+
+
+def browser_crawl(page, search_url: str, max_pages: int) -> list[Listing]:
     found: dict[str, Listing] = {}
     for number in range(max_pages):
         page.goto(with_page_number(search_url, number), wait_until="domcontentloaded")

@@ -149,6 +149,7 @@ HUNTER_HEADLESS = config("HUNTER_HEADLESS", default="virtual")
 HUNTER_MIN_SCORE = config("HUNTER_MIN_SCORE", default=75, cast=int)
 HUNTER_BROAD_MIN_SCORE = config("HUNTER_BROAD_MIN_SCORE", default=50, cast=int)
 HUNTER_HARD_MIN_SCORE = config("HUNTER_HARD_MIN_SCORE", default=70, cast=int)
+HUNTER_MIN_COVERAGE = config("HUNTER_MIN_COVERAGE", default=0, cast=int)
 HUNTER_LOCATION_GATE = config("HUNTER_LOCATION_GATE", default=True, cast=bool)
 HUNTER_OPEN_LOCATIONS = config(
     "HUNTER_OPEN_LOCATIONS",

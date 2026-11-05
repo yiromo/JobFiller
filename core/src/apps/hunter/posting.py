@@ -5,10 +5,17 @@ from django.conf import settings
 from django.utils import timezone
 
 GATED_SOURCES = ("linkedin", "ats", "indeed")
+ACCOUNT_NOTE = (
+    "Applying needs an account on the employer's site, which the agent never creates; apply "
+    "yourself or use the outreach draft."
+)
 AGE_RE = re.compile(
     r"^(?P<place>.*?) · (?:Reposted )?(?P<count>\d+|an?|a few) "
     r"(?P<unit>second|minute|hour|day|week|month)s? ago",
     re.IGNORECASE,
+)
+AGO_RE = re.compile(
+    r"(?P<count>\d+|an?|a few) (?P<unit>second|minute|hour|day|week|month)s? ago", re.IGNORECASE
 )
 LOCATION_RE = re.compile(r"^Location: *(?P<place>.*)$", re.MULTILINE)
 POSTED_RE = re.compile(r"^Posted: *(?P<when>\S+)$", re.MULTILINE)
@@ -73,18 +80,21 @@ def location(vacancy) -> str | None:
     return None
 
 
+def place_lock(place: str | None, text: str = "") -> str:
+    if not settings.HUNTER_LOCATION_GATE or not place or PLAIN_REMOTE_RE.match(place):
+        return ""
+    if open_re().search(place) or OPEN_TEXT_RE.search(text or ""):
+        return ""
+    return f"the job is limited to {place}"
+
+
 def lock(vacancy) -> str:
     if not settings.HUNTER_LOCATION_GATE or vacancy.source not in GATED_SOURCES:
         return ""
-    opened = open_re()
     text = vacancy.text or ""
     place = location(vacancy)
     if place and not PLAIN_REMOTE_RE.match(place):
-        if opened.search(place):
-            return ""
-        if not OPEN_TEXT_RE.search(text):
-            return f"the job is limited to {place}"
-        return ""
+        return place_lock(place, text)
     found = LOCKED_TEXT_RE.search(text)
     if found and not OPEN_TEXT_RE.search(text):
         return f'the posting says "{found.group(0)}"'
@@ -107,11 +117,17 @@ def posted_at(vacancy, now: datetime | None = None) -> datetime | None:
     if vacancy.source != "linkedin":
         return None
     header = linkedin_header(vacancy)
-    if not header:
+    return ago(header, now) if header else None
+
+
+def ago(found, now: datetime | None = None) -> datetime | None:
+    if isinstance(found, str):
+        found = AGO_RE.search(found)
+    if not found:
         return None
-    count = header["count"].lower()
+    count = found["count"].lower()
     amount = 1 if count in ("a", "an") else 3 if count == "a few" else int(count)
-    seconds = amount * UNIT_SECONDS[header["unit"].lower()]
+    seconds = amount * UNIT_SECONDS[found["unit"].lower()]
     return (now or timezone.now()) - timedelta(seconds=seconds)
 
 

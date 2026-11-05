@@ -57,6 +57,7 @@ uv run python manage.py hh_resumes [--link CV_ID=HASH]         # list/link hh rÃ
 uv run python manage.py hunter_targets [--limit 20] [--days 30] # best employers to ask for referrals
 uv run python manage.py outreach draft|signals|list|show ID|mark ID sent|replied|skipped  # drafts only, never sends
 uv run python manage.py hunter_funnel [--weeks 8]              # weekly human-reply rate per site
+uv run python manage.py hunter_watch add URL|remove KEY|list|seed  # company boards read every run, no search
 uv run python manage.py style_check [--limit 30] [--no-model]  # blind recruiter read of recent letters
 uv run python manage.py hunter_cv --vacancy ID [--source CV_ID] # flagship CV + adversarial review, no send
 uv run python manage.py hunt [--apply] [--headed] [--loop MIN] # hh.kz agent (dry run by default)
@@ -419,6 +420,20 @@ which splices them into the in-memory plan so a second Fill click doesn't repeat
   bind-mounted `data/hunter`. Its rows use `uidvalidity` 1 and the Gmail id masked to 63 bits,
   since a 64-bit id does not fit SQLite's integer; Takeout rows are adopted by Message-ID as
   with IMAP. This is the official API the user set up, not the browser route they declined.
+- **LinkedIn search runs logged out; Workday is outreach-only.** `linkedin.crawl` reads LinkedIn's
+  public guest endpoint (`/jobs-guest/jobs/api/seeMoreJobPostings/search`, 10 cards a page, 3â€“7 s
+  apart), keeping only the search filters in `GUEST_PARAMS`. It falls back to the logged-in browser
+  crawl when the guest search is blocked or comes back empty. Each card carries its place and age, so
+  `discover` stores a place-locked card as skipped without opening it; it first reads the public
+  description (`guest_text`) for a hire-from-anywhere phrase. The logged-in browser is still used for
+  the job page, the applied state and Easy Apply. `ats` also reads Workday (`/wday/cxs/...`, searched
+  by title, watchlist only, no Tavily) and Teamtailor (`jobs.rss`). A Workday application needs an
+  account, so `ResponseStatus.account_required` gives those rows `posting.ACCOUNT_NOTE`; they wait in
+  needs_review, never reach the navigator, and are offered to outreach. `hunter_watch` boards live in
+  `data/hunter/watchlist.json`, outside `ats.json`, so `MAX_BOARDS` trimming never drops them.
+  `coverage.measure` stores the share of a posting's required skills found in the CV, using a fixed
+  vocabulary and stopping at "nice to have". It did not predict outcomes on past sends, so
+  `HUNTER_MIN_COVERAGE` defaults to 0 (shown, not gating).
 - **Location decides most outcomes, and outreach never sends.** `posting.lock` skips a LinkedIn,
   ATS or Indeed job whose own location field (LinkedIn header, ATS `Location:` line) or text
   limits it to a country outside `HUNTER_OPEN_LOCATIONS`, before scoring and again before a send;

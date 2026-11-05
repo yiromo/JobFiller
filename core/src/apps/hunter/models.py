@@ -32,6 +32,7 @@ class Vacancy(models.Model):
     cv = models.ForeignKey("cvs.Cv", null=True, blank=True, on_delete=models.SET_NULL)
     resume_id = models.CharField(max_length=64, blank=True)
     match_score = models.PositiveSmallIntegerField(null=True, blank=True)
+    coverage = models.PositiveSmallIntegerField(null=True, blank=True)
     match_reason = models.TextField(blank=True)
     status = models.CharField(max_length=24, choices=Status.choices)
     note = models.TextField(blank=True)

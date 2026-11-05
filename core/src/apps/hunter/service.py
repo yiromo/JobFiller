@@ -22,7 +22,7 @@ from apps.cvs.models import Cv
 from apps.opportunities.service import rank_jobs
 from apps.opportunities.telegraph import TelegraphPage
 
-from . import captcha, evidence, inbox, mail, outreach, posting, review
+from . import captcha, coverage, evidence, inbox, mail, outreach, posting, review
 from .browser import open_browser
 from .models import MailMessage, ResumeLink, Vacancy
 from .navigator import CONFIRMED_RE, PAGE_TEXT_JS, REHEARSED, Navigator, host_of
@@ -181,6 +181,11 @@ def skip_reason(vacancy: Vacancy) -> str:
     locked = posting.lock(vacancy)
     if locked:
         return posting.lock_note(locked)
+    if coverage.below(vacancy.coverage):
+        return (
+            f"Covers {vacancy.coverage}% of the required skills; the minimum is "
+            f"{settings.HUNTER_MIN_COVERAGE}%."
+        )
     rejection = recent_rejection(vacancy)
     if rejection:
         return (
@@ -455,7 +460,14 @@ def score_vacancies(vacancies: list[Vacancy], links: list[ResumeLink]) -> None:
             vacancy.match_reason = (
                 reason or f"{UNSCORED_PREFIXES[0]}; is {llm.key_name('score')} set?"
             )
-            ready = score is not None and score >= threshold
+            if cv:
+                vacancy.coverage, missing = coverage.measure(vacancy.text, cv.raw_text)
+                vacancy.match_reason = (vacancy.match_reason + coverage.missing_note(missing))[
+                    :2000
+                ]
+            ready = (
+                score is not None and score >= threshold and not coverage.below(vacancy.coverage)
+            )
             if not ready:
                 vacancy.status = Vacancy.Status.BELOW_THRESHOLD
             elif vacancy.note:
@@ -463,6 +475,17 @@ def score_vacancies(vacancies: list[Vacancy], links: list[ResumeLink]) -> None:
             else:
                 vacancy.status = Vacancy.Status.READY
             vacancy.save()
+
+
+def measure_unsent(unsent) -> None:
+    pending = unsent.filter(
+        coverage__isnull=True,
+        status__in=[Vacancy.Status.READY, Vacancy.Status.BELOW_THRESHOLD],
+    ).select_related("cv")
+    for vacancy in pending.iterator():
+        value, _ = coverage.measure(vacancy.text, vacancy.cv.raw_text)
+        if value is not None:
+            Vacancy.objects.filter(pk=vacancy.pk).update(coverage=value)
 
 
 def apply_scope_threshold(log=None) -> None:
@@ -474,11 +497,23 @@ def apply_scope_threshold(log=None) -> None:
         match_score__isnull=False,
         cv__isnull=False,
     )
-    promoted = unsent.filter(
-        status=Vacancy.Status.BELOW_THRESHOLD, match_score__gte=threshold
-    ).update(status=Vacancy.Status.READY, updated_at=timezone.now())
-    demoted = unsent.filter(status=Vacancy.Status.READY, match_score__lt=threshold).update(
-        status=Vacancy.Status.BELOW_THRESHOLD, updated_at=timezone.now()
+    covered = Q()
+    if settings.HUNTER_MIN_COVERAGE:
+        measure_unsent(unsent)
+        covered = Q(coverage__isnull=True) | Q(coverage__gte=settings.HUNTER_MIN_COVERAGE)
+    promoted = (
+        unsent.filter(status=Vacancy.Status.BELOW_THRESHOLD, match_score__gte=threshold)
+        .filter(covered)
+        .update(status=Vacancy.Status.READY, updated_at=timezone.now())
+    )
+    demoted = (
+        unsent.filter(status=Vacancy.Status.READY)
+        .filter(
+            Q(match_score__lt=threshold) | ~covered
+            if settings.HUNTER_MIN_COVERAGE
+            else Q(match_score__lt=threshold)
+        )
+        .update(status=Vacancy.Status.BELOW_THRESHOLD, updated_at=timezone.now())
     )
     if log and (promoted or demoted):
         log(
@@ -501,6 +536,30 @@ def unscored(source: str) -> list[Vacancy]:
     )
 
 
+def skipped_by_place(adapter, item) -> bool:
+    if adapter.SITE not in posting.GATED_SOURCES or not posting.place_lock(item.place):
+        return False
+    reader = getattr(adapter, "guest_text", None)
+    text = reader(item.external_id) if reader else ""
+    if text is None:
+        return False
+    locked = posting.place_lock(item.place, text)
+    if not locked:
+        return False
+    Vacancy.objects.create(
+        source=adapter.SITE,
+        external_id=item.external_id,
+        url=item.url,
+        title=item.title[:255],
+        employer=item.employer[:255],
+        text=f"{item.title}\n{item.employer}\nLocation: {item.place}\n\n{text}"[:12000],
+        status=Vacancy.Status.SKIPPED,
+        note=posting.lock_note(locked),
+        posted_at=item.posted_at,
+    )
+    return True
+
+
 def discover(page, adapter, search_url: str, max_pages: int, log, budget: int) -> list[Vacancy]:
     if budget <= 0:
         return []
@@ -517,6 +576,10 @@ def discover(page, adapter, search_url: str, max_pages: int, log, budget: int) -
     fresh = [item for item in listings if item.external_id not in known]
     log(f"{search_url}: {len(listings)} listed, {len(fresh)} new")
     created = []
+    open_items = [item for item in fresh if not skipped_by_place(adapter, item)]
+    if len(open_items) < len(fresh):
+        log(f"  {len(fresh) - len(open_items)} limited to a location the candidate can't work in")
+    fresh = open_items
     if external_mode() == "off":
         external = [item for item in fresh if item.external_apply]
         fresh = [item for item in fresh if not item.external_apply]
@@ -545,7 +608,7 @@ def discover(page, adapter, search_url: str, max_pages: int, log, budget: int) -
             text=details.text,
             status=Vacancy.Status.BELOW_THRESHOLD,
         )
-        vacancy.posted_at = posting.posted_at(vacancy)
+        vacancy.posted_at = posting.posted_at(vacancy) or item.posted_at
         if status.already_applied:
             vacancy.status = Vacancy.Status.APPLIED
             vacancy.note = f"Already applied on {adapter.NAME}."
@@ -560,6 +623,8 @@ def discover(page, adapter, search_url: str, max_pages: int, log, budget: int) -
             vacancy.note = (
                 f"No {adapter.NAME} response button; the employer takes applications elsewhere."
             )
+        elif status.account_required:
+            vacancy.note = posting.ACCOUNT_NOTE
         elif status.has_test and navigator_mode(adapter.SITE) == "off":
             vacancy.note = "Employer questionnaire required; answer it manually."
         elif status.needs_relocation:

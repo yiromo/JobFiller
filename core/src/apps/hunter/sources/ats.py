@@ -8,6 +8,7 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta
+from email.utils import parsedate_to_datetime
 from urllib.parse import parse_qsl, urlencode, urlparse
 from xml.etree import ElementTree
 
@@ -48,8 +49,11 @@ HOSTS = {
     "apply.workable.com": "workable",
     "jobs.smartrecruiters.com": "smartrecruiters",
     "ats.rippling.com": "rippling",
+    "myworkdayjobs.com": "workday",
+    "www.myworkdayjobs.com": "workday",
 }
 COMPANY_HOSTS = {
+    "teamtailor.com": "teamtailor",
     "recruitee.com": "recruitee",
     "jobs.personio.de": "personio",
     "jobs.personio.com": "personio",
@@ -65,8 +69,13 @@ SEARCH_DOMAINS = {
     "bamboohr": ["bamboohr.com"],
     "smartrecruiters": ["jobs.smartrecruiters.com"],
     "rippling": ["ats.rippling.com"],
+    "teamtailor": ["teamtailor.com"],
 }
-COMPANY_SCOPED = {"recruitee", "personio", "bamboohr"}
+COMPANY_SCOPED = {"recruitee", "personio", "bamboohr", "teamtailor"}
+WORKDAY_HOST_RE = re.compile(r"^([a-z0-9-]+)\.(wd\d+)\.myworkdayjobs\.com$")
+WORKDAY_PATH_RE = re.compile(r"^/(?:[a-z]{2}-[A-Z]{2}/)?([^/]+)(/job/.+?)/?$")
+WORKDAY_ROOT_RE = re.compile(r"^/(?:[a-z]{2}-[A-Z]{2}/)?([^/]+)/?$")
+WORKDAY_PAGE = 20
 UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 UUID_PATH_RE = re.compile(rf"^/([^/]+)/({UUID})(?:/|$)", re.IGNORECASE)
 GREENHOUSE_PATH_RE = re.compile(r"^/([^/]+)/jobs/(\d+)(?:/|$)")
@@ -84,6 +93,7 @@ COMPANY_PATH_RES = {
     "recruitee": re.compile(r"^/o/([^/]+)"),
     "personio": re.compile(r"^/job/(\d+)(?:/|$)"),
     "bamboohr": re.compile(r"^/careers/(\d+)(?:/|$)"),
+    "teamtailor": re.compile(r"^/(?:[a-z]{2}/)?jobs/(\d+)(?:[-/]|$)"),
 }
 JOB_URLS = {
     "ashby": "https://jobs.ashbyhq.com/{slug}/{id}",
@@ -95,6 +105,7 @@ JOB_URLS = {
     "bamboohr": "https://{slug}.bamboohr.com/careers/{id}",
     "smartrecruiters": "https://jobs.smartrecruiters.com/{slug}/{id}",
     "rippling": "https://ats.rippling.com/{slug}/jobs/{id}",
+    "teamtailor": "https://{slug}.teamtailor.com/jobs/{id}",
 }
 APPLY_URLS = {
     "ashby": "https://jobs.ashbyhq.com/{slug}/{id}/application",
@@ -140,17 +151,41 @@ def company_host(host: str) -> tuple[str, str]:
 
 def board_of(url: str) -> str:
     host = (urlparse(url).hostname or "").lower()
+    if WORKDAY_HOST_RE.match(host):
+        return "workday"
     return HOSTS.get(host) or company_host(host)[0]
 
 
 def normal_id(board: str, job_id: str) -> str:
+    if board == "workday":
+        return job_id
     return job_id.upper() if board == "workable" else job_id.lower()
+
+
+def workday_parts(slug: str) -> tuple[str, str, str]:
+    host, _, site = slug.partition("/")
+    tenant, _, shard = host.partition(".")
+    return tenant, shard, site
+
+
+def workday_base(slug: str) -> str:
+    tenant, shard, site = workday_parts(slug)
+    return f"https://{tenant}.{shard}.myworkdayjobs.com/wday/cxs/{tenant}/{site}"
 
 
 def parse_job(url: str) -> tuple[str, str, str] | None:
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower()
+    workday = WORKDAY_HOST_RE.match(host)
+    if workday:
+        match = WORKDAY_PATH_RE.match(parsed.path)
+        if not match:
+            return None
+        slug = f"{workday.group(1)}.{workday.group(2)}/{match.group(1)}"
+        return "workday", slug, match.group(2).lstrip("/")
     board = HOSTS.get(host, "")
+    if board == "workday":
+        return None
     if board:
         match = PATH_RES[board].match(parsed.path)
         if not match:
@@ -164,7 +199,28 @@ def parse_job(url: str) -> tuple[str, str, str] | None:
 
 
 def job_url(board: str, slug: str, job_id: str) -> str:
+    if board == "workday":
+        tenant, shard, site = workday_parts(slug)
+        return f"https://{tenant}.{shard}.myworkdayjobs.com/{site}/{job_id}"
     return JOB_URLS[board].format(slug=slug, id=job_id)
+
+
+def board_from_url(url: str) -> tuple[str, str]:
+    parsed = urlparse(url if "://" in url else f"https://{url}")
+    host = (parsed.hostname or "").lower()
+    workday = WORKDAY_HOST_RE.match(host)
+    if workday:
+        match = WORKDAY_ROOT_RE.match(parsed.path) or WORKDAY_PATH_RE.match(parsed.path)
+        site = match.group(1) if match else ""
+        return ("workday", f"{workday.group(1)}.{workday.group(2)}/{site}") if site else ("", "")
+    board, slug = company_host(host)
+    if board:
+        return (board, slug) if slug not in ("", "www") else ("", "")
+    board = HOSTS.get(host, "")
+    parts = [part for part in parsed.path.split("/") if part]
+    if board == "rippling" and parts and re.match(r"^[a-z]{2}-[a-z]{2}$", parts[0], re.IGNORECASE):
+        parts = parts[1:]
+    return (board, parts[0]) if board and parts else ("", "")
 
 
 def apply_url(url: str) -> str:
@@ -176,6 +232,8 @@ def apply_url(url: str) -> str:
 
 
 def external_id(board: str, slug: str, job_id: str) -> str:
+    if board == "workday":
+        return f"workday:{workday_parts(slug)[0]}/{job_id.rsplit('_', 1)[-1]}"[:64]
     key = f"{slug}/{job_id}" if board in COMPANY_SCOPED else job_id
     return f"{board}:{key}"[:64]
 
@@ -229,6 +287,55 @@ def write_state(data: dict) -> None:
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(data))
     os.replace(temporary, path)
+
+
+def watchlist_path():
+    return settings.DATA_DIR / "hunter" / "watchlist.json"
+
+
+def read_watchlist() -> dict:
+    try:
+        data = json.loads(watchlist_path().read_text())
+    except (OSError, ValueError):
+        return {}
+    boards = data.get("boards") if isinstance(data, dict) else None
+    return boards if isinstance(boards, dict) else {}
+
+
+def write_watchlist(boards: dict) -> None:
+    path = watchlist_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps({"boards": boards}, indent=1, sort_keys=True))
+    os.replace(temporary, path)
+
+
+def watch(url: str, name: str = "") -> tuple[str, int]:
+    board, slug = board_from_url(url)
+    if not board:
+        raise ValueError(f"{url} is not a job board this agent can read.")
+    jobs = board_listing(board, slug)
+    key = f"{board}:{slug}"
+    boards = read_watchlist()
+    boards[key] = {
+        "name": name or employer_name(board, slug, jobs),
+        "added": timezone.now().isoformat(),
+    }
+    write_watchlist(boards)
+    return key, len(jobs)
+
+
+def unwatch(key: str) -> bool:
+    boards = read_watchlist()
+    if boards.pop(key, None) is None:
+        return False
+    write_watchlist(boards)
+    return True
+
+
+def employer_name(board: str, slug: str, jobs: list) -> str:
+    named = next((employer_of(board, job) for job in jobs if employer_of(board, job)), "")
+    return named or pretty(workday_parts(slug)[0] if board == "workday" else slug)
 
 
 def search_due(state: dict, search_url: str, now=None) -> bool:
@@ -374,7 +481,12 @@ def strip_html(markup: str) -> str:
     return LINES_RE.sub("\n\n", "\n".join(line.strip() for line in text.splitlines())).strip()
 
 
-def board_listing(board: str, slug: str) -> list:
+def board_listing(board: str, slug: str, title: str = "") -> list:
+    if board == "workday":
+        return cached(f"workday:{slug}:{title}", lambda: workday_listing(slug, title))
+    if board == "teamtailor":
+        url = f"https://{slug}.teamtailor.com/jobs.rss"
+        return cached(url, lambda: teamtailor_items(get_xml(url)))
     if board == "ashby":
         url = f"https://api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=false"
         return cached(url, lambda: list((get_json(url) or {}).get("jobs") or []))
@@ -414,6 +526,56 @@ def paged(url: str, cursor: str, items: str, total: str, step: int) -> list:
     return jobs
 
 
+def workday_listing(slug: str, title: str) -> list:
+    jobs = []
+    for number in range(LISTING_PAGES):
+        body = {
+            "appliedFacets": {},
+            "limit": WORKDAY_PAGE,
+            "offset": number * WORKDAY_PAGE,
+            "searchText": title,
+        }
+        payload = get_json(f"{workday_base(slug)}/jobs", body) or {}
+        page = payload.get("jobPostings") or []
+        jobs += page
+        if len(page) < WORKDAY_PAGE:
+            break
+    return [{**job, "id": (job.get("externalPath") or "").lstrip("/")} for job in jobs]
+
+
+def teamtailor_items(root) -> list:
+    if root is None:
+        return []
+    namespace = "{https://teamtailor.com/locations}"
+    items = []
+    for node in root.iter("item"):
+        found = COMPANY_PATH_RES["teamtailor"].match(urlparse(node.findtext("link") or "").path)
+        if not found:
+            continue
+        places = [
+            ", ".join(
+                part
+                for part in (
+                    place.findtext(f"{namespace}city") or place.findtext(f"{namespace}name"),
+                    place.findtext(f"{namespace}country"),
+                )
+                if part
+            )
+            for place in node.iter(f"{namespace}location")
+        ]
+        items.append(
+            {
+                "id": found.group(1),
+                "title": node.findtext("title") or "",
+                "description": node.findtext("description") or "",
+                "published": node.findtext("pubDate") or "",
+                "remoteStatus": (node.findtext("remoteStatus") or "").lower(),
+                "locations": [place for place in places if place],
+            }
+        )
+    return items
+
+
 def workable_jobs(payload: dict) -> list:
     company = payload.get("name") or ""
     return [{**job, "company_name": company} for job in payload.get("jobs") or []]
@@ -446,6 +608,11 @@ def personio_positions(root) -> list:
 
 
 def remote_of(board: str, job: dict) -> bool:
+    if board == "workday":
+        place = f"{job.get('locationsText') or ''} {job.get('location') or ''}"
+        return "remote" in f"{place} {job.get('remoteType') or ''}".lower()
+    if board == "teamtailor":
+        return job.get("remoteStatus") == "fully"
     if board == "ashby":
         place = (job.get("workplaceType") or "").lower()
         return place == "remote" if place else bool(job.get("isRemote"))
@@ -477,9 +644,9 @@ def employer_of(board: str, job: dict) -> str:
     return job.get("company_name") or ""
 
 
-def board_jobs(board: str, slug: str) -> list[dict]:
+def board_jobs(board: str, slug: str, title: str = "") -> list[dict]:
     jobs = []
-    for job in board_listing(board, slug):
+    for job in board_listing(board, slug, title):
         if board == "ashby" and job.get("isListed") is False:
             continue
         if board == "recruitee" and job.get("status") not in (None, "published"):
@@ -505,7 +672,7 @@ def crawl(page, search_url: str, max_pages: int) -> list[Listing]:
     state = read_state()
     found: dict[str, Listing] = {}
     now = timezone.now()
-    if search_due(state, search_url, now):
+    if board in SEARCH_DOMAINS and search_due(state, search_url, now):
         for hit in search(board, title, where):
             job = parse_job(hit.get("url") or "")
             if not job or job[0] != board:
@@ -524,12 +691,12 @@ def crawl(page, search_url: str, max_pages: int) -> list[Listing]:
         state["boards"] = dict(newest[-MAX_BOARDS:])
         write_state(state)
     wants_remote = where.lower() in ("remote", "worldwide")
-    for key, info in state["boards"].items():
+    for key, info in {**state["boards"], **read_watchlist()}.items():
         kind, slug = key.split(":", 1)
         if kind != board:
             continue
         try:
-            jobs = board_jobs(board, slug)
+            jobs = board_jobs(board, slug, title)
         except (OSError, ValueError):
             continue
         for job in jobs:
@@ -545,6 +712,48 @@ def crawl(page, search_url: str, max_pages: int) -> list[Listing]:
                 ),
             )
     return list(found.values())
+
+
+def rfc_date(value: str) -> str:
+    try:
+        return parsedate_to_datetime(value).isoformat()
+    except (TypeError, ValueError):
+        return ""
+
+
+def workday_posting(slug: str, job_id: str) -> dict | None:
+    payload = get_json(f"{workday_base(slug)}/{job_id}") or {}
+    job = payload.get("jobPostingInfo") or {}
+    if not job.get("title") or job.get("canApply") is False:
+        return None
+    watched = read_watchlist().get(f"workday:{slug}") or {}
+    employer = watched.get("name") or pretty(workday_parts(slug)[0])
+    lines = [
+        job["title"],
+        f"Company: {employer}",
+        f"Location: {job.get('location') or ''}",
+        f"Workplace: {job.get('remoteType') or ''}",
+        f"Schedule: {job.get('timeType') or ''}",
+        posted_line(job.get("startDate")),
+        "",
+        strip_html(job.get("jobDescription") or ""),
+    ]
+    return found_posting(job["title"], employer, lines, remote_of("workday", job))
+
+
+def teamtailor_posting(slug: str, job_id: str) -> dict | None:
+    job = listed("teamtailor", slug, job_id)
+    if job is None:
+        return None
+    lines = [
+        job["title"],
+        f"Location: {'; '.join(job['locations'])}",
+        f"Remote: {job['remoteStatus'] or 'none'}",
+        posted_line(rfc_date(job["published"])),
+        "",
+        strip_html(job["description"]),
+    ]
+    return found_posting(job["title"], "", lines, remote_of("teamtailor", job))
 
 
 def found_posting(title: str, employer: str, lines: list[str], remote: bool) -> dict:
@@ -698,6 +907,8 @@ POSTINGS = {
     "bamboohr": bamboohr_posting,
     "smartrecruiters": smartrecruiters_posting,
     "rippling": rippling_posting,
+    "workday": workday_posting,
+    "teamtailor": teamtailor_posting,
 }
 
 
@@ -802,6 +1013,7 @@ def response_status(page, url: str) -> ResponseStatus | None:
         has_test=False,
         letter_max_length=4000,
         remote=bool(found and found["remote"]),
+        account_required=board_of(url) == "workday",
     )
 
 

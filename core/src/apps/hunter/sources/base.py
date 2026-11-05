@@ -1,5 +1,6 @@
 import random
 from dataclasses import dataclass, field
+from datetime import datetime
 
 CONTRACT = (
     "SITE",
@@ -42,6 +43,9 @@ class Listing:
     title: str
     employer: str
     external_apply: bool = False
+    place: str = ""
+    posted_at: datetime | None = None
+    summary: str = ""
 
 
 @dataclass
@@ -64,6 +68,7 @@ class ResponseStatus:
     relocation_warning: bool = False
     remote: bool = False
     external_apply: bool = False
+    account_required: bool = False
 
     @property
     def needs_relocation(self) -> bool:

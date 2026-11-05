@@ -1,5 +1,28 @@
 # Progress log
 
+- **Ideas borrowed from open-source job tools** — the approaches come from JobSpy, career-ops and
+  Resume-Matcher.
+  - LinkedIn search uses the public guest endpoint, as JobSpy does, so finding jobs no longer
+    uses the logged-in account. The logged-in browser crawl is the fallback, and the browser is
+    still needed for the job page and Easy Apply. Each guest card carries the job's place and
+    age. A place-locked card is stored as skipped without opening it, unless its public
+    description hires from anywhere. The two LinkedIn sources are now Kazakhstan and Worldwide,
+    both with `f_WT=2` (remote).
+  - A watchlist (`hunter_watch`, `data/hunter/watchlist.json`) reads named company boards every
+    run without a Tavily search, like career-ops' company list. `seed` fills it from boards that
+    produced open jobs scoring 75 or more. When `HUNTER_OUTREACH_TARGETS` is empty, watched
+    companies feed `outreach signals`.
+  - The `ats` adapter reads Workday (watchlist only, searched by title) and Teamtailor (RSS feed,
+    also found through Tavily). Workday applications need an account, so those jobs are held for
+    the user with `posting.ACCOUNT_NOTE` and offered to outreach instead of the navigator.
+  - Required-skill coverage, a share computed in Python from a fixed vocabulary, is stored on
+    each job, and the missing skills are named in `match_reason`. On the 870 past sends,
+    rejections were 24–38% and human replies 2–4% in every coverage band, so it does not predict
+    outcomes either. `HUNTER_MIN_COVERAGE` therefore defaults to 0; when set, it gates scoring,
+    the scope re-sort and `skip_reason`.
+  - Not adopted: JobSpy's Indeed path through the mobile app's private GraphQL API with a
+    hard-coded key, because it exists to get past Indeed's bot check.
+
 - **Fit over volume, outreach drafts, and the letter size that was ignored** — sends to
   LinkedIn and the ATS boards drew almost no human replies, while hh.kz drew most of them. The
   postings' own location fields showed why: about 88% of the past international sends were

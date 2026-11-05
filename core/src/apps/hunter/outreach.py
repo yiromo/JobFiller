@@ -3,7 +3,7 @@ import re
 from datetime import timedelta
 
 from django.conf import settings
-from django.db.models import F
+from django.db.models import F, Q
 from django.utils import timezone
 
 from agent import llm, style
@@ -209,8 +209,9 @@ def posting_candidates(limit: int) -> list[Vacancy]:
     rows = (
         Vacancy.objects.select_related("cv")
         .filter(
+            Q(status__in=[Vacancy.Status.READY, Vacancy.Status.APPLIED])
+            | Q(status=Vacancy.Status.NEEDS_REVIEW, note=posting.ACCOUNT_NOTE),
             match_score__gte=settings.HUNTER_OUTREACH_MIN_SCORE,
-            status__in=[Vacancy.Status.READY, Vacancy.Status.APPLIED],
             created_at__gte=since,
             outreach__isnull=True,
         )
@@ -299,6 +300,9 @@ def reverse_targets(limit: int) -> list[tuple[str, Vacancy | None]]:
         if name.strip():
             add(name.strip(), None)
     if not settings.HUNTER_OUTREACH_TARGETS:
+        for info in ats.read_watchlist().values():
+            if info.get("name") and len(targets) < limit:
+                add(info["name"], None)
         since = timezone.now() - timedelta(days=TARGET_DAYS)
         rows = (
             Vacancy.objects.select_related("cv")
