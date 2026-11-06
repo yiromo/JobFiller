@@ -1,5 +1,10 @@
 # Progress log
 
+- **"Work anywhere in the U.S" no longer passes the location gate** — the country pattern needed
+  the trailing dot in "U.S.", so "anywhere in the U.S but" read as hire-from-anywhere and an
+  Upstart US-only job reached the navigator, which stopped on its sponsorship question. Four ready
+  rows are now blocked by the fix.
+
 - **Ideas borrowed from open-source job tools** — the approaches come from JobSpy, career-ops and
   Resume-Matcher.
   - LinkedIn search uses the public guest endpoint, as JobSpy does, so finding jobs no longer

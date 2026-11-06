@@ -3564,6 +3564,7 @@ class LocationGateTests(SimpleTestCase):
     def test_anywhere_inside_one_country_and_customers_worldwide_stay_locked(self):
         for body in (
             "Fully remote: work from anywhere in the United States.",
+            "Our employees can live and work anywhere in the U.S but meet onsite.",
             "We serve customers worldwide.",
         ):
             with self.subTest(body=body):

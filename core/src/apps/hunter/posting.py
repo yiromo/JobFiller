@@ -29,7 +29,7 @@ UNIT_SECONDS = {
 }
 PLAIN_REMOTE_RE = re.compile(r"^[\s(]*(fully )?remote[\s)]*(job)?$", re.IGNORECASE)
 COUNTRIES = (
-    r"us|u\.s\.|usa|united states|uk|united kingdom|eu|european union|europe|canada|latam|"
+    r"us|u\.s\.?|usa|united states|uk|united kingdom|eu|european union|europe|canada|latam|"
     r"germany|poland|spain|portugal|france|india|brazil|mexico|australia|netherlands|ireland"
 )
 LOCKED_TEXT_RE = re.compile(
@@ -39,7 +39,7 @@ LOCKED_TEXT_RE = re.compile(
     rf"|\b({COUNTRIES})[- ]based (candidates|applicants|residents|engineers|developers)\b"
     r"|\b(legally )?(authori[sz]ed|eligible|permitted) to work in\b"
     r"|\bright to work in\b"
-    r"|\b(us|u\.s\.) citizen(ship)?\b"
+    r"|\b(us|u\.s\.?) citizen(ship)?\b"
     r"|\bsecurity clearance\b"
     r"|\b(not|unable to|cannot|can't|do not|don't|won't) (provide |offer |support )?"
     r"(visa )?sponsor(ship)?\b"
