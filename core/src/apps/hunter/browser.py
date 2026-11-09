@@ -113,6 +113,7 @@ def open_browser(site: str, headless=None):
         fingerprint_preset=fingerprint_for(site),
         locale=["ru-RU", "ru", "en-US"],
         humanize=True,
+        firefox_user_prefs={"network.http.http3.enable": False},
     )
     with LAUNCHING:
         context = browser.__enter__()

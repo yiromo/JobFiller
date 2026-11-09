@@ -1,5 +1,10 @@
 # Progress log
 
+- **HTTP/3 is off in the agent's browser** — after a 36-hour gap, the first Indeed run failed with
+  `NS_ERROR_NET_HTTP3_PROTOCOL_ERROR`, a stale QUIC connection. Every site's browser now sets
+  `network.http.http3.enable` to false, so Firefox uses HTTP/2. This is a small fingerprint
+  change; if Indeed's security-check rate shifts, this is a suspect.
+
 - **"Work anywhere in the U.S" no longer passes the location gate** — the country pattern needed
   the trailing dot in "U.S.", so "anywhere in the U.S but" read as hire-from-anywhere and an
   Upstart US-only job reached the navigator, which stopped on its sponsorship question. Four ready
